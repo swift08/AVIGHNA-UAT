@@ -10,33 +10,180 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AccountsRouteImport } from './routes/accounts'
+import { Route as AdministrationRouteImport } from './routes/administration'
+import { Route as AnalyticsRouteImport } from './routes/analytics'
+import { Route as CustomersRouteImport } from './routes/customers'
+import { Route as FieldVisitsRouteImport } from './routes/field-visits'
+import { Route as InventoryRouteImport } from './routes/inventory'
+import { Route as LeadsRouteImport } from './routes/leads'
+import { Route as LogisticsRouteImport } from './routes/logistics'
+import { Route as OrdersRouteImport } from './routes/orders'
+import { Route as PurchasesRouteImport } from './routes/purchases'
+import { Route as TasksRouteImport } from './routes/tasks'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AccountsRoute = AccountsRouteImport.update({
+  id: '/accounts',
+  path: '/accounts',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdministrationRoute = AdministrationRouteImport.update({
+  id: '/administration',
+  path: '/administration',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AnalyticsRoute = AnalyticsRouteImport.update({
+  id: '/analytics',
+  path: '/analytics',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CustomersRoute = CustomersRouteImport.update({
+  id: '/customers',
+  path: '/customers',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FieldVisitsRoute = FieldVisitsRouteImport.update({
+  id: '/field-visits',
+  path: '/field-visits',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InventoryRoute = InventoryRouteImport.update({
+  id: '/inventory',
+  path: '/inventory',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LeadsRoute = LeadsRouteImport.update({
+  id: '/leads',
+  path: '/leads',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LogisticsRoute = LogisticsRouteImport.update({
+  id: '/logistics',
+  path: '/logistics',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OrdersRoute = OrdersRouteImport.update({
+  id: '/orders',
+  path: '/orders',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PurchasesRoute = PurchasesRouteImport.update({
+  id: '/purchases',
+  path: '/purchases',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TasksRoute = TasksRouteImport.update({
+  id: '/tasks',
+  path: '/tasks',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/accounts': typeof AccountsRoute
+  '/administration': typeof AdministrationRoute
+  '/analytics': typeof AnalyticsRoute
+  '/customers': typeof CustomersRoute
+  '/field-visits': typeof FieldVisitsRoute
+  '/inventory': typeof InventoryRoute
+  '/leads': typeof LeadsRoute
+  '/logistics': typeof LogisticsRoute
+  '/orders': typeof OrdersRoute
+  '/purchases': typeof PurchasesRoute
+  '/tasks': typeof TasksRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/accounts': typeof AccountsRoute
+  '/administration': typeof AdministrationRoute
+  '/analytics': typeof AnalyticsRoute
+  '/customers': typeof CustomersRoute
+  '/field-visits': typeof FieldVisitsRoute
+  '/inventory': typeof InventoryRoute
+  '/leads': typeof LeadsRoute
+  '/logistics': typeof LogisticsRoute
+  '/orders': typeof OrdersRoute
+  '/purchases': typeof PurchasesRoute
+  '/tasks': typeof TasksRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/accounts': typeof AccountsRoute
+  '/administration': typeof AdministrationRoute
+  '/analytics': typeof AnalyticsRoute
+  '/customers': typeof CustomersRoute
+  '/field-visits': typeof FieldVisitsRoute
+  '/inventory': typeof InventoryRoute
+  '/leads': typeof LeadsRoute
+  '/logistics': typeof LogisticsRoute
+  '/orders': typeof OrdersRoute
+  '/purchases': typeof PurchasesRoute
+  '/tasks': typeof TasksRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/accounts'
+    | '/administration'
+    | '/analytics'
+    | '/customers'
+    | '/field-visits'
+    | '/inventory'
+    | '/leads'
+    | '/logistics'
+    | '/orders'
+    | '/purchases'
+    | '/tasks'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to:
+    | '/'
+    | '/accounts'
+    | '/administration'
+    | '/analytics'
+    | '/customers'
+    | '/field-visits'
+    | '/inventory'
+    | '/leads'
+    | '/logistics'
+    | '/orders'
+    | '/purchases'
+    | '/tasks'
+  id:
+    | '__root__'
+    | '/'
+    | '/accounts'
+    | '/administration'
+    | '/analytics'
+    | '/customers'
+    | '/field-visits'
+    | '/inventory'
+    | '/leads'
+    | '/logistics'
+    | '/orders'
+    | '/purchases'
+    | '/tasks'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AccountsRoute: typeof AccountsRoute
+  AdministrationRoute: typeof AdministrationRoute
+  AnalyticsRoute: typeof AnalyticsRoute
+  CustomersRoute: typeof CustomersRoute
+  FieldVisitsRoute: typeof FieldVisitsRoute
+  InventoryRoute: typeof InventoryRoute
+  LeadsRoute: typeof LeadsRoute
+  LogisticsRoute: typeof LogisticsRoute
+  OrdersRoute: typeof OrdersRoute
+  PurchasesRoute: typeof PurchasesRoute
+  TasksRoute: typeof TasksRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -48,11 +195,99 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/accounts': {
+      id: '/accounts'
+      path: '/accounts'
+      fullPath: '/accounts'
+      preLoaderRoute: typeof AccountsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/administration': {
+      id: '/administration'
+      path: '/administration'
+      fullPath: '/administration'
+      preLoaderRoute: typeof AdministrationRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/analytics': {
+      id: '/analytics'
+      path: '/analytics'
+      fullPath: '/analytics'
+      preLoaderRoute: typeof AnalyticsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/customers': {
+      id: '/customers'
+      path: '/customers'
+      fullPath: '/customers'
+      preLoaderRoute: typeof CustomersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/field-visits': {
+      id: '/field-visits'
+      path: '/field-visits'
+      fullPath: '/field-visits'
+      preLoaderRoute: typeof FieldVisitsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/inventory': {
+      id: '/inventory'
+      path: '/inventory'
+      fullPath: '/inventory'
+      preLoaderRoute: typeof InventoryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/leads': {
+      id: '/leads'
+      path: '/leads'
+      fullPath: '/leads'
+      preLoaderRoute: typeof LeadsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/logistics': {
+      id: '/logistics'
+      path: '/logistics'
+      fullPath: '/logistics'
+      preLoaderRoute: typeof LogisticsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/orders': {
+      id: '/orders'
+      path: '/orders'
+      fullPath: '/orders'
+      preLoaderRoute: typeof OrdersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/purchases': {
+      id: '/purchases'
+      path: '/purchases'
+      fullPath: '/purchases'
+      preLoaderRoute: typeof PurchasesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/tasks': {
+      id: '/tasks'
+      path: '/tasks'
+      fullPath: '/tasks'
+      preLoaderRoute: typeof TasksRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AccountsRoute: AccountsRoute,
+  AdministrationRoute: AdministrationRoute,
+  AnalyticsRoute: AnalyticsRoute,
+  CustomersRoute: CustomersRoute,
+  FieldVisitsRoute: FieldVisitsRoute,
+  InventoryRoute: InventoryRoute,
+  LeadsRoute: LeadsRoute,
+  LogisticsRoute: LogisticsRoute,
+  OrdersRoute: OrdersRoute,
+  PurchasesRoute: PurchasesRoute,
+  TasksRoute: TasksRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
