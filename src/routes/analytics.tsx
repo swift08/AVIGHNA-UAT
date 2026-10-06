@@ -1,0 +1,3 @@
+import {createFileRoute} from '@tanstack/react-router';
+import {ModuleWorkspace} from '@/components/module-workspace';
+export const Route=createFileRoute('/analytics')({head:()=>({meta:[{title:'Analytics — Avighna One'},{name:'description',content:'Manage analytics across your four company workspaces with Avighna One.'},{property:'og:title',content:'Analytics — Avighna One'},{property:'og:description',content:'A connected view of analytics across your organization.'},{property:'og:type',content:'website'},{name:'twitter:card',content:'summary_large_image'}]}),component:()=> <ModuleWorkspace module="analytics"/>});
