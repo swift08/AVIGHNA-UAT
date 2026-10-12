@@ -20,7 +20,11 @@ export default defineConfig(async ({ command }) => {
 
   if (command === "build") {
     const { nitro } = await import("nitro/vite");
-    plugins.push(nitro());
+    plugins.push(
+      nitro({
+        preset: process.env.VERCEL ? "vercel" : undefined,
+      }),
+    );
   }
 
   return {
@@ -41,7 +45,7 @@ export default defineConfig(async ({ command }) => {
       host: "::",
       port: 8080,
       watch: {
-        ignored: ["**/.git/**", "**/node_modules/**", "**/.output/**"],
+        ignored: ["**/.git/**", "**/node_modules/**", "**/.output/**", "**/.vercel/**"],
       },
     },
     plugins,

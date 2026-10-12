@@ -11,12 +11,14 @@ node_modules
 dist
 dist-ssr
 .output
+.vercel
 .vinxi
 .tanstack/**
 .nitro
 *.local
-.env
-.env.*
+# Env files (included for Vercel deployment)
+!.env
+!.env.production
 !.env.example
 
 # Wrangler / Cloudflare
