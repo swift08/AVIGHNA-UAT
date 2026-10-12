@@ -1,3 +1,21 @@
-import {createFileRoute} from '@tanstack/react-router';
-import {ModuleWorkspace} from '@/components/module-workspace';
-export const Route=createFileRoute('/inventory')({head:()=>({meta:[{title:'Inventory — Avighna One'},{name:'description',content:'Manage inventory across your four company workspaces with Avighna One.'},{property:'og:title',content:'Inventory — Avighna One'},{property:'og:description',content:'A connected view of inventory across your organization.'},{property:'og:type',content:'website'},{name:'twitter:card',content:'summary_large_image'}]}),component:()=> <ModuleWorkspace module="inventory"/>});
+import { createFileRoute } from "@tanstack/react-router";
+import { ModuleWorkspace } from "@/components/module-workspace";
+export const Route = createFileRoute("/inventory")({
+  head: () => ({
+    meta: [
+      { title: "Inventory — Avighna One" },
+      {
+        name: "description",
+        content: "Manage inventory across your four company workspaces with Avighna One.",
+      },
+      { property: "og:title", content: "Inventory — Avighna One" },
+      {
+        property: "og:description",
+        content: "A connected view of inventory across your organization.",
+      },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary_large_image" },
+    ],
+  }),
+  component: () => <ModuleWorkspace module="inventory" />,
+});

@@ -11,7 +11,8 @@ const buttonVariants = cva(
       variant: {
         default: "bg-primary text-primary-foreground shadow-xs hover:bg-primary/90",
         workspace: "nav-item hover:bg-secondary",
-        inverse: "bg-ink-foreground/10 text-ink-foreground hover:bg-ink-foreground/20 border border-ink-foreground/15",
+        inverse:
+          "bg-ink-foreground/10 text-ink-foreground hover:bg-ink-foreground/20 border border-ink-foreground/15",
         destructive: "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90",
         outline:
           "border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground",

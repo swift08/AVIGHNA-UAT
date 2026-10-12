@@ -1,3 +1,21 @@
-import {createFileRoute} from '@tanstack/react-router';
-import {ModuleWorkspace} from '@/components/module-workspace';
-export const Route=createFileRoute('/purchases')({head:()=>({meta:[{title:'Purchases — Avighna One'},{name:'description',content:'Manage purchases across your four company workspaces with Avighna One.'},{property:'og:title',content:'Purchases — Avighna One'},{property:'og:description',content:'A connected view of purchases across your organization.'},{property:'og:type',content:'website'},{name:'twitter:card',content:'summary_large_image'}]}),component:()=> <ModuleWorkspace module="purchases"/>});
+import { createFileRoute } from "@tanstack/react-router";
+import { ModuleWorkspace } from "@/components/module-workspace";
+export const Route = createFileRoute("/purchases")({
+  head: () => ({
+    meta: [
+      { title: "Purchases — Avighna One" },
+      {
+        name: "description",
+        content: "Manage purchases across your four company workspaces with Avighna One.",
+      },
+      { property: "og:title", content: "Purchases — Avighna One" },
+      {
+        property: "og:description",
+        content: "A connected view of purchases across your organization.",
+      },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary_large_image" },
+    ],
+  }),
+  component: () => <ModuleWorkspace module="purchases" />,
+});

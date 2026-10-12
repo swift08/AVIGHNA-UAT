@@ -1,26 +1,37 @@
-# ChromaShift UI
+# ChromaShift UI — Avighna One
 
-ui should be tooooooo good and unique ADD LIGHT AND DARK MODE AS WELL 
+A unified multi-company enterprise workspace interface built with TanStack Start, React 19, Tailwind CSS v4, and Vite.
 
-ui should be tooooooo good and unique ADD LIGHT AND DARK MODE AS WELL when WE SWITCH THE COMPANIES the thme should change ACCORDING TO THE LOGO
+## Features
 
-This project was built with [Lovable](https://lovable.dev).
-
-## Build with Lovable
-
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/1863b895-2639-495a-a559-57928d2537a7).
-
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
+- **Multi-Company Context & Dynamic Theming**: Instant theme and accent adaptation tailored to each company's brand palette (Asian Apex, Avighna Specialty, Ganesh Inc, Atharva Associates).
+- **Appearance Modes**: Full Light, Dark, and System appearance modes with semantic OKLCH tokens.
+- **Enterprise Modules**:
+  - Unified Dashboard & Overview with revenue contribution metrics
+  - Orders & Dispatch tracking
+  - Live Inventory status with stock thresholds
+  - Leads pipeline
+  - Logistics & Fleet activity
+  - Field visits scheduling
+  - Purchases & Procurement
+  - Accounts & Analytics with Recharts
+  - Team & Administration
 
 ## Development
 
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+Prerequisites: Node.js (>= 20) and npm.
 
 ```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
+npm install
 npm run dev
 ```
+
+The application will be running at `http://localhost:8080`.
+
+### Scripts
+
+- `npm run dev`: Start local development server
+- `npm run build`: Build production server and client bundle
+- `npm run preview`: Preview built production bundle
+- `npm run test`: Run Vitest test suite
+- `npm run lint`: Run ESLint checks

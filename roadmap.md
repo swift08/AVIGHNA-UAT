@@ -1,4 +1,5 @@
 # Workspace UI
+
 - [x] Import four supplied company logos.
 - [x] Define logo-derived brand themes and Light/Dark/System preferences.
 - [ ] Build distinctive command-center dashboard and shared navigation.
