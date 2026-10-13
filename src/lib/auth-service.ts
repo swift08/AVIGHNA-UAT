@@ -94,7 +94,6 @@ export const ACCESS_FEATURES: AccessFeature[] = [
       "logistics.dispatch",
       "logistics.deliver",
       "orders.view",
-      "invoices.view",
       "tasks.view",
       "customers.view",
     ],
@@ -224,7 +223,6 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "tasks.view",
     "tasks.manage",
     "inventory.view",
-    "analytics.view",
   ],
   supervisor: [
     "orders.view",
@@ -261,10 +259,8 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "logistics.dispatch",
     "logistics.deliver",
     "orders.view",
-    "invoices.view",
     "tasks.view",
     "customers.view",
-    "analytics.view",
   ],
   custom: [],
 };

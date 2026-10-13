@@ -49,7 +49,7 @@ import {
   Scale,
   AlertTriangle,
 } from "lucide-react";
-import { useNavigate, useRouterState } from "@tanstack/react-router";
+import { Navigate, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -1947,6 +1947,10 @@ export function ModuleWorkspace({ module }: { module: string }) {
       : !requiredModulePerm || hasPermission(requiredModulePerm);
 
   if (!isModuleAllowed) {
+    // Field roles land here after a role switch or a stale link — send them home.
+    if (currentUser?.role === "sales" || currentUser?.role === "logistics") {
+      return <Navigate to="/" />;
+    }
     return (
       <main className="content">
         <p className="eyebrow mb-2">

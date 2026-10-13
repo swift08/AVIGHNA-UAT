@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   ArrowUpRight,
   Bell,
@@ -181,6 +181,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   } = useWorkspace();
 
   const selected = companies.find((c) => c.id === company);
+  const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -245,7 +246,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    const mobileOnly = currentUser?.role === "logistics";
+    const mobileOnly = currentUser?.role === "logistics" || currentUser?.role === "sales";
     document.documentElement.classList.toggle("driver-mobile", mobileOnly);
     return () => document.documentElement.classList.remove("driver-mobile");
   }, [currentUser?.role]);
@@ -290,7 +291,9 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     <div
       className={`workspace ${collapsed ? "collapsed" : ""} ${
         currentUser.role === "sales" || currentUser.role === "logistics" ? "field-role" : ""
-      } ${currentUser.role === "logistics" ? "driver-mobile" : ""}`}
+      } ${
+        currentUser.role === "logistics" || currentUser.role === "sales" ? "driver-mobile" : ""
+      }`}
     >
       {/* --------------------------------------------------------------- */}
       {/* SIDEBAR                                                         */}
@@ -577,13 +580,13 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
               <span>Logistics</span>
             </Link>
           )}
-          {currentUser.role === "logistics" && hasPermission("invoices.view") && (
+          {currentUser.role === "sales" && hasPermission("customers.view") && (
             <Link
-              to="/accounts"
-              className={`mobile-bottom-nav-item ${path === "/accounts" || path === "/invoices" ? "active" : ""}`}
+              to="/customers"
+              className={`mobile-bottom-nav-item ${path === "/customers" ? "active" : ""}`}
             >
-              <CreditCard className="size-4" />
-              <span>Invoices</span>
+              <Building2 className="size-4" />
+              <span>Customers</span>
             </Link>
           )}
         </nav>
@@ -1138,7 +1141,10 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                           <button
                             key={u.id}
                             type="button"
-                            onClick={() => loginAsRole(u.role)}
+                            onClick={() => {
+                              loginAsRole(u.role);
+                              void navigate({ to: "/" });
+                            }}
                             className={`flex items-center justify-between p-3 rounded-lg border text-left transition-all ${
                               isActive
                                 ? "border-primary bg-primary/10 shadow-sm"

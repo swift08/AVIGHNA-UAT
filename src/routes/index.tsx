@@ -108,14 +108,27 @@ function Overview() {
   ).length;
   const lowStockCount = dbProducts.filter((p) => p.on_hand - p.reserved < p.reorder_level).length;
 
+  const hideRevenue =
+    currentUser?.role === "sales" ||
+    currentUser?.role === "logistics" ||
+    (!hasPermission("analytics.view") &&
+      !hasPermission("invoices.generate") &&
+      currentUser?.role !== "super_admin" &&
+      currentUser?.role !== "supervisor" &&
+      currentUser?.role !== "accounts");
+
   const kpis = [
-    {
-      name: "Total revenue",
-      value: money(totalRevenue),
-      growth: totalRevenue > 0 ? "+100%" : "₹0",
-      note: "Collected revenue",
-      icon: Wallet,
-    },
+    ...(!hideRevenue
+      ? [
+          {
+            name: "Total revenue",
+            value: money(totalRevenue),
+            growth: totalRevenue > 0 ? "+100%" : "₹0",
+            note: "Collected revenue",
+            icon: Wallet,
+          },
+        ]
+      : []),
     {
       name: "Active orders",
       value: String(activeOrdersCount),
@@ -130,13 +143,17 @@ function Overview() {
       note: "Awaiting dispatch",
       icon: Truck,
     },
-    {
-      name: "Outstanding",
-      value: money(outstandingAmount),
-      growth: `${dbInvoices.filter((i) => i.status !== "Paid").length} invoices`,
-      note: "Awaiting collection",
-      icon: ArrowDownLeft,
-    },
+    ...(!hideRevenue
+      ? [
+          {
+            name: "Outstanding",
+            value: money(outstandingAmount),
+            growth: `${dbInvoices.filter((i) => i.status !== "Paid").length} invoices`,
+            note: "Awaiting collection",
+            icon: ArrowDownLeft,
+          },
+        ]
+      : []),
   ];
   return (
     <main className="content">
@@ -191,8 +208,10 @@ function Overview() {
         <Link to="/" className="selected">
           Executive overview
         </Link>
-        <Link to="/analytics">Revenue intelligence</Link>
-        <Link to="/logistics">Operations</Link>
+        {hasPermission("analytics.view") && (
+          <Link to="/analytics">Revenue intelligence</Link>
+        )}
+        {hasPermission("logistics.view") && <Link to="/logistics">Operations</Link>}
       </div>
       <div className="kpi-grid">
         {kpis.map((k) => (
@@ -211,66 +230,83 @@ function Overview() {
           </div>
         ))}
       </div>
-      <div className={showAttention ? "middle-grid" : "grid grid-cols-1"}>
-        <section className="panel">
-          <div className="panel-head">
-            <div>
-              <h2 className="panel-title">Revenue performance</h2>
-              <p className="mt-1 text-xs text-muted-foreground">
-                Live financial transactions from database
-              </p>
+      <div
+        className={
+          hideRevenue
+            ? "grid grid-cols-1"
+            : showAttention
+              ? "middle-grid"
+              : "grid grid-cols-1"
+        }
+      >
+        {!hideRevenue && (
+          <section className="panel">
+            <div className="panel-head">
+              <div>
+                <h2 className="panel-title">Revenue performance</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Live financial transactions from database
+                </p>
+              </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="text-xs">
+                    {period}
+                    <ChevronDown className="size-3" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent>
+                  <DropdownMenuItem onSelect={() => setPeriod("This year")}>
+                    This year
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => setPeriod("This month")}>
+                    This month
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="outline" size="sm" className="text-xs">
-                  {period}
-                  <ChevronDown className="size-3" />
+            <div className="flex flex-wrap items-center justify-between gap-3 px-[23px] pb-2">
+              <div className="flex items-center gap-3">
+                <p className="revenue-number">{money(totalRevenue)}</p>
+                <span className="status success">
+                  <ArrowUpRight className="size-3" />
+                  Live
+                </span>
+              </div>
+              <div className="flex gap-4 text-xs text-muted-foreground">
+                <span className="flex items-center gap-1.5">
+                  <span className="size-1.5 rounded-full bg-primary" />
+                  This period
+                </span>
+              </div>
+            </div>
+            <RevenueChart period={period} totalRevenue={totalRevenue} />
+            <div className="insight-strip">
+              <div className="flex items-center gap-2">
+                <span className="flex size-5 items-center justify-center rounded-full bg-accent text-primary">
+                  <ArrowUpRight size={12} />
+                </span>
+                <span>
+                  <b className="font-semibold">Financial Ledger.</b>{" "}
+                  <span className="text-muted-foreground">Synchronized with Supabase invoices.</span>
+                </span>
+              </div>
+              {hasPermission("invoices.view") && (
+                <Button
+                  asChild
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0 text-xs font-semibold"
+                >
+                  <Link to="/accounts">
+                    Explore report
+                    <ArrowRight className="size-3" />
+                  </Link>
                 </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent>
-                <DropdownMenuItem onSelect={() => setPeriod("This year")}>
-                  This year
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => setPeriod("This month")}>
-                  This month
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-          <div className="flex flex-wrap items-center justify-between gap-3 px-[23px] pb-2">
-            <div className="flex items-center gap-3">
-              <p className="revenue-number">{money(totalRevenue)}</p>
-              <span className="status success">
-                <ArrowUpRight className="size-3" />
-                Live
-              </span>
+              )}
             </div>
-            <div className="flex gap-4 text-xs text-muted-foreground">
-              <span className="flex items-center gap-1.5">
-                <span className="size-1.5 rounded-full bg-primary" />
-                This period
-              </span>
-            </div>
-          </div>
-          <RevenueChart period={period} totalRevenue={totalRevenue} />
-          <div className="insight-strip">
-            <div className="flex items-center gap-2">
-              <span className="flex size-5 items-center justify-center rounded-full bg-accent text-primary">
-                <ArrowUpRight size={12} />
-              </span>
-              <span>
-                <b className="font-semibold">Financial Ledger.</b>{" "}
-                <span className="text-muted-foreground">Synchronized with Supabase invoices.</span>
-              </span>
-            </div>
-            <Button asChild variant="link" size="sm" className="h-auto p-0 text-xs font-semibold">
-              <Link to="/accounts">
-                Explore report
-                <ArrowRight className="size-3" />
-              </Link>
-            </Button>
-          </div>
-        </section>
+          </section>
+        )}
         {showAttention && (
           <section className="attention-panel">
             <div className="flex items-center justify-between">
@@ -287,43 +323,54 @@ function Overview() {
             </h2>
             <p className="mt-2 text-xs opacity-75">Keep your business moving forward.</p>
             <div className="attention-list mt-4">
-              {[
-                {
-                  icon: FileCheck2,
-                  value: approvalsWaitingCount,
-                  title: "Approvals waiting",
-                  subtitle: "Orders & purchase requests",
-                  to: "/orders",
-                },
-                {
-                  icon: Package,
-                  value: lowStockCount,
-                  title: "Low-stock products",
-                  subtitle: "Restock before you run low",
-                  to: "/inventory",
-                },
-                {
-                  icon: Truck,
-                  value: pendingDispatchCount,
-                  title: "Dispatches ready",
-                  subtitle: "Ready for the road",
-                  to: "/logistics",
-                },
-              ].map((a) => (
-                <Link to={a.to} key={a.title} className="attention-item text-inherit no-underline">
-                  <span className="attention-icon">
-                    <a.icon size={18} />
-                  </span>
-                  <div className="flex-1">
-                    <p className="text-xs font-semibold">
-                      <span className="mr-1.5">{a.value}</span>
-                      {a.title}
-                    </p>
-                    <p className="mt-1 text-[11px] opacity-70">{a.subtitle}</p>
-                  </div>
-                  <ArrowUpRight size={14} className="opacity-70" />
-                </Link>
-              ))}
+              {(
+                [
+                  {
+                    icon: FileCheck2,
+                    value: approvalsWaitingCount,
+                    title: "Approvals waiting",
+                    subtitle: "Orders & purchase requests",
+                    to: "/orders" as const,
+                    perm: "orders.view",
+                  },
+                  {
+                    icon: Package,
+                    value: lowStockCount,
+                    title: "Low-stock products",
+                    subtitle: "Restock before you run low",
+                    to: "/inventory" as const,
+                    perm: "inventory.view",
+                  },
+                  {
+                    icon: Truck,
+                    value: pendingDispatchCount,
+                    title: "Dispatches ready",
+                    subtitle: "Ready for the road",
+                    to: "/logistics" as const,
+                    perm: "logistics.view",
+                  },
+                ] as const
+              )
+                .filter((a) => hasPermission(a.perm))
+                .map((a) => (
+                  <Link
+                    to={a.to}
+                    key={a.title}
+                    className="attention-item text-inherit no-underline"
+                  >
+                    <span className="attention-icon">
+                      <a.icon size={18} />
+                    </span>
+                    <div className="flex-1">
+                      <p className="text-xs font-semibold">
+                        <span className="mr-1.5">{a.value}</span>
+                        {a.title}
+                      </p>
+                      <p className="mt-1 text-[11px] opacity-70">{a.subtitle}</p>
+                    </div>
+                    <ArrowUpRight size={14} className="opacity-70" />
+                  </Link>
+                ))}
             </div>
             <Button
               asChild
@@ -339,7 +386,7 @@ function Overview() {
           </section>
         )}
       </div>
-      {showCompanies && (
+      {showCompanies && !hideRevenue && (
         <section className="panel mt-[22px]">
           <div className="panel-head !pb-3 !pt-4">
             <h2 className="panel-title !text-sm">

@@ -1486,7 +1486,7 @@
   }
 }
 
-/* Logistics drivers stay on the phone layout at every screen size. */
+/* Sales and logistics stay on the phone layout at every screen size. */
 html.driver-mobile body {
   background: color-mix(in oklch, var(--foreground) 7%, var(--background));
 }
