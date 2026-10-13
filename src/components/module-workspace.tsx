@@ -1935,18 +1935,16 @@ export function ModuleWorkspace({ module }: { module: string }) {
     purchases: "purchases.view",
     logistics: "logistics.view",
     accounts: "invoices.view",
-    credit: "super_admin_only",
-    analytics: "orders.view",
+    credit: "credit.view",
+    analytics: "analytics.view",
     administration: "admin.manage",
   };
 
   const requiredModulePerm = modulePermissions[module];
   const isModuleAllowed =
-    module === "credit"
-      ? isSuperAdmin
-      : module === "administration"
-        ? isSuperAdmin || isSupervisor
-        : !requiredModulePerm || hasPermission(requiredModulePerm);
+    module === "administration"
+      ? isSuperAdmin || isSupervisor || hasPermission("admin.manage")
+      : !requiredModulePerm || hasPermission(requiredModulePerm);
 
   if (!isModuleAllowed) {
     return (
@@ -1962,19 +1960,10 @@ export function ModuleWorkspace({ module }: { module: string }) {
             <Lock className="size-6" />
           </div>
           <div>
-            <h2 className="text-base font-bold text-foreground">
-              {module === "credit" ? "Super Admin Access Required" : "Access Restricted"}
-            </h2>
+            <h2 className="text-base font-bold text-foreground">Access Restricted</h2>
             <p className="text-xs text-muted-foreground mt-1.5">
-              {module === "credit" ? (
-                "Credit control, credit limits, and credit/debit notes are restricted strictly to Super Admin."
-              ) : (
-                <>
-                  Your active role (<strong>{currentUser?.roleName}</strong>) does not have the{" "}
-                  <code className="font-mono text-primary">{requiredModulePerm}</code> permission
-                  required to view this module.
-                </>
-              )}
+              <strong>{currentUser?.roleName || "This login"}</strong> does not include this
+              feature.
             </p>
           </div>
           <div className="flex flex-wrap justify-center gap-3 pt-2">
@@ -4238,8 +4227,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
         ) : (
         <>
           <p className="text-xs text-muted-foreground mb-4">
-            Owner adds companies, role-based users (incl. logistics drivers), and fleet trucks.
-            Sales/Supervisor allot vehicle then driver on Order desk.
+            Owner adds companies, login IDs with the features each person needs, and fleet trucks.
+            Sales and supervisors allot a vehicle, then a driver, on the Order desk.
           </p>
 
           <div className="kpi-grid mb-6">
@@ -4422,36 +4411,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
           ) : tab === "Users" ? (
             <TeamLogins />
           ) : tab === "Roles" ? (
-            <div className="module-grid">
-              {[
-                {
-                  role: "Owner",
-                  desc: "Full administrative governance, company and tenant controls.",
-                },
-                {
-                  role: "Sales",
-                  desc: "Create orders, manage leads, customers, and log field visits.",
-                },
-                {
-                  role: "Accounts",
-                  desc: "Approve credit, view invoices, and reconcile payment entries.",
-                },
-                {
-                  role: "Logistics",
-                  desc: "Assign fleet trucks, manage GPS dispatches, and capture proof slips.",
-                },
-                {
-                  role: "Supervisor",
-                  desc: "Stock approvals, inventory threshold audits, and purchase receipts.",
-                },
-              ].map((r) => (
-                <div className="module-item" key={r.role}>
-                  <h4 className="text-sm font-bold text-foreground">{r.role}</h4>
-                  <p className="mt-2 text-xs text-muted-foreground">{r.desc}</p>
-                  <span className="status success mt-4 inline-block">Configured</span>
-                </div>
-              ))}
-            </div>
+            <TeamLogins />
           ) : (
             <div className="p-6 rounded-xl border border-border bg-card">
               <h4 className="text-sm font-bold mb-2">Audit Trail</h4>
@@ -4473,7 +4433,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </div>
           )}
           <p className="mt-6 text-xs text-muted-foreground">
-            Role-based access & granular permissions managed via Supabase PostgreSQL RLS.
+            Each login ID opens only the features you tick when you create it.
           </p>
         </>
         )
@@ -5160,7 +5120,13 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
                 {/* VIEW 1: TRIPS (Driver View or Order Desk Trips View) */}
                 {(isDriver || logisticsActiveTab === "trips") && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                  <div
+                    className={
+                      isDriver
+                        ? "grid grid-cols-1 gap-4"
+                        : "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"
+                    }
+                  >
                     {driverTrips.map((delivery) => {
                       const order = dbOrders.find((o) => o.id === delivery.order_id);
                       const matchingCustomer = dbCustomers.find(

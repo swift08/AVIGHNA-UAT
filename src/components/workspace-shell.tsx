@@ -101,8 +101,8 @@ export const navigation = [
     section: "Finance & control",
     items: [
       { name: "Invoices", url: "/accounts", icon: CreditCard, perm: "invoices.view" },
-      { name: "Credit control", url: "/credit", icon: Scale, superAdminOnly: true },
-      { name: "Analytics", url: "/analytics", icon: ArrowUpRight, perm: "orders.view" },
+      { name: "Credit control", url: "/credit", icon: Scale, perm: "credit.view" },
+      { name: "Analytics", url: "/analytics", icon: ArrowUpRight, perm: "analytics.view" },
       { name: "Administration", url: "/administration", icon: Settings2, perm: "admin.manage" },
       { name: "Team logins", url: "/administration", icon: Users, supervisorOnly: true },
     ],
@@ -244,6 +244,12 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
+  useEffect(() => {
+    const mobileOnly = currentUser?.role === "logistics";
+    document.documentElement.classList.toggle("driver-mobile", mobileOnly);
+    return () => document.documentElement.classList.remove("driver-mobile");
+  }, [currentUser?.role]);
+
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setPassError("");
@@ -284,7 +290,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     <div
       className={`workspace ${collapsed ? "collapsed" : ""} ${
         currentUser.role === "sales" || currentUser.role === "logistics" ? "field-role" : ""
-      }`}
+      } ${currentUser.role === "logistics" ? "driver-mobile" : ""}`}
     >
       {/* --------------------------------------------------------------- */}
       {/* SIDEBAR                                                         */}

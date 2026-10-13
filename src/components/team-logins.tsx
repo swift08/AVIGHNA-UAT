@@ -1,7 +1,13 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { companies } from "@/lib/workspace-data";
-import { ROLE_NAMES, rolesCreatorCanAssign, type RoleType } from "@/lib/auth-service";
+import {
+  ACCESS_FEATURES,
+  featureLabel,
+  featuresCreatorCanAssign,
+  ROLE_NAMES,
+  type RoleType,
+} from "@/lib/auth-service";
 import {
   canManageStaff,
   createStaffLogin,
@@ -41,7 +47,7 @@ function StaffCard({
   onError: (message: string) => void;
   onNotice: (message: string) => void;
 }) {
-  const [role, setRole] = useState<RoleType>((user.role as RoleType) || "logistics");
+  const [features, setFeatures] = useState<string[]>(user.features || []);
   const [status, setStatus] = useState<StaffStatus>(user.status || "Active");
   const [password, setPassword] = useState("");
   const [files, setFiles] = useState<string[]>([]);
@@ -49,8 +55,8 @@ function StaffCard({
 
   useEffect(() => {
     setStatus(user.status || "Active");
-    setRole((user.role as RoleType) || "logistics");
-  }, [user.status, user.role]);
+    setFeatures(user.features || []);
+  }, [user.status, user.features]);
 
   useEffect(() => {
     if (!owner) return;
@@ -121,7 +127,9 @@ function StaffCard({
       </div>
       <p className="text-xs text-muted-foreground break-all">{user.email}</p>
       <p className="text-[11px] font-medium text-foreground/80">
-        {ROLE_NAMES[user.role as RoleType] || user.role}
+        {user.features?.length
+          ? featureLabel(user.features)
+          : ROLE_NAMES[user.role as RoleType] || user.role}
         {user.phone ? ` · ${user.phone}` : ""}
       </p>
 
@@ -131,36 +139,46 @@ function StaffCard({
             Manage access
           </summary>
           <div className="mt-3 grid gap-2">
-            <label className="drawer-field !gap-1">
-              Role
-              <select
-                value={role}
-                onChange={(e) => setRole(e.target.value as RoleType)}
-                aria-label={`Role for ${user.name}`}
-              >
-                {(Object.keys(ROLE_NAMES) as RoleType[]).map((item) => (
-                  <option key={item} value={item}>
-                    {ROLE_NAMES[item]}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <fieldset className="grid gap-2">
+              <legend className="text-xs font-semibold">Features</legend>
+              {ACCESS_FEATURES.map((feature) => (
+                <label key={feature.id} className="flex items-start gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={features.includes(feature.id)}
+                    aria-label={`${feature.name} for ${user.name}`}
+                    onChange={(e) =>
+                      setFeatures((current) =>
+                        e.target.checked
+                          ? [...current, feature.id]
+                          : current.filter((id) => id !== feature.id),
+                      )
+                    }
+                  />
+                  <span>
+                    <span className="font-semibold">{feature.name}</span>
+                    <span className="block text-muted-foreground">{feature.description}</span>
+                  </span>
+                </label>
+              ))}
+            </fieldset>
             <Button
               type="button"
               size="sm"
-              disabled={busy || role === user.role}
+              disabled={busy || features.length === 0}
               className="staff-action-btn h-8 w-full text-xs font-semibold"
               onClick={() =>
                 void run(
                   () =>
                     updateStaffLogin({
-                      data: { actorRole: "super_admin", userId: user.id, role },
+                      data: { actorRole: "super_admin", userId: user.id, features },
                     }),
-                  `${user.name} is now ${ROLE_NAMES[role]}.`,
+                  `${user.name} can use ${featureLabel(features)}.`,
                 ).then((ok) => ok && onChanged())
               }
             >
-              Save role
+              Save features
             </Button>
 
             <label className="drawer-field !gap-1">
@@ -271,13 +289,13 @@ function StaffCard({
 
 export function TeamLogins() {
   const { currentUser } = useWorkspace();
-  const allowed = rolesCreatorCanAssign(currentUser?.role);
+  const allowed = featuresCreatorCanAssign(currentUser?.role);
   const [users, setUsers] = useState<StaffLogin[]>([]);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [phone, setPhone] = useState("");
-  const [role, setRole] = useState<RoleType>(allowed[0] || "logistics");
+  const [features, setFeatures] = useState<string[]>([]);
   const [companyId, setCompanyId] = useState("all");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -301,7 +319,7 @@ export function TeamLogins() {
   if (allowed.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
-        Only the owner and the supervisor can create logins.
+        Only the owner and the supervisor can create login IDs.
       </p>
     );
   }
@@ -320,7 +338,7 @@ export function TeamLogins() {
           email,
           password,
           phone,
-          role,
+          features,
           companyId,
         },
       });
@@ -332,6 +350,7 @@ export function TeamLogins() {
         setEmail("");
         setPassword("");
         setPhone("");
+        setFeatures([]);
         load();
       }
     } catch (err: unknown) {
@@ -346,9 +365,7 @@ export function TeamLogins() {
       <div>
         <h3 className="text-sm font-bold">Team logins</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          {currentUser?.role === "supervisor"
-            ? "You can create Sales and Logistics logins. Each driver sees only the orders, trips, and revenue assigned to their name."
-            : "Create a login for any role. A logistics login sees only work assigned to that person."}
+          Create a login ID and tick every feature that person should use. A logistics-only ID still sees only the trips assigned to that name.
         </p>
       </div>
 
@@ -391,16 +408,32 @@ export function TeamLogins() {
             placeholder="+91 98450 33445"
           />
         </label>
-        <label className="drawer-field">
-          Role
-          <select value={role} onChange={(e) => setRole(e.target.value as RoleType)}>
-            {allowed.map((item) => (
-              <option key={item} value={item}>
-                {ROLE_NAMES[item]}
-              </option>
-            ))}
-          </select>
-        </label>
+        <fieldset className="sm:col-span-2 grid gap-2 sm:grid-cols-2">
+          <legend className="text-xs font-semibold mb-1">Features</legend>
+          {ACCESS_FEATURES.filter((feature) => allowed.includes(feature.id)).map((feature) => (
+            <label
+              key={feature.id}
+              className="flex items-start gap-2 rounded-lg border border-border bg-card p-2.5 text-xs"
+            >
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={features.includes(feature.id)}
+                onChange={(e) =>
+                  setFeatures((current) =>
+                    e.target.checked
+                      ? [...current, feature.id]
+                      : current.filter((id) => id !== feature.id),
+                  )
+                }
+              />
+              <span>
+                <span className="font-semibold text-foreground">{feature.name}</span>
+                <span className="block text-muted-foreground">{feature.description}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
         <label className="drawer-field">
           Company
           <select value={companyId} onChange={(e) => setCompanyId(e.target.value)}>
@@ -413,8 +446,12 @@ export function TeamLogins() {
           </select>
         </label>
         <div className="sm:col-span-2">
-          <Button type="submit" disabled={saving} className="h-9 text-xs font-semibold">
-            {saving ? "Creating..." : "Create login"}
+          <Button
+            type="submit"
+            disabled={saving || features.length === 0}
+            className="h-9 text-xs font-semibold"
+          >
+            {saving ? "Creating..." : "Create login ID"}
           </Button>
         </div>
       </form>

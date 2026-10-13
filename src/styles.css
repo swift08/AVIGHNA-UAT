@@ -1486,6 +1486,165 @@
   }
 }
 
+/* Logistics drivers stay on the phone layout at every screen size. */
+html.driver-mobile body {
+  background: color-mix(in oklch, var(--foreground) 7%, var(--background));
+}
+html.driver-mobile .workspace.driver-mobile {
+  width: min(430px, 100%);
+  margin-inline: auto;
+  min-height: 100vh;
+  background: var(--background);
+  box-shadow: 0 0 0 1px var(--border);
+}
+html.driver-mobile .sidebar {
+  display: none !important;
+}
+html.driver-mobile .main-shell {
+  margin-left: 0 !important;
+  padding-bottom: 80px !important;
+}
+html.driver-mobile .mobile-nav-trigger {
+  display: flex !important;
+}
+html.driver-mobile .mobile-hide,
+html.driver-mobile .desktop-only,
+html.driver-mobile .topbar-search span,
+html.driver-mobile .topbar-search kbd {
+  display: none !important;
+}
+html.driver-mobile .mobile-bottom-nav {
+  display: flex !important;
+  position: fixed;
+  bottom: 0;
+  left: 50%;
+  right: auto;
+  width: min(430px, 100%);
+  transform: translateX(-50%);
+  height: 64px;
+  background: color-mix(in srgb, var(--card) 95%, transparent);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-top: 1px solid var(--border);
+  z-index: 40;
+  align-items: center;
+  justify-content: space-around;
+  padding-inline: 4px;
+  padding-bottom: env(safe-area-inset-bottom, 6px);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.04);
+}
+html.driver-mobile .content {
+  overflow-x: clip;
+  padding: 16px 14px 20px;
+  max-width: none;
+}
+html.driver-mobile .topbar {
+  height: 56px;
+  padding-inline: 10px;
+  overflow: hidden;
+  gap: 4px;
+}
+html.driver-mobile .topbar-search {
+  min-width: 0;
+  width: auto;
+  padding-inline: 8px;
+  overflow: hidden;
+}
+html.driver-mobile .page-heading {
+  font-size: 24px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+html.driver-mobile .heading-row {
+  flex-direction: column;
+  align-items: stretch !important;
+  gap: 12px;
+}
+html.driver-mobile .heading-actions {
+  width: 100%;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+html.driver-mobile .section-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+  margin: 14px 0 16px;
+  overflow: hidden;
+}
+html.driver-mobile .section-tabs a {
+  min-width: 0;
+  height: auto;
+  min-height: 36px;
+  padding: 6px 4px;
+  font-size: 11px;
+  line-height: 1.15;
+  text-align: center;
+  white-space: normal;
+}
+html.driver-mobile .panel-head {
+  flex-wrap: wrap;
+  align-items: flex-start;
+  padding: 14px;
+}
+html.driver-mobile .kpi-grid,
+html.driver-mobile .leads-kpi-grid {
+  grid-template-columns: 1fr 1fr;
+  margin-top: 16px;
+}
+html.driver-mobile .kpi {
+  padding: 14px 12px;
+  min-height: 0;
+}
+html.driver-mobile .kpi:nth-child(3) {
+  border-left: 0;
+  border-top: 1px solid var(--border);
+}
+html.driver-mobile .kpi:nth-child(4) {
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+}
+html.driver-mobile .kpi-value {
+  font-size: 22px;
+}
+html.driver-mobile .middle-grid,
+html.driver-mobile .bottom-grid,
+html.driver-mobile .content .grid {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+html.driver-mobile .chart-wrap {
+  height: 180px;
+  padding-right: 4px;
+}
+html.driver-mobile .content .grid > *,
+html.driver-mobile .logistics-card,
+html.driver-mobile .panel,
+html.driver-mobile .kpi {
+  min-width: 0;
+}
+html.driver-mobile .content input,
+html.driver-mobile .content select,
+html.driver-mobile .content textarea {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+html.driver-mobile .content [class*="min-w-"] {
+  min-width: 0 !important;
+  max-width: 100%;
+}
+html.driver-mobile .mobile-nav-sheet {
+  width: min(430px, 100vw) !important;
+  max-width: min(430px, 100vw) !important;
+  left: max(0px, calc(50vw - 215px)) !important;
+}
+html.driver-mobile [role="dialog"].right-0 {
+  width: min(430px, 100vw) !important;
+  max-width: min(430px, 100vw) !important;
+  right: max(0px, calc(50vw - 215px)) !important;
+  left: auto !important;
+}
+
 /* ------------------------------------------------------------- */
 /* LEADS PIPELINE REDESIGN STYLING                               */
 /* ------------------------------------------------------------- */

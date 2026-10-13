@@ -1,6 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
 import { createClient } from "@supabase/supabase-js";
-import { rolesCreatorCanAssign, type RoleType } from "./auth-service";
+import {
+  featuresCreatorCanAssign,
+  parseFeatureIds,
+  roleForFeatures,
+  type RoleType,
+} from "./auth-service";
 
 function adminClient() {
   const url = process.env["SUPABASE_URL"] || process.env["VITE_SUPABASE_URL"];
@@ -24,13 +29,15 @@ export const createStaffLogin = createServerFn({ method: "POST" })
       email: string;
       password: string;
       phone?: string;
-      role: RoleType;
+      features: string[];
       companyId?: string;
     }) => input,
   )
   .handler(async ({ data }) => {
-    if (!rolesCreatorCanAssign(data.creatorRole).includes(data.role)) {
-      return { ok: false as const, error: "You cannot create that role." };
+    const allowed = new Set(featuresCreatorCanAssign(data.creatorRole));
+    const features = parseFeatureIds(data.features);
+    if (!features.length || features.some((feature) => !allowed.has(feature))) {
+      return { ok: false as const, error: "Choose one or more features you are allowed to grant." };
     }
     const name = data.name.trim();
     const email = data.email.trim().toLowerCase();
@@ -41,6 +48,7 @@ export const createStaffLogin = createServerFn({ method: "POST" })
       };
     }
 
+    const role = roleForFeatures(features);
     const admin = adminClient();
     const { data: created, error } = await admin.auth.admin.createUser({
       email,
@@ -48,7 +56,8 @@ export const createStaffLogin = createServerFn({ method: "POST" })
       email_confirm: true,
       user_metadata: {
         full_name: name,
-        role: data.role,
+        role,
+        features,
         phone: data.phone?.trim() || "",
         company: data.companyId || "all",
         status: "Active",
@@ -71,7 +80,7 @@ export const createStaffLogin = createServerFn({ method: "POST" })
       full_name: name,
       email,
       phone: data.phone?.trim() || null,
-      role_id: data.role,
+      role_id: role,
       initials,
       default_company_id: data.companyId && data.companyId !== "all" ? data.companyId : "all",
     });
@@ -116,6 +125,7 @@ export const listStaffLogins = createServerFn({ method: "GET" }).handler(async (
         name: metaName || profileName || (user.email as string),
         email: user.email as string,
         role: String(user.user_metadata["role"]),
+        features: parseFeatureIds(user.user_metadata?.["features"]),
         phone: String(user.user_metadata?.["phone"] || profile?.phone || ""),
         status,
       };
@@ -130,11 +140,11 @@ export type StaffLogin = {
   name: string;
   email: string;
   role: string;
+  features: string[];
   phone: string;
   status: StaffStatus;
 };
 
-const STAFF_ROLES: RoleType[] = ["super_admin", "sales", "supervisor", "accounts", "logistics"];
 /** Private Supabase Storage bucket — never public. Access only via short-lived signed URLs. */
 const STAFF_BUCKET = "staff-docs";
 const STAFF_BUCKET_OPTIONS = {
@@ -198,7 +208,7 @@ export const updateStaffLogin = createServerFn({ method: "POST" })
     (input: {
       actorRole: RoleType;
       userId: string;
-      role?: RoleType;
+      features?: string[];
       password?: string;
       status?: StaffStatus;
     }) => input,
@@ -206,14 +216,15 @@ export const updateStaffLogin = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const denied = ownerGate(data.actorRole);
     if (denied) return denied;
-    if (!data.password && !data.role && !data.status) {
+    const features = data.features ? parseFeatureIds(data.features) : undefined;
+    if (!data.password && !features && !data.status) {
       return { ok: false as const, error: "Nothing to update." };
     }
     if (data.password !== undefined && data.password.length < 6) {
       return { ok: false as const, error: "Password must be at least 6 characters." };
     }
-    if (data.role && !STAFF_ROLES.includes(data.role)) {
-      return { ok: false as const, error: "Unknown role." };
+    if (features && (!features.length || features.length !== data.features?.length)) {
+      return { ok: false as const, error: "Choose one or more known features." };
     }
     if (data.status && data.status !== "Active" && data.status !== "Inactive") {
       return { ok: false as const, error: "Status must be Active or Inactive." };
@@ -226,7 +237,10 @@ export const updateStaffLogin = createServerFn({ method: "POST" })
     }
 
     const meta = { ...(existing.data.user.user_metadata || {}) };
-    if (data.role) meta["role"] = data.role;
+    if (features) {
+      meta["features"] = features;
+      meta["role"] = roleForFeatures(features);
+    }
     if (data.status) meta["status"] = data.status;
 
     // Older role saves replaced metadata and dropped full_name — restore from profile.
@@ -274,7 +288,7 @@ export const updateStaffLogin = createServerFn({ method: "POST" })
     }
 
     const profilePatch: Record<string, unknown> = {};
-    if (data.role) profilePatch["role_id"] = data.role;
+    if (features) profilePatch["role_id"] = roleForFeatures(features);
     if (data.status) profilePatch["is_active"] = data.status === "Active";
     if (Object.keys(profilePatch).length > 0) {
       await admin.from("user_profiles").update(profilePatch).eq("id", data.userId);

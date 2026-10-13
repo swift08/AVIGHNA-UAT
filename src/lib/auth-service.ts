@@ -1,7 +1,7 @@
 import { supabase } from "./supabase";
 import { isDemoAuthEnabled } from "./demo-auth";
 
-export type RoleType = "super_admin" | "sales" | "supervisor" | "accounts" | "logistics";
+export type RoleType = "super_admin" | "sales" | "supervisor" | "accounts" | "logistics" | "custom";
 
 export interface UserProfile {
   id: string;
@@ -25,7 +25,145 @@ export const ROLE_NAMES: Record<RoleType, string> = {
   supervisor: "Warehouse Supervisor",
   accounts: "Accounts Manager",
   logistics: "Logistics Driver",
+  custom: "Custom access",
 };
+
+export type AccessFeature = {
+  id: string;
+  name: string;
+  description: string;
+  permissions: string[];
+};
+
+/** Screens an owner can grant to a login. A login can have more than one. */
+export const ACCESS_FEATURES: AccessFeature[] = [
+  {
+    id: "tasks",
+    name: "My work",
+    description: "View and assign tasks",
+    permissions: ["tasks.view", "tasks.manage"],
+  },
+  {
+    id: "leads",
+    name: "Leads",
+    description: "Pipeline, add leads, and convert customers",
+    permissions: ["leads.view", "leads.manage", "leads.convert"],
+  },
+  {
+    id: "customers",
+    name: "Customers",
+    description: "View and edit customers",
+    permissions: ["customers.view", "customers.manage"],
+  },
+  {
+    id: "field_visits",
+    name: "Field visits",
+    description: "Schedule visits and log GPS or audio",
+    permissions: ["field_visits.view", "field_visits.schedule", "field_visits.conduct"],
+  },
+  {
+    id: "orders",
+    name: "Orders",
+    description: "View, create, and edit orders",
+    permissions: ["orders.view", "orders.create", "orders.edit"],
+  },
+  {
+    id: "order_approval",
+    name: "Order approval",
+    description: "Approve orders for dispatch",
+    permissions: ["orders.view", "orders.approve"],
+  },
+  {
+    id: "inventory",
+    name: "Inventory",
+    description: "View stock and approve adjustments",
+    permissions: ["inventory.view", "inventory.adjust", "inventory.shortage_approve"],
+  },
+  {
+    id: "purchases",
+    name: "Purchases",
+    description: "Create, approve, and receive purchase orders",
+    permissions: ["purchases.view", "purchases.create", "purchases.approve", "purchases.receive"],
+  },
+  {
+    id: "logistics",
+    name: "Logistics",
+    description: "Deliveries, dispatch, and proof of delivery",
+    permissions: [
+      "logistics.view",
+      "logistics.dispatch",
+      "logistics.deliver",
+      "orders.view",
+      "invoices.view",
+      "tasks.view",
+      "customers.view",
+    ],
+  },
+  {
+    id: "invoices",
+    name: "Invoices",
+    description: "Invoices and payment collection",
+    permissions: ["invoices.view", "invoices.generate", "payments.record", "orders.view", "customers.view"],
+  },
+  {
+    id: "analytics",
+    name: "Analytics",
+    description: "Revenue and performance charts",
+    permissions: ["analytics.view"],
+  },
+  {
+    id: "credit",
+    name: "Credit control",
+    description: "Limits, days, and credit or debit notes",
+    permissions: ["credit.view"],
+  },
+  {
+    id: "administration",
+    name: "Administration",
+    description: "Companies, team logins, and fleet",
+    permissions: ["admin.manage", "audit.view"],
+  },
+];
+
+const FEATURE_IDS = new Set(ACCESS_FEATURES.map((feature) => feature.id));
+
+export function parseFeatureIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((id): id is string => typeof id === "string" && FEATURE_IDS.has(id));
+}
+
+export function permissionsForFeatures(featureIds: string[]): string[] {
+  const granted = new Set<string>();
+  for (const id of parseFeatureIds(featureIds)) {
+    const feature = ACCESS_FEATURES.find((item) => item.id === id);
+    feature?.permissions.forEach((permission) => granted.add(permission));
+  }
+  return [...granted];
+}
+
+export function featureLabel(featureIds: string[]) {
+  const names = parseFeatureIds(featureIds).map(
+    (id) => ACCESS_FEATURES.find((feature) => feature.id === id)?.name || id,
+  );
+  return names.join(", ");
+}
+
+/** Logistics-only IDs stay scoped to work assigned to that person. */
+export function roleForFeatures(featureIds: string[]): RoleType {
+  const features = parseFeatureIds(featureIds);
+  if (features.length > 0 && features.every((id) => id === "logistics" || id === "tasks")) {
+    return "logistics";
+  }
+  return "custom";
+}
+
+export function featuresCreatorCanAssign(role: RoleType | undefined): string[] {
+  if (role === "super_admin") return ACCESS_FEATURES.map((feature) => feature.id);
+  if (role === "supervisor") {
+    return ["tasks", "leads", "customers", "field_visits", "orders", "logistics"];
+  }
+  return [];
+}
 
 export function rolesCreatorCanAssign(role: RoleType | undefined): RoleType[] {
   if (role === "super_admin") {
@@ -41,8 +179,14 @@ export function profileFromAuth(user: {
   user_metadata?: Record<string, unknown>;
 }): UserProfile | null {
   const role = user.user_metadata?.["role"];
-  if (typeof role !== "string" || !(role in ROLE_PERMISSIONS)) return null;
-  const typed = role as RoleType;
+  const features = parseFeatureIds(user.user_metadata?.["features"]);
+  const typed =
+    typeof role === "string" && role in ROLE_PERMISSIONS
+      ? (role as RoleType)
+      : features.length
+        ? roleForFeatures(features)
+        : null;
+  if (!typed) return null;
   const name = String(user.user_metadata?.["full_name"] || user.email || "User");
   const initials =
     name
@@ -56,11 +200,11 @@ export function profileFromAuth(user: {
     name,
     email: user.email || "",
     phone: String(user.user_metadata?.["phone"] || ""),
-    role: typed,
-    roleName: ROLE_NAMES[typed],
+    role: features.length ? roleForFeatures(features) : typed,
+    roleName: features.length ? featureLabel(features) : ROLE_NAMES[typed],
     initials,
     company: String(user.user_metadata?.["company"] || "all"),
-    permissions: [...ROLE_PERMISSIONS[typed]],
+    permissions: features.length ? permissionsForFeatures(features) : [...ROLE_PERMISSIONS[typed]],
   };
 }
 
@@ -80,6 +224,7 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "tasks.view",
     "tasks.manage",
     "inventory.view",
+    "analytics.view",
   ],
   supervisor: [
     "orders.view",
@@ -100,6 +245,7 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "tasks.manage",
     "field_visits.view",
     "customers.view",
+    "analytics.view",
   ],
   accounts: [
     "invoices.view",
@@ -108,6 +254,7 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "orders.view",
     "tasks.view",
     "customers.view",
+    "analytics.view",
   ],
   logistics: [
     "logistics.view",
@@ -117,7 +264,9 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "invoices.view",
     "tasks.view",
     "customers.view",
+    "analytics.view",
   ],
+  custom: [],
 };
 
 export const PERMISSION_LABELS: Record<string, { name: string; module: string }> = {
@@ -148,6 +297,8 @@ export const PERMISSION_LABELS: Record<string, { name: string; module: string }>
   "field_visits.conduct": { name: "Log Visits & Record Audio/GPS", module: "Field Operations" },
   "tasks.view": { name: "View Tasks", module: "Work" },
   "tasks.manage": { name: "Assign & Create Tasks", module: "Work" },
+  "analytics.view": { name: "View Analytics", module: "Analytics" },
+  "credit.view": { name: "Credit Control", module: "Credit" },
   "admin.manage": { name: "System Administration", module: "Admin" },
   "audit.view": { name: "View Audit Trail", module: "Audit" },
 };
