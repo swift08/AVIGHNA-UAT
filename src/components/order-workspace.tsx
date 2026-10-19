@@ -858,21 +858,9 @@ export function OrderTable({
 
   useEffect(() => {
     if (createOpen) {
-      fetchProducts(companyId as "asian" | "avighna" | "ganesh" | "atharva" | "all").then(
-        (prods) => {
-          setProductsList(prods);
-          if (prods.length > 0 && !productName && prods[0]) {
-            const first = prods[0];
-            setSelectedProduct(first);
-            setProductName(first.name);
-            setUnit(first.unit);
-            setUnitPrice(String(first.unit_price));
-          } else if (productName) {
-            const matched = prods.find((p) => p.name === productName);
-            if (matched) setSelectedProduct(matched);
-          }
-        },
-      );
+      fetchProducts("all").then((prods) => {
+        setProductsList(prods);
+      });
       fetchCustomers(companyId as "asian" | "avighna" | "ganesh" | "atharva" | "all").then(
         (custs) => {
           setCustomersList(custs);
@@ -888,10 +876,19 @@ export function OrderTable({
       );
       fetchVehicles().then(setVehiclesList);
     }
-  }, [createOpen, companyId, customerName, deliveryAddress, productName]);
+  }, [createOpen, companyId, customerName, deliveryAddress]);
+
+  const inventoryItems = productsList.filter(
+    (product) =>
+      !companyId ||
+      companyId === "all" ||
+      product.company_id === companyId ||
+      product.company_id === "all",
+  );
 
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!selectedProduct) return;
     setIsSubmitting(true);
     setShortageNotice(null);
 
@@ -1129,7 +1126,14 @@ export function OrderTable({
             )}
             <label className="drawer-field">
               Company
-              <select value={companyId} onChange={(e) => setCompanyId(e.target.value)}>
+              <select
+                value={companyId}
+                onChange={(e) => {
+                  setCompanyId(e.target.value);
+                  setSelectedProduct(null);
+                  setProductName("");
+                }}
+              >
                 {companies.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
@@ -1171,43 +1175,36 @@ export function OrderTable({
               />
             </label>
             <label className="drawer-field">
-              Product
-              {productsList.length > 0 && (
-                <select
-                  className="mb-1 text-xs"
-                  value={productName}
-                  onChange={(e) => {
-                    const p = productsList.find((x) => x.name === e.target.value);
-                    setSelectedProduct(p || null);
-                    setProductName(e.target.value);
-                    if (p) {
-                      setUnit(p.unit);
-                      setUnitPrice(String(p.unit_price));
-                    }
-                  }}
-                >
-                  {productsList.map((p) => (
-                    <option key={p.code || p.id} value={p.name}>
-                      {p.name} ({p.code}) — Selling: ₹{p.unit_price} · Wholesale: ₹
-                      {p.wholesale_price} ({p.on_hand - p.reserved} {p.unit} avail)
-                    </option>
-                  ))}
-                  <option value="Custom">Custom / new product...</option>
-                </select>
-              )}
-              <input
+              Inventory item
+              <select
                 required
-                value={productName}
+                value={selectedProduct?.id || ""}
                 onChange={(e) => {
-                  setProductName(e.target.value);
-                  const p = productsList.find(
-                    (x) => x.name.toLowerCase() === e.target.value.toLowerCase(),
-                  );
-                  setSelectedProduct(p || null);
-                  if (p) setUnit(p.unit);
+                  const product = inventoryItems.find((item) => item.id === e.target.value);
+                  setSelectedProduct(product || null);
+                  setProductName(product?.name || "");
+                  if (product) {
+                    setIsCustomUnit(false);
+                    setUnit(product.unit);
+                    setUnitPrice(String(product.unit_price));
+                  }
                 }}
-                placeholder="Enter product name"
-              />
+              >
+                <option value="">
+                  {inventoryItems.length
+                    ? "Select an item from inventory"
+                    : "No inventory items for this company"}
+                </option>
+                {inventoryItems.map((product) => {
+                  const available = Number(product.on_hand) - Number(product.reserved);
+                  return (
+                    <option key={product.id || product.code} value={product.id}>
+                      {product.name} ({product.code}) — {available} {product.unit} available · ₹
+                      {product.unit_price}
+                    </option>
+                  );
+                })}
+              </select>
               {selectedProduct && (
                 <div className="mt-1 flex items-center justify-between rounded border border-border bg-muted/40 px-2.5 py-1.5 text-[11px]">
                   <div>

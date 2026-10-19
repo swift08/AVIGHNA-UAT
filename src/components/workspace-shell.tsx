@@ -784,7 +784,9 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
               {notice === "notifications"
                 ? "Real-time updates, approvals & enterprise alerts"
                 : notice === "profile"
-                  ? "Manage session, role permissions, and password"
+                  ? currentUser?.role === "super_admin"
+                    ? "Manage session, role permissions, and password"
+                    : "Manage your session and password"
                   : "Avighna One ERP"}
             </SheetDescription>
           </SheetHeader>
@@ -1091,17 +1093,19 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                 >
                   Change Password
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setProfileTab("permissions")}
-                  className={`pb-2 text-xs font-semibold px-3 border-b-2 transition-colors ${
-                    profileTab === "permissions"
-                      ? "border-primary text-primary"
-                      : "border-transparent text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  Permissions
-                </button>
+                {currentUser?.role === "super_admin" && (
+                  <button
+                    type="button"
+                    onClick={() => setProfileTab("permissions")}
+                    className={`pb-2 text-xs font-semibold px-3 border-b-2 transition-colors ${
+                      profileTab === "permissions"
+                        ? "border-primary text-primary"
+                        : "border-transparent text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Permissions
+                  </button>
+                )}
               </div>
 
               {/* TAB 1: PROFILE & ROLE SWITCHER */}
@@ -1287,7 +1291,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
               )}
 
               {/* TAB 3: PERMISSIONS MATRIX */}
-              {profileTab === "permissions" && (
+              {profileTab === "permissions" && currentUser?.role === "super_admin" && (
                 <div className="space-y-4">
                   <div>
                     <h3 className="text-sm font-bold">Permissions Matrix</h3>
