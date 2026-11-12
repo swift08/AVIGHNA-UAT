@@ -50,6 +50,7 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { Navigate, useNavigate, useRouterState } from "@tanstack/react-router";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -443,7 +444,9 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const audioStreamRef = useRef<MediaStream | null>(null);
   const audioChunksRef = useRef<Blob[]>([]);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
+  const audioObjectUrlRef = useRef<string | null>(null);
   const speechIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [playableVisitAudioSrc, setPlayableVisitAudioSrc] = useState<string | null>(null);
   const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const recordStartTimeRef = useRef<number>(0);
   const [gpsLocation, setGpsLocation] = useState<{ lat: number; lng: number; time: string } | null>(
@@ -1079,6 +1082,36 @@ export function ModuleWorkspace({ module }: { module: string }) {
     setIsRecording(false);
   };
 
+  const revokeAudioObjectUrl = () => {
+    if (audioObjectUrlRef.current) {
+      URL.revokeObjectURL(audioObjectUrlRef.current);
+      audioObjectUrlRef.current = null;
+    }
+  };
+
+  /** Convert stored data: URLs into blob: object URLs for reliable CSP-safe playback. */
+  const resolvePlayableAudioUrl = (audioUrl: string): string => {
+    if (!audioUrl.startsWith("data:audio")) return audioUrl;
+    try {
+      const comma = audioUrl.indexOf(",");
+      if (comma < 0) return audioUrl;
+      const header = audioUrl.slice(0, comma);
+      const payload = audioUrl.slice(comma + 1);
+      const mimeMatch = header.match(/^data:([^;,]+)/i);
+      const mime = mimeMatch?.[1] || "audio/webm";
+      const isBase64 = /;base64/i.test(header);
+      const bytes = isBase64
+        ? Uint8Array.from(atob(payload), (c) => c.charCodeAt(0))
+        : new TextEncoder().encode(decodeURIComponent(payload));
+      revokeAudioObjectUrl();
+      const objectUrl = URL.createObjectURL(new Blob([bytes], { type: mime }));
+      audioObjectUrlRef.current = objectUrl;
+      return objectUrl;
+    } catch {
+      return audioUrl;
+    }
+  };
+
   const stopCurrentAudio = () => {
     if (speechIntervalRef.current) {
       clearInterval(speechIntervalRef.current);
@@ -1103,7 +1136,9 @@ export function ModuleWorkspace({ module }: { module: string }) {
     onEnd?: () => void,
   ) => {
     stopCurrentAudio();
-    const audio = new Audio(audioUrl);
+    const playableUrl = resolvePlayableAudioUrl(audioUrl);
+    setPlayableVisitAudioSrc(playableUrl);
+    const audio = new Audio(playableUrl);
     audioPlayerRef.current = audio;
 
     if (expectedDuration && expectedDuration > 0) {
@@ -1139,14 +1174,25 @@ export function ModuleWorkspace({ module }: { module: string }) {
       if (onEnd) onEnd();
     };
 
+    audio.onerror = () => {
+      setIsPlayingAudio(false);
+      setIsPlayingPreview(false);
+      toast.error("Could not play voice memo", {
+        description: "The recording could not be decoded by this browser.",
+      });
+    };
+
     audio
       .play()
       .then(() => {
         setIsPlayingAudio(true);
       })
-      .catch(() => {
+      .catch((err) => {
         setIsPlayingAudio(false);
         setIsPlayingPreview(false);
+        toast.error("Could not play voice memo", {
+          description: err instanceof Error ? err.message : "Playback was blocked.",
+        });
       });
   };
 
@@ -1159,10 +1205,13 @@ export function ModuleWorkspace({ module }: { module: string }) {
     stopCurrentAudio();
     setSelectedVisitAudio(v);
 
-    // Extract duration from filename e.g. "voice-memo-12s.m4a" or "12s"
-    const match =
-      v.voice_recording_path?.match(/voice-memo-(\d+)s/i) ||
-      v.voice_recording_path?.match(/(\d+)s/i);
+    // Duration labels like "voice-memo-12s.m4a" — never parse inside data: payloads.
+    const path = v.voice_recording_path || "";
+    const isPlayableSrc =
+      path.startsWith("data:audio") || path.startsWith("http") || path.startsWith("blob:");
+    const match = !isPlayableSrc
+      ? path.match(/voice-memo-(\d+)s/i) || path.match(/(\d+)s/i)
+      : null;
     const parsedDuration = match && match[1] ? parseInt(match[1], 10) : undefined;
     if (parsedDuration && parsedDuration > 0) {
       setAudioTotalDuration(parsedDuration);
@@ -1170,11 +1219,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
       setAudioTotalDuration(8);
     }
 
-    const path = v.voice_recording_path;
-    if (
-      path &&
-      (path.startsWith("data:audio") || path.startsWith("http") || path.startsWith("blob:"))
-    ) {
+    if (isPlayableSrc) {
       playRecordedAudioUrl(path, parsedDuration);
     } else {
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
@@ -6191,7 +6236,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
                                       <Play className="size-3 shrink-0" />
                                       <span>
                                         Play Voice Memo{" "}
-                                        {v.voice_recording_path.match(/\d+s/)?.[0]
+                                        {!v.voice_recording_path.startsWith("data:") &&
+                                        v.voice_recording_path.match(/\d+s/)?.[0]
                                           ? `(${v.voice_recording_path.match(/\d+s/)?.[0]})`
                                           : ""}
                                       </span>
@@ -8288,6 +8334,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
         onOpenChange={(open) => {
           if (!open) {
             stopCurrentAudio();
+            revokeAudioObjectUrl();
+            setPlayableVisitAudioSrc(null);
             setSelectedVisitAudio(null);
           }
         }}
@@ -8370,18 +8418,22 @@ export function ModuleWorkspace({ module }: { module: string }) {
                   </Button>
 
                   {/* Native Audio Controls for direct browser playback & seeking */}
-                  {selectedVisitAudio.voice_recording_path &&
-                    (selectedVisitAudio.voice_recording_path.startsWith("data:audio") ||
-                      selectedVisitAudio.voice_recording_path.startsWith("http") ||
-                      selectedVisitAudio.voice_recording_path.startsWith("blob:")) && (
-                      <div className="pt-2">
-                        <audio
-                          controls
-                          src={selectedVisitAudio.voice_recording_path}
-                          className="w-full h-9 rounded-lg"
-                        />
-                      </div>
-                    )}
+                  {playableVisitAudioSrc && (
+                    <div className="pt-2">
+                      <audio
+                        key={playableVisitAudioSrc}
+                        controls
+                        src={playableVisitAudioSrc}
+                        className="w-full h-9 rounded-lg"
+                        onLoadedMetadata={(e) => {
+                          const duration = e.currentTarget.duration;
+                          if (!isNaN(duration) && isFinite(duration) && duration > 0) {
+                            setAudioTotalDuration(Math.round(duration));
+                          }
+                        }}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -9815,10 +9867,18 @@ export function ModuleWorkspace({ module }: { module: string }) {
                   setIsDeleting(true);
                   try {
                     await deleteTarget.onDelete();
+                    toast.success(`${deleteTarget.type} deleted`, {
+                      description: `"${deleteTarget.name}" was permanently removed.`,
+                    });
                     setDeleteTarget(null);
                     reloadData();
                   } catch (err) {
                     console.error("Deletion error:", err);
+                    const message =
+                      err instanceof Error ? err.message : "Deletion failed. Please try again.";
+                    toast.error(`Could not delete ${deleteTarget.type}`, {
+                      description: message,
+                    });
                   } finally {
                     setIsDeleting(false);
                   }

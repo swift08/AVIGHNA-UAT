@@ -125,6 +125,8 @@ export const SECURITY_HEADERS: Record<string, string> = {
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
     "font-src 'self' https://fonts.gstatic.com data:",
     "img-src 'self' data: blob: https:",
+    // Voice memos are stored as data: URLs (and played via blob: object URLs).
+    "media-src 'self' data: blob:",
     "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
     "frame-ancestors 'none'",
     "base-uri 'self'",

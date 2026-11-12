@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Check,
@@ -11,6 +11,7 @@ import {
   XCircle,
   Trash2,
 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -886,18 +887,40 @@ export function OrderTable({
       product.company_id === "all",
   );
 
+  const availableStock = useMemo(() => {
+    if (!selectedProduct) return null;
+    return Math.max(0, Number(selectedProduct.on_hand) - Number(selectedProduct.reserved || 0));
+  }, [selectedProduct]);
+
+  const requestedQty = parseFloat(quantity) || 0;
+  const exceedsAvailable =
+    availableStock !== null && requestedQty > 0 && requestedQty > availableStock;
+
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedProduct) return;
+
+    const qty = parseFloat(quantity) || 1;
+    const finalUnit = isCustomUnit ? customUnit.trim() || "units" : unit;
+    const available = Math.max(
+      0,
+      Number(selectedProduct.on_hand) - Number(selectedProduct.reserved || 0),
+    );
+
+    if (qty > available) {
+      const msg = `Insufficient stock. Only ${available} ${finalUnit} available. Reduce quantity to ${available} or less.`;
+      setShortageNotice(msg);
+      toast.error("Order blocked — not enough stock", { description: msg });
+      return;
+    }
+
     setIsSubmitting(true);
     setShortageNotice(null);
 
-    const qty = parseFloat(quantity) || 1;
     const price = parseFloat(unitPrice) || 100;
     const catalogPrice = selectedProduct ? Number(selectedProduct.unit_price) : undefined;
     const wholesalePrice = selectedProduct ? Number(selectedProduct.wholesale_price) : undefined;
 
-    const finalUnit = isCustomUnit ? customUnit.trim() || "units" : unit;
     const createPayload: {
       companyId: string;
       customerName: string;
@@ -944,24 +967,27 @@ export function OrderTable({
 
     setIsSubmitting(false);
 
-    if (res.shortage) {
-      setShortageNotice(
-        `Shortage detected: Required ${qty} ${unit}, Available is lower. Order submitted as "Procuring" awaiting supervisor shortage approval.`,
-      );
+    if (!res.success) {
+      const msg = res.error || "Order could not be created.";
+      setShortageNotice(msg);
+      toast.error("Order not created", { description: msg });
+      return;
     }
 
+    toast.success("Order submitted", {
+      description: `Order #${res.orderId} created for ${customerName}.`,
+    });
     if (onRefresh) onRefresh();
-    if (!res.shortage) {
-      setCreateOpen(false);
-      setCustomerName("");
-      setDeliveryAddress("");
-      setIsCustomUnit(false);
-      setCustomUnit("");
-      setCreateTransportMode("Logistics / Assigned Vehicle");
-      setCreateVehiclePlate("");
-      setCreateDriverName("");
-      setCreateDriverPhone("");
-    }
+    setCreateOpen(false);
+    setCustomerName("");
+    setDeliveryAddress("");
+    setIsCustomUnit(false);
+    setCustomUnit("");
+    setShortageNotice(null);
+    setCreateTransportMode("Logistics / Assigned Vehicle");
+    setCreateVehiclePlate("");
+    setCreateDriverName("");
+    setCreateDriverPhone("");
   };
 
   return (
@@ -1118,10 +1144,13 @@ export function OrderTable({
             </SheetDescription>
           </SheetHeader>
           <form onSubmit={handleCreateOrder} className="mt-6 space-y-4">
-            {shortageNotice && (
-              <div className="flex items-start gap-2.5 rounded-lg border border-warning/30 bg-warning/10 p-3 text-xs text-warning">
+            {(exceedsAvailable || shortageNotice) && (
+              <div className="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
                 <AlertTriangle className="size-4 shrink-0 mt-0.5" />
-                <p>{shortageNotice}</p>
+                <p>
+                  {shortageNotice ||
+                    `Insufficient stock. Only ${availableStock} ${unit} available. Orders above available inventory are not allowed.`}
+                </p>
               </div>
             )}
             <label className="drawer-field">
@@ -1225,12 +1254,22 @@ export function OrderTable({
             <div className="grid grid-cols-2 gap-3">
               <label className="drawer-field">
                 Quantity
+                {availableStock !== null && (
+                  <span className="ml-1 text-[10px] font-medium text-muted-foreground">
+                    (max {availableStock} {selectedProduct?.unit || unit} available)
+                  </span>
+                )}
                 <input
                   type="number"
                   required
                   min="1"
+                  max={availableStock ?? undefined}
                   value={quantity}
-                  onChange={(e) => setQuantity(e.target.value)}
+                  onChange={(e) => {
+                    setQuantity(e.target.value);
+                    setShortageNotice(null);
+                  }}
+                  className={exceedsAvailable ? "border-destructive focus-visible:ring-destructive" : undefined}
                 />
               </label>
               <label className="drawer-field">
@@ -1465,12 +1504,18 @@ export function OrderTable({
                 placeholder="Special handling or delivery instructions"
               />
             </label>
-            <Button type="submit" className="w-full mt-6" disabled={isSubmitting}>
+            <Button
+              type="submit"
+              className="w-full mt-6"
+              disabled={isSubmitting || exceedsAvailable || !selectedProduct}
+            >
               {isSubmitting
                 ? "Checking inventory & submitting..."
-                : selectedProduct && parseFloat(unitPrice) < Number(selectedProduct.unit_price)
-                  ? "Submit Order (Requires Super Admin Approval)"
-                  : "Submit Order"}
+                : exceedsAvailable
+                  ? "Cannot Submit — Quantity Exceeds Stock"
+                  : selectedProduct && parseFloat(unitPrice) < Number(selectedProduct.unit_price)
+                    ? "Submit Order (Requires Super Admin Approval)"
+                    : "Submit Order"}
             </Button>
           </form>
         </SheetContent>

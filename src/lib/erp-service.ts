@@ -390,9 +390,11 @@ export async function createOrder(payload: {
     }
 
     // Inventory check & catalog price verification
+    // Orders above available stock are rejected — sales cannot create shortage orders.
     let shortage = false;
     let shortageQty = 0;
     let catalogSellingPrice = payload.catalogPrice || 0;
+    const unitLabel = payload.unit || "units";
 
     let resolvedProductId = payload.productId;
     if (resolvedProductId) {
@@ -405,10 +407,12 @@ export async function createOrder(payload: {
         if (!catalogSellingPrice) {
           catalogSellingPrice = Number(prod.unit_price) || 0;
         }
-        const available = Number(prod.on_hand) - Number(prod.reserved);
+        const available = Math.max(0, Number(prod.on_hand) - Number(prod.reserved));
         if (payload.quantity > available) {
-          shortage = true;
-          shortageQty = payload.quantity - available;
+          return {
+            success: false,
+            error: `Insufficient stock. Only ${available} ${unitLabel} available, but order requests ${payload.quantity} ${unitLabel}. Reduce quantity to ${available} or less.`,
+          };
         }
       }
     } else if (payload.productName) {
@@ -423,10 +427,12 @@ export async function createOrder(payload: {
         if (!catalogSellingPrice) {
           catalogSellingPrice = Number(prod.unit_price) || 0;
         }
-        const available = Number(prod.on_hand) - Number(prod.reserved);
+        const available = Math.max(0, Number(prod.on_hand) - Number(prod.reserved));
         if (payload.quantity > available) {
-          shortage = true;
-          shortageQty = payload.quantity - available;
+          return {
+            success: false,
+            error: `Insufficient stock. Only ${available} ${unitLabel} available, but order requests ${payload.quantity} ${unitLabel}. Reduce quantity to ${available} or less.`,
+          };
         }
       }
     }
@@ -2470,6 +2476,64 @@ export async function deleteFieldVisit(visitId: string, adminName: string = "Sup
 export async function deleteCustomer(customerId: string, adminName: string = "Super Admin") {
   const actor = await requireSuperAdmin();
   adminName = actor.name || adminName;
+
+  // Detach soft references that would block customer deletion.
+  await supabase
+    .from("leads")
+    .update({ converted_customer_id: null })
+    .eq("converted_customer_id", customerId);
+  await supabase.from("field_visits").update({ customer_id: null }).eq("customer_id", customerId);
+  await supabase.from("tasks").update({ customer_id: null }).eq("customer_id", customerId);
+
+  // Cascade transactional children (orders → invoices/payments/deliveries/items).
+  const { data: orders, error: ordersLookupError } = await supabase
+    .from("orders")
+    .select("id")
+    .eq("customer_id", customerId);
+  if (ordersLookupError) throw ordersLookupError;
+
+  const orderIds = (orders || []).map((o) => o.id).filter(Boolean);
+  if (orderIds.length > 0) {
+    const { data: invoices, error: invoicesLookupError } = await supabase
+      .from("invoices")
+      .select("id")
+      .in("order_id", orderIds);
+    if (invoicesLookupError) throw invoicesLookupError;
+
+    const invoiceIds = (invoices || []).map((i) => i.id).filter(Boolean);
+    if (invoiceIds.length > 0) {
+      const { error } = await supabase.from("payments").delete().in("invoice_id", invoiceIds);
+      if (error) throw error;
+    }
+
+    const { error: deliveriesError } = await supabase
+      .from("deliveries")
+      .delete()
+      .in("order_id", orderIds);
+    if (deliveriesError) throw deliveriesError;
+
+    await supabase
+      .from("field_visits")
+      .update({ created_order_id: null })
+      .in("created_order_id", orderIds);
+
+    const { error: invoicesError } = await supabase.from("invoices").delete().in("order_id", orderIds);
+    if (invoicesError) throw invoicesError;
+
+    const { error: itemsError } = await supabase
+      .from("order_items")
+      .delete()
+      .in("order_id", orderIds);
+    if (itemsError) throw itemsError;
+
+    const { error: ordersError } = await supabase.from("orders").delete().in("id", orderIds);
+    if (ordersError) throw ordersError;
+  }
+
+  // Catch any remaining rows linked only by customer_id.
+  await supabase.from("payments").delete().eq("customer_id", customerId);
+  await supabase.from("invoices").delete().eq("customer_id", customerId);
+
   const { error } = await supabase.from("customers").delete().eq("id", customerId);
   if (error) throw error;
   await logAudit({
