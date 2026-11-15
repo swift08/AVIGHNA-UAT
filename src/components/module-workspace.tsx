@@ -76,6 +76,7 @@ import { SYSTEM_USERS } from "@/lib/auth-service";
 import { scopeForDriver } from "@/lib/driver-scope";
 import { listStaffLogins } from "@/lib/login-admin";
 import { TeamLogins } from "./team-logins";
+import { CoaImportButton, ProductBatchesPanel } from "./coa-import";
 import {
   fetchOrders,
   createOrder,
@@ -2911,6 +2912,12 @@ export function ModuleWorkspace({ module }: { module: string }) {
                     <Plus className="size-3.5" />
                     Inbound Stock
                   </Button>
+                  <CoaImportButton
+                    actorRole={currentUser?.role}
+                    actorName={currentUser?.name || "User"}
+                    defaultCompanyId={company}
+                    onImported={reloadData}
+                  />
                   <Button
                     size="sm"
                     className="h-8 gap-1.5 text-xs font-semibold"
@@ -3031,6 +3038,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                       </button>
                     )}
                   </div>
+                  {p.id && <ProductBatchesPanel productId={p.id} productName={p.name} />}
                 </article>
               );
             })}

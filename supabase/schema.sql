@@ -661,3 +661,48 @@ ALTER TABLE public.deliveries
   ADD COLUMN IF NOT EXISTS transport_mode TEXT DEFAULT 'Logistics / Assigned Vehicle',
   ADD COLUMN IF NOT EXISTS vehicle_id TEXT;
 
+
+-- ------------------------------------------------------------------------
+-- PRODUCT BATCHES + COA (2026-11-15)
+-- ------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.product_batches (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  product_id UUID NOT NULL REFERENCES public.products(id) ON DELETE CASCADE,
+  company_id TEXT NOT NULL REFERENCES public.companies(id),
+  batch_number TEXT NOT NULL,
+  manufacturer_name TEXT,
+  supplier_name TEXT,
+  product_grade TEXT,
+  product_description TEXT,
+  mfg_date DATE,
+  expiry_date DATE,
+  analysis_date DATE,
+  dispatch_date DATE,
+  quantity NUMERIC NOT NULL DEFAULT 0,
+  unit TEXT NOT NULL DEFAULT 'kg',
+  package_count NUMERIC,
+  package_weight NUMERIC,
+  package_unit TEXT,
+  coa_storage_path TEXT,
+  coa_file_name TEXT,
+  coa_mime_type TEXT,
+  ocr_payload JSONB,
+  notes TEXT,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (product_id, batch_number)
+);
+
+CREATE TABLE IF NOT EXISTS public.batch_quality_results (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  batch_id UUID NOT NULL REFERENCES public.product_batches(id) ON DELETE CASCADE,
+  parameter_name TEXT NOT NULL,
+  specification TEXT,
+  result_value TEXT,
+  compliance_status TEXT,
+  remarks TEXT,
+  confidence NUMERIC,
+  sort_order INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
