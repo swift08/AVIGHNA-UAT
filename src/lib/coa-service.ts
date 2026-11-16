@@ -258,7 +258,11 @@ function missingCriticalCount(extraction: CoaExtraction) {
   return missing;
 }
 
-/** Default COA OCR: local Tesseract + PDF text. No cloud API key needed. */
+function isVercelRuntime() {
+  return Boolean(process.env["VERCEL"] || process.env["AWS_LAMBDA_FUNCTION_NAME"]);
+}
+
+/** Default COA OCR: PDF text always; Node Tesseract only on local/dev (not Vercel). */
 async function extractWithLocalOcr(bytes: Buffer, mimeType: string): Promise<CoaExtraction | null> {
   if (mimeType === "application/pdf") {
     let text = "";
@@ -281,6 +285,12 @@ async function extractWithLocalOcr(bytes: Buffer, mimeType: string): Promise<Coa
   }
 
   if (!mimeType.startsWith("image/")) return null;
+
+  // tesseract.js uses __dirname internally and crashes on Vercel ESM serverless.
+  // Hosted image OCR must run in the browser and send ocrText.
+  if (isVercelRuntime()) {
+    return null;
+  }
 
   try {
     const texts: string[] = [];
@@ -309,10 +319,6 @@ async function extractWithLocalOcr(bytes: Buffer, mimeType: string): Promise<Coa
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn("COA local OCR failed:", message);
-    // Surface missing-model failures to the UI instead of silent empty extract.
-    if (/model not found|traineddata|failed to load/i.test(message)) {
-      throw err instanceof Error ? err : new Error(message);
-    }
     return null;
   }
 }
@@ -387,7 +393,9 @@ export const extractCoaDocument = createServerFn({ method: "POST" })
         previewMime: mime,
         warning:
           engine === "empty"
-            ? "Could not auto-read this COA. Fill the fields manually, then confirm."
+            ? isVercelRuntime() && mime.startsWith("image/")
+              ? "On-device OCR did not return usable text. Use a clearer photo, or fill fields manually."
+              : "Could not auto-read this COA. Fill the fields manually, then confirm."
             : gaps > 0
               ? "Some key fields need a quick check before confirming."
               : null,
