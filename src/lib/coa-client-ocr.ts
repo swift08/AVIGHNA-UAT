@@ -79,12 +79,16 @@ async function createOcrWorker() {
     throw new Error("Browser OCR requires a window origin.");
   }
 
-  const langProbe = await fetch(`${origin}/tessdata/eng.traineddata`, {
-    method: "HEAD",
-  }).catch(() => null);
-  const langOk =
-    Boolean(langProbe?.ok) &&
-    Number(langProbe?.headers.get("content-length") || 0) > 100000;
+  // Vercel often omits Content-Length on HEAD for large static files — don't require it.
+  const langUrl = `${origin}/tessdata/eng.traineddata`;
+  const langProbe = await fetch(langUrl, { method: "HEAD" }).catch(() => null);
+  let langOk = Boolean(langProbe?.ok);
+  if (!langOk) {
+    const ranged = await fetch(langUrl, {
+      headers: { Range: "bytes=0-0" },
+    }).catch(() => null);
+    langOk = Boolean(ranged?.ok || ranged?.status === 206);
+  }
   if (!langOk) {
     throw new Error(
       "OCR language model missing at /tessdata/eng.traineddata. Redeploy with tessdata included.",
