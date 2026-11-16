@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createServerFn } from "@tanstack/react-start";
 import { createClient } from "@supabase/supabase-js";
 import { generateText, Output } from "ai";
@@ -68,7 +71,9 @@ function extractionHasSignal(extraction: CoaExtraction) {
 }
 
 async function extractWithAi(bytes: Buffer, mimeType: string): Promise<CoaExtraction | null> {
-  const hasGateway = Boolean(process.env["AI_GATEWAY_API_KEY"] || process.env["VERCEL_OIDC_TOKEN"]);
+  // Only use explicit keys on hosted sites. VERCEL_OIDC_TOKEN alone often hits
+  // "model not found" when AI Gateway is not enabled for the project.
+  const hasGateway = Boolean(process.env["AI_GATEWAY_API_KEY"]);
   const hasOpenAi = Boolean(process.env["OPENAI_API_KEY"]);
   if (!hasGateway && !hasOpenAi) return null;
 
@@ -107,18 +112,59 @@ type TesseractWorker = Awaited<ReturnType<typeof import("tesseract.js")["createW
 let sharedOcrWorker: TesseractWorker | null = null;
 let sharedOcrWorkerPromise: Promise<TesseractWorker> | null = null;
 
-/** Built-in OCR model (Tesseract) — no API key required. */
+function resolveTessdataPath() {
+  const candidates = [
+    path.join(process.cwd(), "tessdata"),
+    path.join(process.cwd(), "public", "tessdata"),
+    // Relative to compiled server module when Nitro/Vercel copies assets
+    path.join(path.dirname(fileURLToPath(import.meta.url)), "../../tessdata"),
+  ];
+  for (const dir of candidates) {
+    if (existsSync(path.join(dir, "eng.traineddata"))) return dir;
+  }
+
+  // On Vercel the static file is served from /tessdata (public/). Tesseract can load via HTTPS.
+  const host = process.env["VERCEL_PROJECT_PRODUCTION_URL"] || process.env["VERCEL_URL"];
+  if (host) {
+    return `https://${host.replace(/^https?:\/\//, "")}/tessdata`;
+  }
+
+  return path.join(process.cwd(), "tessdata");
+}
+
+/** Built-in OCR model (Tesseract) — bundled lang file, no API key / CDN download. */
 async function getLocalOcrWorker() {
   if (sharedOcrWorker) return sharedOcrWorker;
   if (!sharedOcrWorkerPromise) {
     sharedOcrWorkerPromise = (async () => {
       const { createWorker } = await import("tesseract.js");
-      const worker = await createWorker("eng");
-      await worker.setParameters({
-        preserve_interword_spaces: "1",
-      });
-      sharedOcrWorker = worker;
-      return worker;
+      const langPath = resolveTessdataPath();
+      const isRemote = /^https?:\/\//i.test(langPath);
+      if (!isRemote && !existsSync(path.join(langPath, "eng.traineddata"))) {
+        sharedOcrWorkerPromise = null;
+        throw new Error(
+          `OCR language model not found at ${langPath}/eng.traineddata. Redeploy with tessdata included.`,
+        );
+      }
+      const cachePath =
+        process.env["VERCEL"] || process.env["AWS_LAMBDA_FUNCTION_NAME"] ? "/tmp" : langPath;
+      try {
+        const worker = await createWorker("eng", 1, {
+          langPath,
+          cachePath,
+          gzip: false,
+          cacheMethod: isRemote ? "write" : "none",
+        });
+        await worker.setParameters({
+          preserve_interword_spaces: "1",
+        });
+        sharedOcrWorker = worker;
+        return worker;
+      } catch (err) {
+        sharedOcrWorkerPromise = null;
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(`Local OCR model failed to load (${message}).`);
+      }
     })();
   }
   return sharedOcrWorkerPromise;
@@ -223,7 +269,12 @@ async function extractWithLocalOcr(bytes: Buffer, mimeType: string): Promise<Coa
     extraction = finalizeCoaExtraction(extraction, corpus);
     return extractionHasSignal(extraction) ? extraction : null;
   } catch (err) {
-    console.warn("COA local OCR failed:", err instanceof Error ? err.message : err);
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("COA local OCR failed:", message);
+    // Surface missing-model failures to the UI instead of silent empty extract.
+    if (/model not found|traineddata|failed to load/i.test(message)) {
+      throw err instanceof Error ? err : new Error(message);
+    }
     return null;
   }
 }

@@ -22,8 +22,19 @@ export default defineConfig(async ({ command }) => {
     const { nitro } = await import("nitro/vite");
     plugins.push(
       nitro({
-        preset: process.env.VERCEL ? "vercel" : undefined,
-      }),
+        // Include Tesseract language model in the server bundle for hosted OCR.
+        ...(process.env["VERCEL"] ? { preset: "vercel" as const } : {}),
+        serverAssets: [
+          {
+            baseName: "tessdata",
+            dir: "./tessdata",
+          },
+        ],
+        // Ensure NFT / Vercel file tracing keeps the OCR model file.
+        externals: {
+          traceInclude: ["./tessdata/eng.traineddata"],
+        },
+      } as Record<string, unknown>),
     );
   }
 
