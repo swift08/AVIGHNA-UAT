@@ -16,6 +16,12 @@ function extractionHasSignal(extraction: CoaExtraction) {
   );
 }
 
+function ocrErrorMessage(err: unknown) {
+  if (err instanceof Error && err.message.trim()) return err.message;
+  if (typeof err === "string" && err.trim()) return err;
+  return "Browser OCR failed.";
+}
+
 export function isCoaImageFile(file: File) {
   if (file.type && file.type.startsWith("image/")) return true;
   return /\.(jpe?g|png|webp|gif|bmp)$/i.test(file.name || "");
@@ -63,35 +69,34 @@ async function prepareImageForOcr(file: File): Promise<Blob> {
 }
 
 /**
- * Vite production builds often break tesseract's relative worker/core paths.
- * Always load worker + core from jsDelivr; prefer our hosted eng.traineddata.
+ * Load worker/core/lang from our own origin.
+ * Hosted CSP blocks jsDelivr/tessdata CDN (script-src/connect-src 'self' only).
  */
 async function createOcrWorker() {
   const { createWorker, OEM } = await import("tesseract.js");
   const origin = typeof window !== "undefined" ? window.location.origin : "";
-  let useLocalLang = false;
-  if (origin) {
-    try {
-      const probe = await fetch(`${origin}/tessdata/eng.traineddata`, { method: "HEAD" });
-      useLocalLang = probe.ok && Number(probe.headers.get("content-length") || 0) > 100000;
-    } catch {
-      useLocalLang = false;
-    }
+  if (!origin) {
+    throw new Error("Browser OCR requires a window origin.");
+  }
+
+  const langProbe = await fetch(`${origin}/tessdata/eng.traineddata`, {
+    method: "HEAD",
+  }).catch(() => null);
+  const langOk =
+    Boolean(langProbe?.ok) &&
+    Number(langProbe?.headers.get("content-length") || 0) > 100000;
+  if (!langOk) {
+    throw new Error(
+      "OCR language model missing at /tessdata/eng.traineddata. Redeploy with tessdata included.",
+    );
   }
 
   return createWorker("eng", OEM.LSTM_ONLY, {
-    workerPath: "https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/worker.min.js",
-    corePath: "https://cdn.jsdelivr.net/npm/tesseract.js-core@7.0.0",
-    ...(useLocalLang
-      ? {
-          langPath: `${origin}/tessdata`,
-          gzip: false,
-        }
-      : {
-          // Official default language CDN used by tesseract.js
-          langPath: "https://tessdata.projectnaptha.com/4.0.0",
-          gzip: true,
-        }),
+    workerPath: `${origin}/tesseract/worker.min.js`,
+    // Directory URL — tesseract picks simd-lstm / lstm builds from here.
+    corePath: `${origin}/tesseract`,
+    langPath: `${origin}/tessdata`,
+    gzip: false,
     cacheMethod: "none",
     logger: () => {},
   });
@@ -162,7 +167,7 @@ export async function extractCoaInBrowser(file: File): Promise<{
     }
     return { extraction, text: corpus, engine: "browser" };
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Browser OCR failed.";
+    const message = ocrErrorMessage(err);
     console.error("COA browser OCR error:", err);
     return {
       extraction: emptyCoaExtraction(),

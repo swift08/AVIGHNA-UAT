@@ -38,9 +38,12 @@ dist-ssr
 supabase/.temp/
 
 tmp-coa-samples/
-# Local Tesseract cache at repo root (bundled model lives in tessdata/)
+# Local Tesseract cache at repo root (bundled model lives in tessdata/ and public/)
 /eng.traineddata
 *.traineddata
 !tessdata/
 !tessdata/**/*.traineddata
+!public/tessdata/
+!public/tessdata/**/*.traineddata
+!public/tesseract/
 
