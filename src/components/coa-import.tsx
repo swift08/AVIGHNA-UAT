@@ -19,6 +19,7 @@ import {
   type CoaField,
   type CoaQualityRow,
 } from "@/lib/coa-ocr";
+import { extractCoaInBrowser } from "@/lib/coa-client-ocr";
 import {
   confirmCoaImport,
   extractCoaDocument,
@@ -346,6 +347,20 @@ export function CoaImportButton({
       setBase64(encoded);
       setStage("processing");
       if (!actorRole) throw new Error("No active session.");
+
+      // Hosted sites: run Tesseract in the browser (Vercel serverless OCR is unreliable).
+      let ocrText = "";
+      let browserExtraction: CoaExtraction | null = null;
+      if (selected.type.startsWith("image/")) {
+        try {
+          const browser = await extractCoaInBrowser(selected);
+          ocrText = browser.text;
+          if (browser.engine === "browser") browserExtraction = browser.extraction;
+        } catch (err) {
+          console.warn("Browser OCR failed:", err);
+        }
+      }
+
       const res = await extractCoaDocument({
         data: {
           actorRole,
@@ -353,18 +368,39 @@ export function CoaImportButton({
           mimeType: selected.type || "application/pdf",
           base64: encoded,
           companyId,
+          ...(ocrText.trim() ? { ocrText } : {}),
         },
       });
       if (!res.ok) {
+        // If server failed but browser OCR worked, still show browser results.
+        if (browserExtraction) {
+          setExtraction(browserExtraction);
+          setWarning("Used on-device OCR. Review fields carefully before saving.");
+          if (browserExtraction.productGrade.value) setCategory(browserExtraction.productGrade.value);
+          else if (browserExtraction.productName.value) {
+            setCategory(browserExtraction.productName.value);
+          }
+          setStage("ready");
+          toast.success("Extracted on this device. Review, then Confirm & Add to Inventory.");
+          return;
+        }
         setError(res.error);
         setStage("idle");
         toast.error(res.error);
         return;
       }
-      setExtraction(res.extraction);
-      setWarning(res.warning);
-      if (res.extraction.productGrade.value) setCategory(res.extraction.productGrade.value);
-      else if (res.extraction.productName.value) setCategory(res.extraction.productName.value);
+
+      // Prefer richer server merge, but keep browser result if server came back empty.
+      const finalExtraction =
+        res.engine === "empty" && browserExtraction ? browserExtraction : res.extraction;
+      setExtraction(finalExtraction);
+      setWarning(
+        res.engine === "empty" && browserExtraction
+          ? "Used on-device OCR. Review fields carefully before saving."
+          : res.warning,
+      );
+      if (finalExtraction.productGrade.value) setCategory(finalExtraction.productGrade.value);
+      else if (finalExtraction.productName.value) setCategory(finalExtraction.productName.value);
       setStage("ready");
       toast.success("Extracted into the form. Review, then Confirm & Add to Inventory.");
     } catch (err) {
@@ -546,7 +582,7 @@ export function CoaImportButton({
                       : "Running built-in OCR model…"}
                   </p>
                   <p className="text-muted-foreground">
-                    Local Tesseract OCR — no API key required. Reading product, batch, and tables.
+                    Reading the COA on this device (no API key). Product, batch, and table fields…
                   </p>
                 </div>
               </div>

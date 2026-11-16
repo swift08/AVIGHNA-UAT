@@ -287,6 +287,8 @@ export const extractCoaDocument = createServerFn({ method: "POST" })
       mimeType: string;
       base64: string;
       companyId: string;
+      /** Browser OCR text — preferred on hosted Vercel where Node Tesseract is unreliable. */
+      ocrText?: string;
     }) => input,
   )
   .handler(async ({ data }) => {
@@ -300,11 +302,23 @@ export const extractCoaDocument = createServerFn({ method: "POST" })
 
     try {
       let extraction: CoaExtraction | null = null;
-      let engine: "local" | "ai" | "empty" = "empty";
+      let engine: "browser" | "local" | "ai" | "empty" = "empty";
 
-      // Default: built-in Tesseract OCR model (no API key).
-      extraction = await extractWithLocalOcr(bytes, mime);
-      if (extraction) engine = "local";
+      // Prefer client-provided OCR text (works on hosted sites).
+      if (data.ocrText && data.ocrText.trim()) {
+        extraction = finalizeCoaExtraction(
+          heuristicExtractFromText(data.ocrText),
+          data.ocrText,
+        );
+        if (extractionHasSignal(extraction)) engine = "browser";
+        else extraction = null;
+      }
+
+      // Server fallback for PDFs / when browser OCR was empty.
+      if (!extraction) {
+        extraction = await extractWithLocalOcr(bytes, mime);
+        if (extraction) engine = "local";
+      }
 
       // Optional cloud boost only when a key exists and local left critical gaps.
       const needsBoost = !extraction || missingCriticalCount(extraction) > 0;
