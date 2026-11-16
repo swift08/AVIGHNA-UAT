@@ -93,6 +93,8 @@ async function createOcrWorker() {
 
   return createWorker("eng", OEM.LSTM_ONLY, {
     workerPath: `${origin}/tesseract/worker.min.js`,
+    // Prefer a real same-origin Worker URL (CSP allows 'self'; blob workers are extra).
+    workerBlobURL: false,
     // Directory URL — tesseract picks simd-lstm / lstm builds from here.
     corePath: `${origin}/tesseract`,
     langPath: `${origin}/tessdata`,
