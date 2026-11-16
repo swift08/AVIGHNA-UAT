@@ -706,3 +706,6 @@ CREATE TABLE IF NOT EXISTS public.batch_quality_results (
   sort_order INT NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE public.product_batches
+ADD COLUMN IF NOT EXISTS coa_content_hash TEXT;

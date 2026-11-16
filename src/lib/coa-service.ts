@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,6 +42,43 @@ function adminClient() {
 
 function canImportCoa(role: RoleType | undefined) {
   return role === "super_admin" || role === "supervisor";
+}
+
+function normalizeProductKey(name: string) {
+  return name
+    .toLowerCase()
+    .replace(/[–—−]/g, "-")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hashCoaBytes(bytes: Buffer) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function findExistingProduct(
+  admin: ReturnType<typeof adminClient>,
+  companyId: string,
+  productName: string,
+) {
+  const { data: rows, error } = await admin
+    .from("products")
+    .select("*")
+    .eq("company_id", companyId)
+    .limit(200);
+  if (error) throw new Error(error.message);
+  const target = normalizeProductKey(productName);
+  if (!target) return null;
+  const exact = (rows || []).find((p) => normalizeProductKey(String(p.name || "")) === target);
+  if (exact) return exact;
+  // Soft match for Ambuja names (dextrose / sunmalt) so OCR punctuation differences don't recreate.
+  return (
+    (rows || []).find((p) => {
+      const key = normalizeProductKey(String(p.name || ""));
+      return key.includes(target) || target.includes(key);
+    }) || null
+  );
 }
 
 async function ensureCoaBucket() {
@@ -409,16 +447,28 @@ export const confirmCoaImport = createServerFn({ method: "POST" })
     }
 
     const admin = await ensureCoaBucket();
+    const contentHash = hashCoaBytes(bytes);
 
-    const { data: matches, error: matchErr } = await admin
-      .from("products")
-      .select("*")
+    // Same COA image/file must not create stock again for this company.
+    const { data: sameFile } = await admin
+      .from("product_batches")
+      .select("id, batch_number, product_id")
       .eq("company_id", companyId)
-      .ilike("name", productName)
-      .limit(5);
-    if (matchErr) return { ok: false as const, error: matchErr.message };
+      .eq("coa_content_hash", contentHash)
+      .maybeSingle();
+    if (sameFile) {
+      return {
+        ok: false as const,
+        error: `This COA file was already imported as batch ${sameFile.batch_number}. Duplicate stock was not created.`,
+      };
+    }
 
-    let product = matches?.[0] || null;
+    let product: Record<string, unknown> | null = null;
+    try {
+      product = await findExistingProduct(admin, companyId, productName);
+    } catch (err) {
+      return { ok: false as const, error: err instanceof Error ? err.message : "Product lookup failed." };
+    }
     let createdProduct = false;
 
     if (!product) {
@@ -444,7 +494,7 @@ export const confirmCoaImport = createServerFn({ method: "POST" })
       if (createErr || !created) {
         return { ok: false as const, error: createErr?.message || "Could not create product." };
       }
-      product = created;
+      product = created as Record<string, unknown>;
       createdProduct = true;
       await admin.from("audit_logs").insert({
         user_name: data.actorName,
@@ -456,10 +506,15 @@ export const confirmCoaImport = createServerFn({ method: "POST" })
       });
     }
 
+    const productId = String(product.id);
+    const productLabel = String(product.name || productName);
+    const productOnHand = Number(product.on_hand) || 0;
+    const productReserved = Number(product.reserved) || 0;
+
     const { data: existingBatch, error: batchLookupErr } = await admin
       .from("product_batches")
       .select("id, batch_number")
-      .eq("product_id", product.id)
+      .eq("product_id", productId)
       .eq("batch_number", batchNumber)
       .maybeSingle();
     if (batchLookupErr) {
@@ -476,12 +531,12 @@ export const confirmCoaImport = createServerFn({ method: "POST" })
     if (existingBatch) {
       return {
         ok: false as const,
-        error: `Batch ${batchNumber} already exists for ${product.name}. Duplicate stock was not created.`,
+        error: `Batch ${batchNumber} already exists for ${productLabel}. Duplicate stock was not created.`,
       };
     }
 
     const ext = mime.includes("pdf") ? "pdf" : mime.includes("png") ? "png" : "jpg";
-    const storagePath = `${companyId}/${product.id}/${batchNumber.replace(/[^a-zA-Z0-9._-]/g, "_")}-${Date.now()}.${ext}`;
+    const storagePath = `${companyId}/${productId}/${batchNumber.replace(/[^a-zA-Z0-9._-]/g, "_")}-${Date.now()}.${ext}`;
     const { error: uploadErr } = await admin.storage.from(COA_BUCKET).upload(storagePath, bytes, {
       contentType: mime,
       upsert: false,
@@ -491,7 +546,7 @@ export const confirmCoaImport = createServerFn({ method: "POST" })
     const { data: batch, error: batchErr } = await admin
       .from("product_batches")
       .insert({
-        product_id: product.id,
+        product_id: productId,
         company_id: companyId,
         batch_number: batchNumber,
         manufacturer_name: data.extraction.manufacturerName.value,
@@ -510,6 +565,7 @@ export const confirmCoaImport = createServerFn({ method: "POST" })
         coa_storage_path: storagePath,
         coa_file_name: data.fileName,
         coa_mime_type: mime,
+        coa_content_hash: contentHash,
         ocr_payload: data.extraction,
         notes: data.extraction.coaRemarks.value || data.extraction.notes,
         created_by: data.actorName,
@@ -519,7 +575,13 @@ export const confirmCoaImport = createServerFn({ method: "POST" })
 
     if (batchErr || !batch) {
       await admin.storage.from(COA_BUCKET).remove([storagePath]);
-      return { ok: false as const, error: batchErr?.message || "Could not create batch." };
+      const dupHash = /coa_content_hash|product_batches_company_coa_hash/i.test(batchErr?.message || "");
+      return {
+        ok: false as const,
+        error: dupHash
+          ? "This COA file was already imported. Duplicate stock was not created."
+          : batchErr?.message || "Could not create batch.",
+      };
     }
 
     const qualityRows = (data.extraction.qualityParameters || [])
@@ -538,23 +600,23 @@ export const confirmCoaImport = createServerFn({ method: "POST" })
       await admin.from("batch_quality_results").insert(qualityRows);
     }
 
-    const previousOnHand = Number(product.on_hand) || 0;
+    const previousOnHand = productOnHand;
     const newOnHand = previousOnHand + qty.quantity;
     const { error: stockErr } = await admin
       .from("products")
       .update({ on_hand: newOnHand, updated_at: new Date().toISOString() })
-      .eq("id", product.id);
+      .eq("id", productId);
     if (stockErr) return { ok: false as const, error: stockErr.message };
 
     await admin.from("inventory_logs").insert({
       company_id: companyId,
-      product_id: product.id,
+      product_id: productId,
       transaction_type: "GOODS_RECEIVED",
       quantity: qty.quantity,
       previous_on_hand: previousOnHand,
       new_on_hand: newOnHand,
-      previous_reserved: Number(product.reserved) || 0,
-      new_reserved: Number(product.reserved) || 0,
+      previous_reserved: productReserved,
+      new_reserved: productReserved,
       reference_type: "product_batch",
       reference_id: batch.id,
       notes: `COA batch ${batchNumber} received`,
@@ -566,17 +628,17 @@ export const confirmCoaImport = createServerFn({ method: "POST" })
       module: "inventory",
       action: "coa_batch_imported",
       record_id: String(batch.id),
-      description: `${data.actorName} imported COA batch ${batchNumber} for ${product.name} (+${qty.quantity} ${qty.unit})`,
+      description: `${data.actorName} imported COA batch ${batchNumber} for ${productLabel} (+${qty.quantity} ${qty.unit})`,
     });
 
     return {
       ok: true as const,
-      productId: String(product.id),
+      productId,
       batchId: String(batch.id),
       createdProduct,
       quantity: qty.quantity,
       unit: qty.unit,
-      productName: String(product.name),
+      productName: productLabel,
       batchNumber,
     };
   });

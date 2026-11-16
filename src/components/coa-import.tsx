@@ -19,7 +19,11 @@ import {
   type CoaField,
   type CoaQualityRow,
 } from "@/lib/coa-ocr";
-import { extractCoaInBrowser } from "@/lib/coa-client-ocr";
+import {
+  extractCoaInBrowser,
+  guessCoaMimeType,
+  isCoaImageFile,
+} from "@/lib/coa-client-ocr";
 import {
   confirmCoaImport,
   extractCoaDocument,
@@ -349,60 +353,78 @@ export function CoaImportButton({
       if (!actorRole) throw new Error("No active session.");
 
       // Hosted sites: run Tesseract in the browser (Vercel serverless OCR is unreliable).
+      const mimeType = guessCoaMimeType(selected);
       let ocrText = "";
       let browserExtraction: CoaExtraction | null = null;
-      if (selected.type.startsWith("image/")) {
-        try {
-          const browser = await extractCoaInBrowser(selected);
-          ocrText = browser.text;
-          if (browser.engine === "browser") browserExtraction = browser.extraction;
-        } catch (err) {
-          console.warn("Browser OCR failed:", err);
+      let browserError: string | undefined;
+      if (isCoaImageFile(selected)) {
+        const browser = await extractCoaInBrowser(selected);
+        ocrText = browser.text;
+        browserError = browser.error;
+        if (browser.engine === "browser") browserExtraction = browser.extraction;
+      }
+
+      // If browser OCR already filled fields, show them immediately (don't depend on server OCR).
+      if (browserExtraction) {
+        setExtraction(browserExtraction);
+        setWarning(null);
+        if (browserExtraction.productGrade.value) setCategory(browserExtraction.productGrade.value);
+        else if (browserExtraction.productName.value) {
+          setCategory(browserExtraction.productName.value);
         }
+        setStage("ready");
+        toast.success("Extracted on this device. Review, then Confirm & Add to Inventory.");
+        // Still notify server for optional AI merge in background — ignore failures.
+        void extractCoaDocument({
+          data: {
+            actorRole,
+            fileName: selected.name,
+            mimeType,
+            base64: encoded,
+            companyId,
+            ...(ocrText.trim() ? { ocrText } : {}),
+          },
+        }).then((res) => {
+          if (res.ok && res.engine !== "empty") {
+            setExtraction(res.extraction);
+            setWarning(res.warning);
+          }
+        });
+        return;
       }
 
       const res = await extractCoaDocument({
         data: {
           actorRole,
           fileName: selected.name,
-          mimeType: selected.type || "application/pdf",
+          mimeType,
           base64: encoded,
           companyId,
           ...(ocrText.trim() ? { ocrText } : {}),
         },
       });
       if (!res.ok) {
-        // If server failed but browser OCR worked, still show browser results.
-        if (browserExtraction) {
-          setExtraction(browserExtraction);
-          setWarning("Used on-device OCR. Review fields carefully before saving.");
-          if (browserExtraction.productGrade.value) setCategory(browserExtraction.productGrade.value);
-          else if (browserExtraction.productName.value) {
-            setCategory(browserExtraction.productName.value);
-          }
-          setStage("ready");
-          toast.success("Extracted on this device. Review, then Confirm & Add to Inventory.");
-          return;
-        }
         setError(res.error);
         setStage("idle");
         toast.error(res.error);
         return;
       }
 
-      // Prefer richer server merge, but keep browser result if server came back empty.
-      const finalExtraction =
-        res.engine === "empty" && browserExtraction ? browserExtraction : res.extraction;
-      setExtraction(finalExtraction);
+      setExtraction(res.extraction);
       setWarning(
-        res.engine === "empty" && browserExtraction
-          ? "Used on-device OCR. Review fields carefully before saving."
-          : res.warning,
+        res.warning ||
+          (res.engine === "empty"
+            ? browserError || "Could not auto-read this COA. Fill the fields manually, then confirm."
+            : null),
       );
-      if (finalExtraction.productGrade.value) setCategory(finalExtraction.productGrade.value);
-      else if (finalExtraction.productName.value) setCategory(finalExtraction.productName.value);
+      if (res.extraction.productGrade.value) setCategory(res.extraction.productGrade.value);
+      else if (res.extraction.productName.value) setCategory(res.extraction.productName.value);
       setStage("ready");
-      toast.success("Extracted into the form. Review, then Confirm & Add to Inventory.");
+      if (res.engine === "empty") {
+        toast.error(browserError || "Could not auto-read this COA. Fill fields manually.");
+      } else {
+        toast.success("Extracted into the form. Review, then Confirm & Add to Inventory.");
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not process COA.";
       setError(message);
@@ -482,7 +504,7 @@ export function CoaImportButton({
           actorName,
           companyId,
           fileName: file.name,
-          mimeType: file.type || "application/pdf",
+          mimeType: guessCoaMimeType(file),
           base64,
           extraction: normalized,
           unitPrice: selling,
