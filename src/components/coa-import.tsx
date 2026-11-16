@@ -364,35 +364,21 @@ export function CoaImportButton({
         if (browser.engine === "browser") browserExtraction = browser.extraction;
       }
 
-      // If browser OCR already filled fields, show them immediately (don't depend on server OCR).
+      // Prefer on-device OCR result so hosted Vercel does not depend on serverless Tesseract.
       if (browserExtraction) {
         setExtraction(browserExtraction);
         setWarning(null);
+        setError("");
         if (browserExtraction.productGrade.value) setCategory(browserExtraction.productGrade.value);
         else if (browserExtraction.productName.value) {
           setCategory(browserExtraction.productName.value);
         }
         setStage("ready");
         toast.success("Extracted on this device. Review, then Confirm & Add to Inventory.");
-        // Still notify server for optional AI merge in background — ignore failures.
-        void extractCoaDocument({
-          data: {
-            actorRole,
-            fileName: selected.name,
-            mimeType,
-            base64: encoded,
-            companyId,
-            ...(ocrText.trim() ? { ocrText } : {}),
-          },
-        }).then((res) => {
-          if (res.ok && res.engine !== "empty") {
-            setExtraction(res.extraction);
-            setWarning(res.warning);
-          }
-        });
         return;
       }
 
+      // If browser OCR got text but mapping failed, still send text to server finalize.
       const res = await extractCoaDocument({
         data: {
           actorRole,
@@ -404,23 +390,27 @@ export function CoaImportButton({
         },
       });
       if (!res.ok) {
-        setError(res.error);
-        setStage("idle");
+        setError([res.error, browserError].filter(Boolean).join(" — "));
+        setStage("ready");
+        setExtraction(emptyCoaExtraction());
+        setWarning(browserError || "Could not auto-read this COA. Fill the fields manually, then confirm.");
         toast.error(res.error);
         return;
       }
 
       setExtraction(res.extraction);
+      const empty = res.engine === "empty";
       setWarning(
-        res.warning ||
-          (res.engine === "empty"
-            ? browserError || "Could not auto-read this COA. Fill the fields manually, then confirm."
-            : null),
+        empty
+          ? browserError ||
+              res.warning ||
+              "Could not auto-read this COA. Fill the fields manually, then confirm."
+          : res.warning,
       );
       if (res.extraction.productGrade.value) setCategory(res.extraction.productGrade.value);
       else if (res.extraction.productName.value) setCategory(res.extraction.productName.value);
       setStage("ready");
-      if (res.engine === "empty") {
+      if (empty) {
         toast.error(browserError || "Could not auto-read this COA. Fill fields manually.");
       } else {
         toast.success("Extracted into the form. Review, then Confirm & Add to Inventory.");

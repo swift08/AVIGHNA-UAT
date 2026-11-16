@@ -62,25 +62,38 @@ async function prepareImageForOcr(file: File): Promise<Blob> {
   }
 }
 
+/**
+ * Vite production builds often break tesseract's relative worker/core paths.
+ * Always load worker + core from jsDelivr; prefer our hosted eng.traineddata.
+ */
 async function createOcrWorker() {
-  const { createWorker } = await import("tesseract.js");
-  const localLang = `${window.location.origin}/tessdata`;
-  // 1) Prefer bundled model on our host
-  try {
-    const probe = await fetch(`${localLang}/eng.traineddata`, { method: "HEAD" });
-    if (probe.ok) {
-      return createWorker("eng", 1, {
-        langPath: localLang,
-        gzip: false,
-        cacheMethod: "none",
-      });
+  const { createWorker, OEM } = await import("tesseract.js");
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  let useLocalLang = false;
+  if (origin) {
+    try {
+      const probe = await fetch(`${origin}/tessdata/eng.traineddata`, { method: "HEAD" });
+      useLocalLang = probe.ok && Number(probe.headers.get("content-length") || 0) > 100000;
+    } catch {
+      useLocalLang = false;
     }
-  } catch {
-    // fall through to CDN
   }
-  // 2) Default CDN language pack from tesseract.js
-  return createWorker("eng", 1, {
+
+  return createWorker("eng", OEM.LSTM_ONLY, {
+    workerPath: "https://cdn.jsdelivr.net/npm/tesseract.js@7.0.0/dist/worker.min.js",
+    corePath: "https://cdn.jsdelivr.net/npm/tesseract.js-core@7.0.0",
+    ...(useLocalLang
+      ? {
+          langPath: `${origin}/tessdata`,
+          gzip: false,
+        }
+      : {
+          // Official default language CDN used by tesseract.js
+          langPath: "https://tessdata.projectnaptha.com/4.0.0",
+          gzip: true,
+        }),
     cacheMethod: "none",
+    logger: () => {},
   });
 }
 
@@ -95,7 +108,12 @@ export async function extractCoaInBrowser(file: File): Promise<{
   error?: string;
 }> {
   if (!isCoaImageFile(file)) {
-    return { extraction: emptyCoaExtraction(), text: "", engine: "empty" };
+    return {
+      extraction: emptyCoaExtraction(),
+      text: "",
+      engine: "empty",
+      error: "Only image COA files can be OCR’d in the browser.",
+    };
   }
 
   const prepared = await prepareImageForOcr(file);
@@ -110,13 +128,14 @@ export async function extractCoaInBrowser(file: File): Promise<{
     const pass1 = await worker.recognize(prepared);
     let texts = [pass1.data.text || ""].filter(Boolean);
 
-    // Second layout pass only if first pass looks weak.
     const weak =
       texts.join(" ").length < 80 ||
-      !/(product|batch|dextrose|sunmalt|maltodextrin|quantity|manufactur)/i.test(texts.join(" "));
+      !/(product|batch|dextrose|sunmalt|maltodextrin|quantity|manufactur|coa|analysis)/i.test(
+        texts.join(" "),
+      );
     if (weak) {
       await worker.setParameters({
-        tessedit_pageseg_mode: "4",
+        tessedit_pageseg_mode: "3",
         preserve_interword_spaces: "1",
       });
       const pass2 = await worker.recognize(prepared);
@@ -137,19 +156,27 @@ export async function extractCoaInBrowser(file: File): Promise<{
         text: corpus,
         engine: "empty",
         error: corpus.trim()
-          ? "OCR read the image but could not map product/batch fields. Fill them manually."
-          : "OCR returned no text from this image. Try a clearer photo.",
+          ? "OCR read text but could not map product/batch fields. Fill them manually."
+          : "OCR returned no text. Use a clearer, well-lit photo of the full COA.",
       };
     }
     return { extraction, text: corpus, engine: "browser" };
   } catch (err) {
+    const message = err instanceof Error ? err.message : "Browser OCR failed.";
+    console.error("COA browser OCR error:", err);
     return {
       extraction: emptyCoaExtraction(),
       text: "",
       engine: "empty",
-      error: err instanceof Error ? err.message : "Browser OCR failed.",
+      error: message,
     };
   } finally {
-    if (worker) await worker.terminate();
+    if (worker) {
+      try {
+        await worker.terminate();
+      } catch {
+        // ignore terminate errors
+      }
+    }
   }
 }
