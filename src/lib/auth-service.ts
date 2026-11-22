@@ -171,6 +171,12 @@ export function roleForFeatures(featureIds: string[]): RoleType {
 
 export function featuresCreatorCanAssign(role: RoleType | undefined): string[] {
   if (role === "super_admin") return ACCESS_FEATURES.map((feature) => feature.id);
+  // Supervisors can propose feature access; Super Admin must approve before the login is active.
+  if (role === "supervisor") {
+    return ACCESS_FEATURES.filter((feature) => feature.id !== "administration").map(
+      (feature) => feature.id,
+    );
+  }
   return [];
 }
 
@@ -230,7 +236,6 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "field_visits.schedule",
     "field_visits.conduct",
     "tasks.view",
-    "tasks.manage",
     "inventory.view",
     "invoices.view",
     "payments.record",
@@ -251,6 +256,8 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "tasks.manage",
     "field_visits.view",
     "customers.view",
+    // Floor KPIs only — no finance amounts (see hasUserPermission + analytics UI)
+    "analytics.view",
   ],
   accounts: [
     "invoices.view",
@@ -490,6 +497,33 @@ export function hasUserPermission(user: UserProfile | null, permission: string):
 
   // 1. Explicit individual user override: Deny takes absolute precedence
   if (user.overrides?.deny?.includes(permission)) return false;
+
+  // 1b. Supervisors only review sales visits — never log or schedule them
+  if (
+    user.role === "supervisor" &&
+    (permission === "field_visits.conduct" ||
+      permission === "field_visits.schedule" ||
+      permission === "visits.create" ||
+      permission === "visits.schedule")
+  ) {
+    return false;
+  }
+
+  // 1b2. Sales only receives tasks — cannot create or assign
+  if (user.role === "sales" && permission === "tasks.manage") {
+    return false;
+  }
+
+  // 1c. Supervisors do not use Purchases / create POs — accounts owns procurement
+  if (
+    user.role === "supervisor" &&
+    (permission === "purchases.view" ||
+      permission === "purchases.create" ||
+      permission === "purchases.approve" ||
+      permission === "purchases.receive")
+  ) {
+    return false;
+  }
 
   // 2. Explicit individual user override: Grant takes precedence over default role limits
   if (user.overrides?.grant?.includes(permission)) return true;

@@ -12,6 +12,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
+import { missingRequired } from "@/lib/form-required";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -133,8 +134,14 @@ export function OrderDetail({
   }, [order]);
 
   const isSuperAdmin = currentUser?.role === "super_admin" || hasPermission("*");
+  const isSupervisor =
+    currentUser?.role === "supervisor" ||
+    Boolean(currentUser?.roleName?.toLowerCase().includes("supervisor"));
+  // Super Admin logistics is view-only; sales / supervisor allot vehicles on the order desk.
   const canAssignVehicle =
-    hasPermission("orders.create") || hasPermission("orders.approve") || isSuperAdmin;
+    !isSuperAdmin &&
+    (currentUser?.role === "sales" || isSupervisor) &&
+    (hasPermission("orders.create") || hasPermission("orders.approve"));
   const orderNotes =
     order && "notes" in order && typeof order.notes === "string" ? order.notes : "";
   const isPriceOverride = Boolean(
@@ -1095,18 +1102,24 @@ export function OrderTable({
 
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedProduct) return;
-
+    const finalUnit = isCustomUnit ? customUnit.trim() || "units" : unit;
+    const qty = parseFloat(quantity);
     const purchaseRef = purchaseReference.trim();
-    if (!purchaseRef) {
-      toast.error("Purchase reference required", {
-        description: "Every product in the order must have a purchase reference number.",
-      });
+    const requiredError =
+      missingRequired([
+        { label: "Customer name", value: customerName },
+        { label: "Inventory item", value: selectedProduct?.id || productName },
+        { label: "Purchase reference number", value: purchaseRef },
+        { label: "Unit", value: finalUnit },
+      ]) ||
+      (!Number.isFinite(qty) || qty <= 0
+        ? "Quantity is required (must be greater than 0)."
+        : null);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
       return;
     }
-
-    const qty = parseFloat(quantity) || 1;
-    const finalUnit = isCustomUnit ? customUnit.trim() || "units" : unit;
+    if (!selectedProduct) return;
     const available = Math.max(
       0,
       Number(selectedProduct.on_hand) - Number(selectedProduct.reserved || 0),
@@ -1146,7 +1159,7 @@ export function OrderTable({
       assignedDriverPhone?: string;
     } = {
       companyId,
-      customerName,
+      customerName: customerName.trim(),
       productName,
       quantity: qty,
       unit: finalUnit,
@@ -1387,7 +1400,7 @@ export function OrderTable({
               </select>
             </label>
             <label className="drawer-field">
-              Customer Name
+              Customer Name <span className="text-destructive">*</span>
               {customersList.length > 0 && (
                 <select
                   className="mb-1 text-xs"
@@ -1420,7 +1433,7 @@ export function OrderTable({
               />
             </label>
             <label className="drawer-field">
-              Inventory item
+              Inventory item <span className="text-destructive">*</span>
               <select
                 required
                 value={selectedProduct?.id || ""}
@@ -1471,7 +1484,7 @@ export function OrderTable({
             </label>
             <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
               <label className="drawer-field">
-                Purchase Reference Number
+                Purchase Reference Number <span className="text-destructive">*</span>
                 <span className="ml-1 text-[10px] font-medium text-muted-foreground">
                   (required for every product)
                 </span>
@@ -1526,7 +1539,7 @@ export function OrderTable({
             </div>
             <div className="grid grid-cols-2 gap-3">
               <label className="drawer-field">
-                Quantity
+                Quantity <span className="text-destructive">*</span>
                 {availableStock !== null && (
                   <span className="ml-1 text-[10px] font-medium text-muted-foreground">
                     (max {availableStock} {selectedProduct?.unit || unit} available)
@@ -1546,7 +1559,7 @@ export function OrderTable({
                 />
               </label>
               <label className="drawer-field">
-                Unit
+                Unit <span className="text-destructive">*</span>
                 <select
                   value={isCustomUnit ? "custom" : unit}
                   onChange={(e) => {

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, useRef, useMemo } from "react";
 import {
+  ArrowLeft,
   ArrowRight,
   Building2,
   CalendarDays,
@@ -60,7 +61,7 @@ import {
 } from "@/components/ui/sheet";
 import { useWorkspace } from "./workspace-provider";
 import { CompanyLogo } from "./workspace-shell";
-import { OrderTable } from "./order-workspace";
+import { OrderTable, getOrderManager } from "./order-workspace";
 import { TaskWorkspace } from "./task-workspace";
 import { RevenueChart } from "./revenue-chart";
 import {
@@ -85,9 +86,11 @@ import {
   openPurchaseOrderDocument,
   savePurchaseOrderDocument,
 } from "@/lib/po-documents";
+import { missingPhone, missingRequired } from "@/lib/form-required";
 import { listStaffLogins } from "@/lib/login-admin";
 import { TeamLogins } from "./team-logins";
 import { CoaImportButton, ProductBatchesPanel } from "./coa-import";
+import { listProductBatches } from "@/lib/coa-service";
 import {
   fetchOrders,
   createOrder,
@@ -222,7 +225,13 @@ async function processImageFile(file: File): Promise<string> {
   });
 }
 
-export function ModuleWorkspace({ module }: { module: string }) {
+export function ModuleWorkspace({
+  module,
+  customerId,
+}: {
+  module: string;
+  customerId?: string;
+}) {
   const navigate = useNavigate();
   const routerSearch = useRouterState({
     select: (s) => (s.location.search as Record<string, string>) || {},
@@ -302,6 +311,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const [dbDeliveries, setDbDeliveries] = useState<DBDelivery[]>([]);
   const [dbPayments, setDbPayments] = useState<DBPayment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [nearExpiryBatchCount, setNearExpiryBatchCount] = useState(0);
+  const [nearExpiryProductName, setNearExpiryProductName] = useState<string | null>(null);
 
   const visibleFieldVisits = useMemo(() => {
     if (canViewAllFieldVisits) {
@@ -317,6 +328,43 @@ export function ModuleWorkspace({ module }: { module: string }) {
       return false;
     });
   }, [dbVisits, canViewAllFieldVisits, currentUser]);
+
+  useEffect(() => {
+    if (module !== "analytics" || tab !== "Product Performance" || dbProducts.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    const loadNearExpiry = async () => {
+      const horizonMs = 60 * 24 * 60 * 60 * 1000; // 60 days
+      const now = Date.now();
+      const productsWithId = dbProducts.filter((p) => p.id).slice(0, 40);
+      const results = await Promise.all(
+        productsWithId.map(async (p) => {
+          try {
+            const res = await listProductBatches({ data: { productId: p.id! } });
+            if (!res.ok) return { count: 0, name: p.name };
+            const near = (res.batches || []).filter((b) => {
+              if (!b.expiry_date) return false;
+              const exp = Date.parse(String(b.expiry_date));
+              return Number.isFinite(exp) && exp >= now && exp - now <= horizonMs;
+            });
+            return { count: near.length, name: p.name };
+          } catch {
+            return { count: 0, name: p.name };
+          }
+        }),
+      );
+      if (cancelled) return;
+      const total = results.reduce((s, r) => s + r.count, 0);
+      const top = results.sort((a, b) => b.count - a.count).find((r) => r.count > 0);
+      setNearExpiryBatchCount(total);
+      setNearExpiryProductName(top?.name || null);
+    };
+    void loadNearExpiry();
+    return () => {
+      cancelled = true;
+    };
+  }, [module, tab, dbProducts]);
 
   // Lead modal state (All 11 user fields)
   const [leadModal, setLeadModal] = useState(false);
@@ -357,6 +405,21 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const [custCreditLimit, setCustCreditLimit] = useState("0");
   const [custCreditDays, setCustCreditDays] = useState("30");
   const [selectedCustomerDetails, setSelectedCustomerDetails] = useState<DBCustomer | null>(null);
+
+  useEffect(() => {
+    if (module !== "customers" || !customerId) {
+      if (!customerId) setSelectedCustomerDetails(null);
+      return;
+    }
+    const match =
+      dbCustomers.find((c) => c.id === customerId) ||
+      dbCustomers.find((c) => (c.id || c.name) === decodeURIComponent(customerId)) ||
+      dbCustomers.find(
+        (c) => c.name.trim().toLowerCase() === decodeURIComponent(customerId).trim().toLowerCase(),
+      ) ||
+      null;
+    setSelectedCustomerDetails(match);
+  }, [module, customerId, dbCustomers]);
 
   // Edit customer modal state
   const [editCustModal, setEditCustModal] = useState(false);
@@ -491,7 +554,9 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [audioTimer, setAudioTimer] = useState(0);
   const [visitSalesFilter, setVisitSalesFilter] = useState("All");
-  const canLogFieldVisit = hasPermission("field_visits.conduct");
+  // Only sales logs visits in the field. Supervisors / SA only review what sales logged.
+  const canLogFieldVisit =
+    currentUser?.role === "sales" && hasPermission("field_visits.conduct");
 
   // Dispatch modal state
   const [dispatchModal, setDispatchModal] = useState(false);
@@ -693,14 +758,15 @@ export function ModuleWorkspace({ module }: { module: string }) {
     orders: "Orders",
     tasks: "My work",
     leads: "Lead pipeline",
-    customers: "Customers",
+    customers: selectedCustomerDetails?.name || (customerId ? "Customer profile" : "Customers"),
     inventory: "Inventory intelligence",
     purchases: "Purchases",
-    logistics: "Dispatch control",
+    logistics:
+      isSuperAdmin || isSupervisor ? "Out for delivery" : "Dispatch control",
     accounts: isSalesCollector ? "Payments due" : "Invoices",
     credit: "Credit control",
-    analytics: "Revenue intelligence",
-    administration: "Administration",
+    analytics: isSupervisor ? "Floor analytics" : "Revenue intelligence",
+    administration: isSupervisor ? "Team logins" : "Administration",
     "field-visits": "Field visits",
   };
 
@@ -708,18 +774,32 @@ export function ModuleWorkspace({ module }: { module: string }) {
     orders: "Every order. Every milestone. One clear view.",
     tasks: "The right work, in the right hands.",
     leads: "Turn meaningful conversations into lasting relationships.",
-    customers: "Your relationships, at a glance.",
+    customers: selectedCustomerDetails
+      ? `${companies.find((c) => c.id === selectedCustomerDetails.company_id)?.name || "Avighna Group"} · ${selectedCustomerDetails.status} · ${Number(selectedCustomerDetails.credit_days) || 30} credit days`
+      : customerId
+        ? "Loading customer profile…"
+        : "Your relationships, at a glance.",
     inventory: "Know what’s on hand. Stay ahead of what’s next.",
     purchases: "From supplier to stock, without the guesswork.",
-    logistics: "Keep your deliveries moving.",
+    logistics:
+      isSuperAdmin || isSupervisor
+        ? "Who is out for delivery, and where the trip is going — view only."
+        : "Keep your deliveries moving.",
     accounts: isSalesCollector
       ? "See outstanding invoices, collect payments in the field, and track receipts."
       : "Ready to invoice shows orders after Supervisor confirmed/added the vehicle. Enter bill details, then raise the invoice. After that book the driver on Order desk.",
     credit:
       "Limits, days and credit/debit notes. Accounts adjusts receivables — warehouse handles stock.",
-    analytics: "The numbers behind your next decision.",
-    administration: "Your organization, thoughtfully managed.",
-    "field-visits": "Closer to your customers.",
+    analytics: isSupervisor
+      ? "Detailed KPIs for orders, inventory, and logistics — no finance figures."
+      : "The numbers behind your next decision.",
+    administration: isSupervisor
+      ? "Propose team logins and feature access — Super Admin must approve before they can sign in."
+      : "Your organization, thoughtfully managed.",
+    "field-visits":
+      canViewAllFieldVisits
+        ? "Sales team visits — review what was logged in the field."
+        : "Closer to your customers.",
   };
 
   // Voice recording timer effect
@@ -775,13 +855,26 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
   const handleCreateLead = async (e: React.FormEvent) => {
     e.preventDefault();
+    const requiredError =
+      missingRequired([
+        { label: "Business name", value: leadName },
+        { label: "Contact person", value: leadContact },
+      ]) ||
+      missingPhone("Phone number", leadPhone) ||
+      (leadSource === "Referral"
+        ? missingRequired([{ label: "Referred by", value: leadReferrer }])
+        : null);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
+      return;
+    }
     const safeCompany =
       leadCompany === "all" ? (company !== "all" ? company : "asian") : leadCompany;
     const payload = {
       companyId: safeCompany || "asian",
-      businessName: leadName,
-      contactPerson: leadContact,
-      phone: leadPhone,
+      businessName: leadName.trim(),
+      contactPerson: leadContact.trim(),
+      phone: leadPhone.trim(),
       email: leadEmail,
       gstin: leadGstin,
       city: leadCity,
@@ -806,7 +899,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
       resetLeadForm();
       reloadData();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Could not save lead.");
+      toast.error(err instanceof Error ? err.message : "Could not save lead.");
     }
   };
 
@@ -921,12 +1014,19 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const handleUpdateCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editCustId) return;
+    const requiredError =
+      missingRequired([{ label: "Customer / business name", value: editCustName }]) ||
+      missingPhone("Phone number", editCustPhone);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
+      return;
+    }
     try {
       const updated = await updateCustomer({
         id: editCustId,
-        name: editCustName,
+        name: editCustName.trim(),
         contactPerson: editCustContact,
-        phone: editCustPhone,
+        phone: editCustPhone.trim(),
         email: editCustEmail,
         address: editCustAddress,
         notes: editCustNotes,
@@ -949,17 +1049,26 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
   const handleCreateCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
+    const requiredError =
+      missingRequired([
+        { label: "Legal name", value: custLegalName },
+        { label: "Contact person", value: custContact },
+      ]) || missingPhone("Phone number", custPhone);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
+      return;
+    }
     await createCustomer({
       companyId: custCompany || "asian",
-      name: custLegalName,
+      name: custLegalName.trim(),
       tradeName: custTradeName,
-      phone: custPhone,
+      phone: custPhone.trim(),
       email: custEmail,
       gstin: custGstin,
       billingAddress: custBillingAddress,
       shippingAddress: custShippingAddress,
       customerType: custType,
-      contactPerson: custContact,
+      contactPerson: custContact.trim(),
       creditLimit: parseFloat(custCreditLimit) || 0,
       creditDays: parseInt(custCreditDays) || 30,
       creatorName: "Ravi Kumar",
@@ -1298,13 +1407,14 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
   const handleInboundStock = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inboundProductId) {
-      alert("Please select a product");
-      return;
-    }
     const qty = parseFloat(inboundQty);
-    if (isNaN(qty) || qty <= 0) {
-      alert("Please enter a valid quantity");
+    const requiredError =
+      missingRequired([{ label: "Product", value: inboundProductId }]) ||
+      (!Number.isFinite(qty) || qty <= 0
+        ? "Inbound quantity is required (must be greater than 0)."
+        : null);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
       return;
     }
     const reorder = parseFloat(inboundReorder);
@@ -1344,22 +1454,24 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const handleUpdateStock = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editStockProduct?.id) {
-      alert("No product selected");
+      toast.error("No product selected");
       return;
     }
     const newOnHand = parseFloat(editStockOnHand);
-    if (isNaN(newOnHand) || newOnHand < 0) {
-      alert("Please enter a valid stock quantity (0 or greater)");
-      return;
-    }
     const newPrice = parseFloat(editStockUnitPrice);
-    if (isNaN(newPrice) || newPrice <= 0) {
-      alert("Please enter a valid Selling Price (₹)");
-      return;
-    }
     const newWholesale = parseFloat(editStockWholesalePrice);
-    if (isNaN(newWholesale) || newWholesale <= 0) {
-      alert("Please enter a valid Wholesale Price (₹)");
+    const requiredError =
+      (!Number.isFinite(newOnHand) || newOnHand < 0
+        ? "On-hand stock is required (0 or greater)."
+        : null) ||
+      (!Number.isFinite(newPrice) || newPrice <= 0
+        ? "Selling price is required (must be greater than 0)."
+        : null) ||
+      (!Number.isFinite(newWholesale) || newWholesale <= 0
+        ? "Wholesale price is required (must be greater than 0)."
+        : null);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
       return;
     }
     const newReorder = parseFloat(editStockReorder);
@@ -1399,15 +1511,19 @@ export function ModuleWorkspace({ module }: { module: string }) {
   };
 
   const handleSaveVisit = async () => {
-    if (!visitFirm) {
-      alert("Please select a firm first.");
+    if (!canLogFieldVisit) {
+      toast.error("Only sales can log field visits.");
+      return;
+    }
+    const requiredError = missingRequired([
+      { label: "Firm / company", value: visitFirm },
+      { label: "Client", value: visitSelectedCustomer },
+    ]);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
       return;
     }
     const clientName = visitSelectedCustomer;
-    if (!clientName) {
-      alert("Please select a client from the chosen firm.");
-      return;
-    }
 
     const matchedCust = dbCustomers.find(
       (c) =>
@@ -1455,15 +1571,19 @@ export function ModuleWorkspace({ module }: { module: string }) {
   };
 
   const handleCreateOrderFromVisit = async () => {
-    if (!visitFirm) {
-      alert("Please pick a firm first.");
+    if (!canLogFieldVisit) {
+      toast.error("Only sales can log field visits.");
+      return;
+    }
+    const requiredError = missingRequired([
+      { label: "Firm / company", value: visitFirm },
+      { label: "Client", value: visitSelectedCustomer },
+    ]);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
       return;
     }
     const clientName = visitSelectedCustomer;
-    if (!clientName) {
-      alert("Please select a client from the chosen firm.");
-      return;
-    }
 
     const matchedCust = dbCustomers.find(
       (c) =>
@@ -1533,8 +1653,12 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
   const handleSaveVehicle = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!truckPlate.trim()) {
-      alert("Please enter a vehicle plate number");
+    const requiredError = missingRequired([
+      { label: "Vehicle make & model", value: truckName },
+      { label: "Plate registration number", value: truckPlate },
+    ]);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
       return;
     }
     setVehicleSaving(true);
@@ -1605,23 +1729,36 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
   const handleCreateProduct = async (e: React.FormEvent) => {
     e.preventDefault();
-    const finalUnit = isCustomProdUnit ? customProdUnit.trim() || "units" : prodUnit;
+    const finalUnit = isCustomProdUnit ? customProdUnit.trim() : prodUnit;
+    const requiredError =
+      missingRequired([
+        { label: "Product code (SKU)", value: prodCode },
+        { label: "Product name", value: prodName },
+        { label: "Category", value: prodCategory },
+        { label: "Unit", value: finalUnit },
+        { label: "Selling price", value: prodPrice },
+        { label: "Wholesale price", value: prodWholesalePrice },
+      ]);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
+      return;
+    }
     const sp = parseFloat(prodPrice);
     const wp = parseFloat(prodWholesalePrice);
     if (isNaN(sp) || sp <= 0) {
-      alert("Please enter a valid Selling Price (₹)");
+      toast.error("Please enter a valid Selling Price (₹)");
       return;
     }
     if (isNaN(wp) || wp <= 0) {
-      alert("Please enter a valid Wholesale Price (₹)");
+      toast.error("Please enter a valid Wholesale Price (₹)");
       return;
     }
     await createProduct({
       companyId: prodCompany,
-      code: prodCode,
-      name: prodName,
-      category: prodCategory,
-      unit: finalUnit,
+      code: prodCode.trim(),
+      name: prodName.trim(),
+      category: prodCategory.trim(),
+      unit: finalUnit || "units",
       unitPrice: sp,
       wholesalePrice: wp,
       onHand: parseFloat(prodOnHand) || 0,
@@ -1669,15 +1806,35 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
   const handleCreatePO = async (e: React.FormEvent) => {
     e.preventDefault();
-    const finalPoUnit = isCustomPoUnit ? customPoUnit.trim() || "units" : poUnit;
+    if (isSupervisor || !hasPermission("purchases.create")) {
+      toast.error("Supervisors do not create purchase orders.");
+      return;
+    }
+    const finalPoUnit = isCustomPoUnit ? customPoUnit.trim() : poUnit;
+    const qty = parseFloat(poQuantity);
+    const rate = parseFloat(poPrice);
+    const requiredError =
+      missingRequired([
+        { label: "Supplier", value: poSupplier },
+        { label: "Product / description", value: poProduct },
+        { label: "Unit", value: finalPoUnit },
+      ]) ||
+      (!Number.isFinite(qty) || qty <= 0 ? "Quantity is required (must be greater than 0)." : null) ||
+      (!Number.isFinite(rate) || rate <= 0
+        ? "Rate / unit price is required (must be greater than 0)."
+        : null);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
+      return;
+    }
     const poId = suggestPurchaseOrderNumber(poCompany, String(Date.now()).slice(-2));
     const created = await createPurchaseOrder({
       companyId: poCompany === "all" ? "ganesh" : poCompany,
-      supplierName: poSupplier,
-      productName: poProduct,
-      quantity: parseFloat(poQuantity) || 10,
-      unit: finalPoUnit,
-      unitPrice: parseFloat(poPrice) || 100,
+      supplierName: poSupplier.trim(),
+      productName: poProduct.trim(),
+      quantity: qty,
+      unit: finalPoUnit || "units",
+      unitPrice: rate,
       poId,
       notes: encodePoNotes({
         text: poRemark,
@@ -1714,12 +1871,25 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
   const handleScheduleVisit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canLogFieldVisit) {
+      toast.error("Only sales can schedule field visits.");
+      return;
+    }
+    const requiredError = missingRequired([
+      { label: "Customer name", value: visitCustomer },
+      { label: "Date", value: visitDate },
+      { label: "Time", value: visitTime },
+    ]);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
+      return;
+    }
     await scheduleFieldVisit({
       companyId: visitFirm || "asian",
-      customerName: visitCustomer,
+      customerName: visitCustomer.trim(),
       purpose: visitPurpose,
       scheduledDate: visitDate,
-      scheduledTime: visitTime,
+      scheduledTime: visitTime.trim(),
       assignedTo: currentUser?.id,
       assignedToName: currentUser?.name || "Ravi Kumar",
       creatorName: currentUser?.name || "Ravi Kumar",
@@ -1741,11 +1911,19 @@ export function ModuleWorkspace({ module }: { module: string }) {
   };
 
   const handleReceiveGoods = async (po: DBPurchaseOrder) => {
-    await receivePurchaseGoods(po.id, po.company_id, "Arun Nair (Supervisor)");
+    if (isSupervisor || !hasPermission("purchases.receive")) {
+      toast.error("Supervisors do not receive purchase orders here.");
+      return;
+    }
+    await receivePurchaseGoods(po.id, po.company_id, currentUser?.name || "Warehouse");
     reloadData();
   };
 
   const openEditPo = (po: DBPurchaseOrder) => {
+    if (isSupervisor || !isSuperAdmin) {
+      toast.error("Supervisors do not manage purchase orders.");
+      return;
+    }
     setEditingPo(po);
     setEditPoSupplier(po.supplier_name);
     setEditPoProduct(po.product_name);
@@ -1771,24 +1949,34 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const handleUpdatePO = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingPo) return;
+    if (isSupervisor || !isSuperAdmin) {
+      toast.error("Supervisors do not manage purchase orders.");
+      return;
+    }
     const qty = parseFloat(editPoQuantity);
     const unitRate = parseFloat(editPoPrice);
-    if (isNaN(qty) || qty <= 0) {
-      alert("Please enter a valid quantity");
-      return;
-    }
-    if (isNaN(unitRate) || unitRate < 0) {
-      alert("Please enter a valid unit price");
-      return;
-    }
     const finalUnit = isCustomEditPoUnit ? customEditPoUnit.trim() || editPoUnit : editPoUnit;
+    const requiredError =
+      missingRequired([
+        { label: "Supplier name", value: editPoSupplier },
+        { label: "Product name", value: editPoProduct },
+        { label: "Unit", value: finalUnit },
+      ]) ||
+      (!Number.isFinite(qty) || qty <= 0 ? "Quantity is required (must be greater than 0)." : null) ||
+      (!Number.isFinite(unitRate) || unitRate < 0
+        ? "Rate / unit price is required."
+        : null);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
+      return;
+    }
 
     try {
       const updated = await updatePurchaseOrder({
         id: editingPo.id,
         companyId: editPoCompany,
-        supplierName: editPoSupplier,
-        productName: editPoProduct,
+        supplierName: editPoSupplier.trim(),
+        productName: editPoProduct.trim(),
         quantity: qty,
         unit: finalUnit,
         unitPrice: unitRate,
@@ -1800,7 +1988,9 @@ export function ModuleWorkspace({ module }: { module: string }) {
       setEditingPo(null);
       reloadData();
     } catch (err: unknown) {
-      alert(`Failed to update Purchase Order: ${err instanceof Error ? err.message : "Error"}`);
+      toast.error(
+        `Failed to update Purchase Order: ${err instanceof Error ? err.message : "Error"}`,
+      );
     }
   };
 
@@ -1820,11 +2010,23 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const handleUpdateVisit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingVisit?.id) return;
+    if (currentUser?.role === "supervisor" || (!isSuperAdmin && currentUser?.role !== "sales")) {
+      toast.error("Supervisors can view sales visits but cannot edit them.");
+      return;
+    }
+    const requiredError = missingRequired([
+      { label: "Visit date", value: editVisitDate },
+      { label: "Visit time", value: editVisitTime },
+    ]);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
+      return;
+    }
     try {
       const isSalesUser = currentUser?.role === "sales";
       const tag = isSalesUser
         ? `\n[Edited once on ${new Date().toLocaleDateString()} by ${currentUser?.name || "Sales"}]`
-        : `\n[Edited on ${new Date().toLocaleDateString()} by ${currentUser?.name || "Supervisor"}]`;
+        : `\n[Edited on ${new Date().toLocaleDateString()} by ${currentUser?.name || "Admin"}]`;
       const finalNotes = `${editVisitNotes.trim()}${tag}`;
 
       const updated = await updateFieldVisit({
@@ -1843,11 +2045,17 @@ export function ModuleWorkspace({ module }: { module: string }) {
       setTimeout(() => setVisitSuccessNotice(null), 5000);
       reloadData();
     } catch (err: unknown) {
-      alert(`Failed to update field visit: ${err instanceof Error ? err.message : "Error"}`);
+      toast.error(
+        `Failed to update field visit: ${err instanceof Error ? err.message : "Error"}`,
+      );
     }
   };
 
   const openDispatchModal = (o: DBOrder) => {
+    if (isSuperAdmin || isSupervisor) {
+      toast.error("Logistics is view-only for this role.");
+      return;
+    }
     setSelectedOrderForDispatch(o);
     if (o.transport_mode === "Manufacturer Vehicle") {
       setVehicleNo("Manufacturer Arranged");
@@ -1874,17 +2082,31 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
   const handleDispatchOrder = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSuperAdmin || isSupervisor) {
+      toast.error("Logistics is view-only for this role.");
+      return;
+    }
     if (!selectedOrderForDispatch) return;
+    const isManufacturer =
+      selectedOrderForDispatch.transport_mode === "Manufacturer Vehicle";
+    const requiredError = isManufacturer
+      ? missingRequired([{ label: "Delivery date", value: dispatchDate }])
+      : missingRequired([
+          { label: "Delivery date", value: dispatchDate },
+          { label: "Fleet vehicle", value: vehicleNo },
+          { label: "Driver name", value: driverName },
+        ]);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
+      return;
+    }
     const matchingInv = dbInvoices.find(
       (i) =>
         i.order_id === selectedOrderForDispatch.id ||
         i.id === `INV-${selectedOrderForDispatch.id.replace("ORD-", "")}`,
     );
 
-    const effVehicleNo =
-      selectedOrderForDispatch.transport_mode === "Manufacturer Vehicle"
-        ? "Manufacturer Arranged"
-        : vehicleNo;
+    const effVehicleNo = isManufacturer ? "Manufacturer Arranged" : vehicleNo;
 
     try {
       await dispatchDelivery({
@@ -1903,11 +2125,15 @@ export function ModuleWorkspace({ module }: { module: string }) {
       setSelectedOrderForDispatch(null);
       reloadData();
     } catch (err: unknown) {
-      alert(err instanceof Error ? err.message : String(err));
+      toast.error(err instanceof Error ? err.message : String(err));
     }
   };
 
   const handleOpenPodModal = (delivery: DBDelivery) => {
+    if (currentUser?.role !== "logistics") {
+      toast.error("Only the assigned driver can submit proof of delivery.");
+      return;
+    }
     setSelectedDeliveryForPod(delivery);
     const ord = dbOrders.find((o) => o.id === delivery.order_id);
     const parsedQty = ord ? parseFloat(ord.items_summary?.match(/(\d+)/)?.[1] || "1") : 1;
@@ -1976,14 +2202,30 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
   const handleSubmittingPod = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (currentUser?.role !== "logistics") {
+      toast.error("Only the assigned driver can submit proof of delivery.");
+      return;
+    }
     if (!selectedDeliveryForPod) return;
     if (!deliveryProofReady(podGps, podPhotoUrls)) {
       if (!podGps) setPodGpsError("Capture the delivery location before submitting.");
       if (podPhotoUrls.length === 0) setPodPhotoError("Take a delivery photo before submitting.");
+      toast.error("Required fields missing", {
+        description: "Delivery location and photo are required before submitting POD.",
+      });
       return;
     }
     const delQty = parseFloat(podDeliveredQty) || 0;
     const remQty = parseFloat(podRemainingQty) || 0;
+    if (podOutcome !== "Failed") {
+      const receiverError = missingRequired([
+        { label: "Receiver name", value: podReceiverName },
+      ]);
+      if (receiverError) {
+        toast.error("Required fields missing", { description: receiverError });
+        return;
+      }
+    }
 
     await completeDelivery({
       deliveryId: selectedDeliveryForPod.id || `DEL-${selectedDeliveryForPod.order_id}`,
@@ -2027,7 +2269,15 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const handleRecordPaymentSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedInvoiceForPayment) return;
-    const amount = parseFloat(payAmount) || selectedInvoiceForPayment.remaining_amount;
+    const amount = parseFloat(payAmount);
+    const requiredError =
+      !Number.isFinite(amount) || amount <= 0
+        ? "Amount to record is required (must be greater than 0)."
+        : null;
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
+      return;
+    }
     await recordPayment({
       invoiceId: selectedInvoiceForPayment.id,
       companyId: selectedInvoiceForPayment.company_id,
@@ -2052,6 +2302,254 @@ export function ModuleWorkspace({ module }: { module: string }) {
     0,
   );
 
+  const analyticsKpis = useMemo(() => {
+    if (module !== "analytics") return [] as { n: string; v: string; sub: string }[];
+
+    if (isSupervisor) {
+      const pendingOrders = dbOrders.filter((o) =>
+        ["Pending approval", "Procuring", "Approved", "Ready to dispatch"].includes(o.status),
+      ).length;
+      const outForDelivery = dbDeliveries.filter((d) => d.status === "Out for delivery").length;
+      const readyDispatch = dbOrders.filter((o) => o.status === "Ready to dispatch").length;
+      const lowStock = dbProducts.filter((p) => {
+        const outbound = outboundOrderedQuantity(dbOrders, p);
+        return availableFromStock(Number(p.on_hand) || 0, outbound) <= Number(p.reorder_level || 0);
+      }).length;
+      const delivered = dbOrders.filter((o) => o.status === "Delivered").length;
+      const activePipeline = dbOrders.filter(
+        (o) => !["Delivered", "Rejected", "Draft"].includes(o.status),
+      ).length;
+
+      if (tab === "Inventory") {
+        const outOfStock = dbProducts.filter((p) => {
+          const outbound = outboundOrderedQuantity(dbOrders, p);
+          return availableFromStock(Number(p.on_hand) || 0, outbound) <= 0;
+        }).length;
+        return [
+          { n: "SKUs tracked", v: String(dbProducts.length), sub: "In current company filter" },
+          { n: "At / below reorder", v: String(lowStock), sub: "Needs restock attention" },
+          { n: "Out of stock", v: String(outOfStock), sub: "Available qty is zero" },
+          {
+            n: "Healthy stock",
+            v: String(Math.max(0, dbProducts.length - lowStock)),
+            sub: "Above reorder level",
+          },
+        ];
+      }
+
+      if (tab === "Logistics") {
+        const partial = dbDeliveries.filter((d) => d.status === "Partially Delivered").length;
+        const queued = dbDeliveries.filter((d) => d.status === "Queued").length;
+        return [
+          { n: "Out for delivery", v: String(outForDelivery), sub: "Active trips on road" },
+          { n: "Ready to dispatch", v: String(readyDispatch), sub: "Awaiting release" },
+          { n: "Queued loads", v: String(queued), sub: "Assigned, not yet out" },
+          { n: "Partial deliveries", v: String(partial), sub: "Needs follow-up" },
+        ];
+      }
+
+      if (tab === "Orders") {
+        const awaitingApproval = dbOrders.filter((o) =>
+          ["Pending approval", "Procuring"].includes(o.status),
+        ).length;
+        return [
+          { n: "Active pipeline", v: String(activePipeline), sub: "Open operational orders" },
+          { n: "Awaiting approval", v: String(awaitingApproval), sub: "Supervisor action" },
+          { n: "Ready to dispatch", v: String(readyDispatch), sub: "Invoiced / staged" },
+          { n: "Delivered", v: String(delivered), sub: "Completed orders" },
+        ];
+      }
+
+      // Overview
+      return [
+        { n: "Pending orders", v: String(pendingOrders), sub: "Need action or movement" },
+        { n: "Low / out of stock", v: String(lowStock), sub: "At or below reorder" },
+        { n: "Out for delivery", v: String(outForDelivery), sub: "Active logistics trips" },
+        { n: "Active pipeline", v: String(activePipeline), sub: "Orders still in flight" },
+      ];
+    }
+
+    if (tab === "Product Performance") {
+      const moved = new Map<string, number>();
+      for (const order of dbOrders) {
+        const line = parseOrderItemsSummary(order.items_summary);
+        if (!line) continue;
+        moved.set(line.productName, (moved.get(line.productName) || 0) + line.quantity);
+      }
+      let bestName = "—";
+      let bestQty = 0;
+      for (const [name, qty] of moved) {
+        if (qty > bestQty) {
+          bestName = name;
+          bestQty = qty;
+        }
+      }
+      const bestProduct = dbProducts.find(
+        (p) => p.name.trim().toLowerCase() === bestName.trim().toLowerCase(),
+      );
+      const criticalStock = dbProducts.filter(
+        (p) => Number(p.on_hand) <= Number(p.reorder_level || 0),
+      );
+      const aboutToExpireCount =
+        nearExpiryBatchCount > 0 ? nearExpiryBatchCount : criticalStock.length;
+      const inventoryValue = dbProducts.reduce(
+        (sum, p) => sum + Number(p.on_hand || 0) * Number(p.unit_price || 0),
+        0,
+      );
+      const healthyCount = dbProducts.length - criticalStock.length;
+      const healthyPct =
+        dbProducts.length > 0 ? Math.round((healthyCount / dbProducts.length) * 100) : 100;
+      const slowMovers = dbProducts.filter((p) => {
+        const key = p.name.trim().toLowerCase();
+        const qtyMoved = [...moved.entries()].find(([n]) => n.trim().toLowerCase() === key)?.[1] || 0;
+        return Number(p.on_hand) > 0 && qtyMoved === 0;
+      }).length;
+
+      return [
+        {
+          n: "Best-performing stock",
+          v: bestQty > 0 ? `${bestQty}${bestProduct?.unit ? ` ${bestProduct.unit}` : ""}` : "—",
+          sub: bestQty > 0 ? bestName : "No outbound movement yet",
+        },
+        {
+          n: "About-to-expiry stock",
+          v: String(aboutToExpireCount),
+          sub:
+            nearExpiryBatchCount > 0
+              ? `Batches expiring ≤60 days${nearExpiryProductName ? ` · ${nearExpiryProductName}` : ""}`
+              : criticalStock.length > 0
+                ? `At/below reorder · ${criticalStock[0]?.name || "SKU"}`
+                : "No near-expiry or critical SKUs",
+        },
+        {
+          n: "Inventory valuation",
+          v: money(inventoryValue),
+          sub: `${dbProducts.length} SKUs on hand`,
+        },
+        {
+          n: "Stock health rate",
+          v: `${healthyPct}%`,
+          sub:
+            slowMovers > 0
+              ? `${healthyCount} healthy · ${slowMovers} idle SKUs`
+              : `${healthyCount} of ${dbProducts.length || 0} SKUs above reorder`,
+        },
+      ];
+    }
+
+    if (tab === "Conversion Funnel") {
+      const salesPeople = new Map<string, { leads: number; hits: number; orders: number }>();
+      const bump = (rawName: string | null | undefined, field: "leads" | "hits" | "orders") => {
+        const name = (rawName || "").trim();
+        if (!name || name === "—") return;
+        const key = name.split(" (")[0]?.trim() || name;
+        const row = salesPeople.get(key) || { leads: 0, hits: 0, orders: 0 };
+        row[field] += 1;
+        salesPeople.set(key, row);
+      };
+      for (const lead of dbLeads) {
+        bump(lead.assigned_to, "leads");
+        if (lead.stage === "Converted") bump(lead.assigned_to, "hits");
+      }
+      for (const order of dbOrders) {
+        bump(getOrderManager(order), "orders");
+      }
+
+      const hitRates: number[] = [];
+      const lossRates: number[] = [];
+      let orderTotal = 0;
+      for (const row of salesPeople.values()) {
+        if (row.leads > 0) {
+          hitRates.push(row.hits / row.leads);
+          lossRates.push((row.leads - row.hits) / row.leads);
+        }
+        orderTotal += row.orders;
+      }
+      const avgHit =
+        hitRates.length > 0
+          ? Math.round((hitRates.reduce((a, b) => a + b, 0) / hitRates.length) * 100)
+          : dbLeads.length > 0
+            ? Math.round(
+                (dbLeads.filter((l) => l.stage === "Converted").length / dbLeads.length) * 100,
+              )
+            : 0;
+      const avgLoss =
+        lossRates.length > 0
+          ? Math.round((lossRates.reduce((a, b) => a + b, 0) / lossRates.length) * 100)
+          : Math.max(0, 100 - avgHit);
+      const leadToOrderPct =
+        dbLeads.length > 0 ? Math.round((dbOrders.length / dbLeads.length) * 100) : 0;
+      const visitHitPct =
+        visibleFieldVisits.length > 0
+          ? Math.round((dbOrders.length / visibleFieldVisits.length) * 100)
+          : 0;
+      const avgOrdersPerRep =
+        salesPeople.size > 0 ? (orderTotal / salesPeople.size).toFixed(1) : "0";
+
+      return [
+        {
+          n: "Avg salesperson hit rate",
+          v: `${avgHit}%`,
+          sub: `${salesPeople.size || 0} reps · converted leads`,
+        },
+        {
+          n: "Avg salesperson loss rate",
+          v: `${avgLoss}%`,
+          sub: "Leads not converted to customers",
+        },
+        {
+          n: "Lead → order conversion",
+          v: `${Math.min(leadToOrderPct, 100)}%`,
+          sub: `${dbOrders.length} orders from ${dbLeads.length} leads`,
+        },
+        {
+          n: "Visit → order traction",
+          v: `${Math.min(visitHitPct, 100)}%`,
+          sub: `${avgOrdersPerRep} avg orders / salesperson`,
+        },
+      ];
+    }
+
+    // Revenue Trends / Overview / Company Comparison
+    return [
+      {
+        n: "Total ERP Gross",
+        v: money(dbOrders.reduce((s, o) => s + (Number(o.total_amount) || 0), 0)),
+        sub: currentUser?.role === "logistics" ? "Assigned to you" : "Across all companies",
+      },
+      { n: "Realized Collections", v: money(totalCollectedRevenue), sub: "Cash collected" },
+      {
+        n: "Active Customer Accounts",
+        v: String(dbCustomers.length),
+        sub: "Verified CRM clients",
+      },
+      {
+        n: "Lead Win Rate",
+        v:
+          dbLeads.length > 0
+            ? `${Math.round((dbLeads.filter((l) => l.stage === "Converted").length / dbLeads.length) * 100)}%`
+            : "0%",
+        sub: "Conversion to customer",
+      },
+    ];
+  }, [
+    module,
+    tab,
+    dbOrders,
+    dbProducts,
+    dbLeads,
+    dbCustomers,
+    dbInvoices,
+    dbDeliveries,
+    visibleFieldVisits,
+    totalCollectedRevenue,
+    nearExpiryBatchCount,
+    nearExpiryProductName,
+    currentUser?.role,
+    isSupervisor,
+    money,
+  ]);
+
   const modulePermissions: Record<string, string> = {
     tasks: "tasks.view",
     leads: "leads.view",
@@ -2070,9 +2568,9 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const requiredModulePerm = modulePermissions[module];
   const isModuleAllowed =
     module === "administration"
-      ? isSuperAdmin || hasPermission("admin.manage")
+      ? isSuperAdmin || isSupervisor || hasPermission("admin.manage")
       : module === "analytics"
-        ? (isSuperAdmin || currentUser?.role === "accounts") &&
+        ? (isSuperAdmin || currentUser?.role === "accounts" || isSupervisor) &&
           hasPermission("analytics.view")
         : !requiredModulePerm || hasPermission(requiredModulePerm);
 
@@ -2191,7 +2689,18 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const handlePostCreditNote = async (e: React.FormEvent) => {
     e.preventDefault();
     const parsedAmount = parseFloat(noteAmount);
-    if (!parsedAmount || parsedAmount <= 0) return;
+    const requiredError =
+      missingRequired([
+        { label: "Invoice", value: noteInvoiceId },
+        { label: "Reason", value: noteReason },
+      ]) ||
+      (!Number.isFinite(parsedAmount) || parsedAmount <= 0
+        ? "Amount is required (must be greater than 0)."
+        : null);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
+      return;
+    }
 
     const inv = dbInvoices.find((i) => i.id === noteInvoiceId);
     const targetCustomerName = inv ? inv.customer_name : "General Customer";
@@ -2213,6 +2722,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
       setNoteInvoiceId("");
     } catch (err) {
       console.error(err);
+      toast.error(err instanceof Error ? err.message : "Could not post note.");
     } finally {
       setPostingNote(false);
     }
@@ -2223,7 +2733,17 @@ export function ModuleWorkspace({ module }: { module: string }) {
     if (!selectedCreditCustomer || !selectedCreditCustomer.id) return;
     const parsedLimit = parseFloat(editCreditLimit);
     const parsedDays = parseInt(editCreditDays, 10);
-    if (isNaN(parsedLimit) || isNaN(parsedDays)) return;
+    const requiredError =
+      (!Number.isFinite(parsedLimit) || parsedLimit < 0
+        ? "Credit limit is required."
+        : null) ||
+      (!Number.isFinite(parsedDays) || parsedDays < 1
+        ? "Credit days is required (at least 1)."
+        : null);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
+      return;
+    }
 
     setSavingCreditLimit(true);
     try {
@@ -2392,20 +2912,48 @@ export function ModuleWorkspace({ module }: { module: string }) {
   }, [module, isSalesCollector, tab]);
 
   useEffect(() => {
-    if (module !== "analytics" || isSuperAdmin) return;
+    if (module !== "analytics") return;
+    if (isSupervisor) {
+      if (!["Floor overview", "Orders", "Inventory", "Logistics"].includes(tab)) {
+        setTab("Floor overview");
+      }
+      return;
+    }
+    if (isSuperAdmin) return;
     if (
       tab === "Company Comparison" ||
       tab === "Product Performance" ||
-      tab === "Conversion Funnel"
+      tab === "Conversion Funnel" ||
+      tab === "Floor overview" ||
+      tab === "Orders" ||
+      tab === "Inventory" ||
+      tab === "Logistics"
     ) {
       setTab("Revenue Trends");
     }
-  }, [module, isSuperAdmin, tab]);
+  }, [module, isSuperAdmin, isSupervisor, tab]);
 
   useEffect(() => {
     if (module !== "field-visits") return;
     if (!canLogFieldVisit && tab === "Log a visit") setTab("Visit history");
   }, [module, canLogFieldVisit, tab]);
+
+  // Leads always land on the pipeline — never flash another module’s leftover tab view.
+  useEffect(() => {
+    if (module === "leads") setTab("Pipeline");
+  }, [module]);
+
+  // Prefill field-visit log from customer profile deep link.
+  useEffect(() => {
+    if (module !== "field-visits") return;
+    const prefillCustomer = routerSearch?.["customer"];
+    const prefillCompany = routerSearch?.["company"];
+    const shouldLog = routerSearch?.["log"] === "1" || routerSearch?.["log"] === "true";
+    if (!prefillCustomer && !shouldLog) return;
+    if (prefillCompany) setVisitFirm(prefillCompany);
+    if (prefillCustomer) setVisitSelectedCustomer(prefillCustomer);
+    if (shouldLog && canLogFieldVisit) setTab("Log a visit");
+  }, [module, routerSearch, canLogFieldVisit]);
 
   const handleOpenRaiseInvoiceModal = (o: DBOrder) => {
     setSelectedOrderForInvoice(o);
@@ -2481,16 +3029,30 @@ export function ModuleWorkspace({ module }: { module: string }) {
   }
 
   return (
-    <main className="content">
+    <main className={`content${module === "customers" && customerId ? " customer-dossier-content" : ""}`}>
       <p className="eyebrow mb-2">
         {company === "all"
           ? "Organization workspace"
           : companies.find((c) => c.id === company)?.short}
       </p>
+      {module === "customers" && customerId ? (
+        <div className="customer-dossier-topbar mb-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 -ml-2 mb-2 gap-1.5 px-2 text-xs font-semibold text-muted-foreground hover:text-foreground"
+            onClick={() => navigate({ to: "/customers" })}
+          >
+            <ArrowLeft className="size-3.5" />
+            Back to customers
+          </Button>
+        </div>
+      ) : null}
       <h1 className="page-heading">{titles[module]}</h1>
       <p className="mt-2 text-xs text-muted-foreground">{subtitle[module]}</p>
 
-      {module !== "credit" ? (
+      {module !== "credit" && module !== "customers" ? (
         <div className="flex items-center justify-between gap-4 flex-wrap my-6 pb-3 border-b border-border/60">
           <div className="flex items-center gap-3 flex-wrap">
             {(module === "administration"
@@ -2512,14 +3074,16 @@ export function ModuleWorkspace({ module }: { module: string }) {
                         "Payment Collections",
                       ]
                   : module === "analytics"
-                    ? isSuperAdmin
-                      ? [
-                          "Revenue Trends",
-                          "Company Comparison",
-                          "Product Performance",
-                          "Conversion Funnel",
-                        ]
-                      : ["Revenue Trends"]
+                    ? isSupervisor
+                      ? ["Floor overview", "Orders", "Inventory", "Logistics"]
+                      : isSuperAdmin
+                        ? [
+                            "Revenue Trends",
+                            "Company Comparison",
+                            "Product Performance",
+                            "Conversion Funnel",
+                          ]
+                        : ["Revenue Trends"]
                     : module === "leads"
                       ? []
                       : ["Overview"]
@@ -2535,7 +3099,9 @@ export function ModuleWorkspace({ module }: { module: string }) {
                     tab === "Receivables" ||
                     tab === "Invoices & Receivables") &&
                   t === (isSalesCollector ? "Payments due" : "All sections")) ||
-                (module === "analytics" && tab === "Overview" && t === "Revenue Trends");
+                (module === "analytics" &&
+                  tab === "Overview" &&
+                  t === (isSupervisor ? "Floor overview" : "Revenue Trends"));
 
               const getIcon = (label: string) => {
                 switch (label) {
@@ -2570,6 +3136,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                   case "Awaiting Invoicing":
                     return <Clock className="size-3.5" />;
                   case "Revenue Trends":
+                  case "Floor overview":
                     return <TrendingUp className="size-3.5" />;
                   case "Company Comparison":
                     return <BarChart3 className="size-3.5" />;
@@ -2577,6 +3144,12 @@ export function ModuleWorkspace({ module }: { module: string }) {
                     return <Package className="size-3.5" />;
                   case "Conversion Funnel":
                     return <Target className="size-3.5" />;
+                  case "Orders":
+                    return <ShoppingBag className="size-3.5" />;
+                  case "Inventory":
+                    return <Package className="size-3.5" />;
+                  case "Logistics":
+                    return <Truck className="size-3.5" />;
                   default:
                     return null;
                 }
@@ -2624,6 +3197,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
               </Button>
             )}
         </div>
+      ) : module === "customers" ? (
+        <div className="mt-4" />
       ) : (
         <div className="mt-6" />
       )}
@@ -2668,15 +3243,30 @@ export function ModuleWorkspace({ module }: { module: string }) {
           </section>
         </>
       ) : module === "customers" ? (
-        <>
-          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-            <span className="text-xs text-muted-foreground">
+        customerId ? (
+          loading && !selectedCustomerDetails ? (
+            <p className="mt-8 text-sm text-muted-foreground">Loading customer profile…</p>
+          ) : !selectedCustomerDetails ? (
+            <div className="mt-8 max-w-md rounded-2xl border border-border bg-card p-6 space-y-3">
+              <h2 className="text-sm font-bold text-foreground">Customer not found</h2>
+              <p className="text-xs text-muted-foreground">
+                This profile may have been removed or belongs to another company workspace.
+              </p>
+              <Button size="sm" onClick={() => navigate({ to: "/customers" })}>
+                Back to customers
+              </Button>
+            </div>
+          ) : null
+        ) : (
+        <div className="customers-page">
+          <div className="customers-toolbar mb-5 flex flex-wrap items-center justify-between gap-3">
+            <span className="customers-toolbar-count text-xs text-muted-foreground">
               {dbCustomers.length} active customer accounts
             </span>
             {hasPermission("customers.manage") && (
               <Button
                 size="sm"
-                className="h-8 gap-1.5 text-xs font-semibold"
+                className="customers-toolbar-action h-8 gap-1.5 text-xs font-semibold"
                 onClick={() => setCustModal(true)}
               >
                 <Plus className="size-3.5" />
@@ -2684,7 +3274,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               </Button>
             )}
           </div>
-          <div className="module-grid">
+          <div className="module-grid customers-grid">
             {dbCustomers.map((c) => {
               const matchingLead = dbLeads.find(
                 (l) =>
@@ -2703,21 +3293,26 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 <article
                   className="module-item customer-card cursor-pointer hover:border-primary/60 hover:shadow-md transition-all group select-none flex flex-col"
                   key={c.id || c.name}
-                  onClick={() => setSelectedCustomerDetails(c)}
-                  title={`Click to view customer details & history for ${c.name}`}
+                  onClick={() =>
+                    navigate({
+                      to: "/customers/$customerId",
+                      params: { customerId: c.id || encodeURIComponent(c.name) },
+                    })
+                  }
+                  title={`Open full profile for ${c.name}`}
                 >
                   <div className="customer-card-head">
-                    <span className="avatar size-10 text-xs font-bold group-hover:scale-105 transition-transform shrink-0">
+                    <span className="avatar customer-card-avatar size-10 text-xs font-bold group-hover:scale-105 transition-transform shrink-0">
                       {c.initials}
                     </span>
                     <div className="customer-card-title min-w-0 flex-1">
-                      <div className="flex items-start justify-between gap-2">
-                        <h2 className="font-bold text-base text-foreground group-hover:text-primary transition-colors leading-snug break-words">
+                      <div className="customer-card-title-row flex items-start justify-between gap-2">
+                        <h2 className="customer-card-name font-bold text-base text-foreground group-hover:text-primary transition-colors leading-snug break-words">
                           {c.name}
                         </h2>
                         <span className="status success shrink-0">{c.status}</span>
                       </div>
-                      <p className="mt-1 text-xs text-muted-foreground font-medium flex items-center gap-1.5 min-w-0">
+                      <p className="customer-card-company mt-1 text-xs text-muted-foreground font-medium flex items-center gap-1.5 min-w-0">
                         <Building2 className="size-3 text-primary shrink-0" />
                         <span className="truncate">
                           {companies.find((co) => co.id === c.company_id)?.name || "Asian Apex & Co."}
@@ -2725,7 +3320,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                       </p>
                       {c.id && (
                         <p
-                          className="mt-1 font-mono text-[10px] text-muted-foreground truncate"
+                          className="customer-card-id mt-1 font-mono text-[10px] text-muted-foreground truncate"
                           title={c.id}
                         >
                           ID {c.id}
@@ -2808,8 +3403,11 @@ export function ModuleWorkspace({ module }: { module: string }) {
                   </div>
 
                   <div className="customer-card-footer">
-                    <span className="customer-card-cta">Open Customer Dossier →</span>
-                    <div className="flex items-center gap-1 shrink-0">
+                    <span className="customer-card-cta">
+                      <span className="customer-card-cta-full">Open Customer Dossier →</span>
+                      <span className="customer-card-cta-short">Open dossier →</span>
+                    </span>
+                    <div className="customer-card-actions flex items-center gap-1 shrink-0">
                       <Button
                         size="icon"
                         variant="ghost"
@@ -2853,24 +3451,25 @@ export function ModuleWorkspace({ module }: { module: string }) {
             })}
           </div>
           {dbCustomers.length === 0 && (
-            <p className="p-8 text-center text-muted-foreground">
+            <p className="customers-empty p-8 text-center text-muted-foreground text-sm">
               No customer records. Create your first customer or convert a qualified lead.
             </p>
           )}
-        </>
+        </div>
+        )
       ) : module === "inventory" ? (
-        <>
-          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-            <span className="text-xs text-muted-foreground">
+        <div className="inventory-page">
+          <div className="inventory-toolbar mb-5 flex flex-wrap items-center justify-between gap-3">
+            <span className="inventory-toolbar-count text-xs text-muted-foreground">
               {dbProducts.length} inventory products tracked
             </span>
-            <div className="flex items-center gap-3">
+            <div className="inventory-toolbar-actions flex flex-wrap items-center gap-2 sm:gap-3">
               {hasPermission("inventory.adjust") && (
                 <>
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-8 gap-1.5 text-xs font-semibold"
+                    className="inventory-toolbar-btn h-8 gap-1.5 text-xs font-semibold"
                     onClick={() => {
                       if (dbProducts.length > 0 && dbProducts[0]) {
                         setInboundProductId(dbProducts[0].id || "");
@@ -2880,7 +3479,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
                     }}
                   >
                     <Plus className="size-3.5" />
-                    Inbound Stock
+                    <span className="inventory-btn-full">Inbound Stock</span>
+                    <span className="inventory-btn-short">Inbound</span>
                   </Button>
                   <CoaImportButton
                     actorRole={currentUser?.role}
@@ -2890,30 +3490,31 @@ export function ModuleWorkspace({ module }: { module: string }) {
                   />
                   <Button
                     size="sm"
-                    className="h-8 gap-1.5 text-xs font-semibold"
+                    className="inventory-toolbar-btn h-8 gap-1.5 text-xs font-semibold"
                     onClick={() => setProdModal(true)}
                   >
                     <Plus className="size-3.5" />
-                    Add Product
+                    <span className="inventory-btn-full">Add Product</span>
+                    <span className="inventory-btn-short">Add</span>
                   </Button>
                 </>
               )}
             </div>
           </div>
-          <div className="module-grid">
+          <div className="module-grid inventory-grid">
             {dbProducts.map((p) => {
               const totalStock = p.on_hand;
               const outbound = outboundOrderedQuantity(dbOrders, p);
               const available = availableFromStock(totalStock, outbound);
               return (
-                <article className="module-item" key={p.code}>
-                  <div className="flex items-center justify-between">
-                    <span className="flex size-10 items-center justify-center rounded-md bg-accent text-primary">
+                <article className="module-item inventory-card" key={p.code}>
+                  <div className="inventory-card-head flex items-start justify-between gap-2">
+                    <span className="inventory-card-icon flex size-10 shrink-0 items-center justify-center rounded-md bg-accent text-primary">
                       <Package size={20} />
                     </span>
-                    <div className="flex items-center gap-3">
+                    <div className="inventory-card-actions flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:gap-2">
                       <span
-                        className={`status ${available < p.reorder_level ? "warning" : "success"}`}
+                        className={`status shrink-0 ${available < p.reorder_level ? "warning" : "success"}`}
                       >
                         {available < p.reorder_level ? "Low stock" : "Healthy"}
                       </span>
@@ -2921,19 +3522,19 @@ export function ModuleWorkspace({ module }: { module: string }) {
                         <Button
                           size="sm"
                           variant="outline"
-                          className="h-7 px-2 text-xs font-semibold hover:border-primary/60 cursor-pointer"
+                          className="inventory-edit-btn h-7 px-2 text-xs font-semibold hover:border-primary/60 cursor-pointer"
                           title="Edit on-hand stock and reorder level"
                           onClick={() => openEditStock(p)}
                         >
-                          <Pencil className="size-3 mr-1" />
-                          Edit Stock
+                          <Pencil className="size-3 sm:mr-1" />
+                          <span className="inventory-edit-label">Edit Stock</span>
                         </Button>
                       )}
                       {isSuperAdmin && (
                         <Button
                           size="icon"
                           variant="ghost"
-                          className="size-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                          className="size-7 shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
                           title="Delete Product (Super Admin)"
                           onClick={() => {
                             setDeleteTarget({
@@ -2954,12 +3555,14 @@ export function ModuleWorkspace({ module }: { module: string }) {
                       )}
                     </div>
                   </div>
-                  <p className="eyebrow mt-5 !text-[8px]">
+                  <p className="inventory-card-meta eyebrow mt-4 sm:mt-5 !text-[8px]">
                     {p.category} · {p.code}
                   </p>
-                  <h2 className="mt-2 text-sm font-bold">{p.name}</h2>
+                  <h2 className="inventory-card-name mt-1.5 sm:mt-2 text-sm font-bold break-words">
+                    {p.name}
+                  </h2>
                   {canViewAmounts && (
-                    <div className="mt-1.5 flex items-center gap-2 flex-wrap text-[11px]">
+                    <div className="inventory-card-prices mt-1.5 flex items-center gap-2 flex-wrap text-[11px]">
                       <span className="font-semibold text-foreground">
                         Selling: ₹{p.unit_price}/{p.unit}
                       </span>
@@ -2969,15 +3572,18 @@ export function ModuleWorkspace({ module }: { module: string }) {
                       </span>
                     </div>
                   )}
-                  <div className="mt-6 grid grid-cols-3 gap-2 border-t border-border pt-4">
+                  <div className="inventory-stock-grid mt-5 sm:mt-6 grid grid-cols-3 gap-2 border-t border-border pt-3 sm:pt-4">
                     {[
-                      { n: "Total Stock", v: totalStock },
-                      { n: "Outbound / Ordered", v: outbound },
-                      { n: "Available Stock", v: available },
+                      { n: "Total", full: "Total Stock", v: totalStock },
+                      { n: "Outbound", full: "Outbound / Ordered", v: outbound },
+                      { n: "Available", full: "Available Stock", v: available },
                     ].map((x) => (
-                      <div key={x.n}>
-                        <p className="text-xs font-semibold text-muted-foreground">{x.n}</p>
-                        <p className="mt-1 text-lg font-bold">
+                      <div key={x.full} className="inventory-stock-cell min-w-0">
+                        <p className="inventory-stock-label text-xs font-semibold text-muted-foreground">
+                          <span className="inventory-stock-label-full">{x.full}</span>
+                          <span className="inventory-stock-label-short">{x.n}</span>
+                        </p>
+                        <p className="inventory-stock-value mt-1 text-lg font-bold">
                           {x.v}
                           <span className="ml-1 text-xs font-normal text-muted-foreground">
                             {p.unit}
@@ -2987,13 +3593,13 @@ export function ModuleWorkspace({ module }: { module: string }) {
                     ))}
                   </div>
                   <progress
-                    className="stock-track mt-4 w-full"
+                    className="stock-track mt-3 sm:mt-4 w-full"
                     max={Math.max(totalStock, 1)}
                     value={Math.max(available, 0)}
                     aria-label={`${p.name} available stock`}
                   />
-                  <div className="mt-4 pt-3 border-t border-border/70 flex items-center justify-between text-xs">
-                    <span className="text-muted-foreground text-[11px]">
+                  <div className="inventory-card-footer mt-3 sm:mt-4 pt-3 border-t border-border/70 flex items-center justify-between gap-2 text-xs">
+                    <span className="text-muted-foreground text-[11px] min-w-0">
                       Min Reorder:{" "}
                       <strong className="text-foreground">
                         {p.reorder_level} {p.unit}
@@ -3003,10 +3609,12 @@ export function ModuleWorkspace({ module }: { module: string }) {
                       <button
                         type="button"
                         onClick={() => openEditStock(p)}
-                        className="text-[11px] font-semibold text-primary hover:underline flex items-center gap-1 cursor-pointer"
+                        className="inventory-footer-edit shrink-0 text-[11px] font-semibold text-primary hover:underline flex items-center gap-1 cursor-pointer"
                         title={`Directly edit stock on hand for ${p.name}`}
                       >
-                        <Pencil className="size-2.5" /> Edit Stock Count
+                        <Pencil className="size-2.5" />
+                        <span className="inventory-footer-edit-full">Edit Stock Count</span>
+                        <span className="inventory-footer-edit-short">Edit</span>
                       </button>
                     )}
                   </div>
@@ -3016,11 +3624,11 @@ export function ModuleWorkspace({ module }: { module: string }) {
             })}
           </div>
           {dbProducts.length === 0 && (
-            <p className="p-8 text-center text-muted-foreground">
+            <p className="inventory-empty p-8 text-center text-muted-foreground text-sm">
               No products in inventory. Add a product to configure the catalog.
             </p>
           )}
-        </>
+        </div>
       ) : module === "accounts" ? (
         <>
           {/* INVOICES & FINANCE DESK KPIS */}
@@ -3847,9 +4455,10 @@ export function ModuleWorkspace({ module }: { module: string }) {
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
                 <div>
                   <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block mb-1">
-                    Invoice
+                    Invoice <span className="text-destructive">*</span>
                   </label>
                   <select
+                    required
                     value={noteInvoiceId}
                     onChange={(e) => setNoteInvoiceId(e.target.value)}
                     className="w-full h-9 px-2 text-xs rounded-lg border border-border bg-card"
@@ -3879,9 +4488,10 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
                 <div>
                   <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block mb-1">
-                    Reason
+                    Reason <span className="text-destructive">*</span>
                   </label>
                   <select
+                    required
                     value={noteReason}
                     onChange={(e) => setNoteReason(e.target.value)}
                     className="w-full h-9 px-2 text-xs rounded-lg border border-border bg-card font-medium"
@@ -3896,7 +4506,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
                 <div>
                   <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block mb-1">
-                    Amount
+                    Amount <span className="text-destructive">*</span>
                   </label>
                   <input
                     type="number"
@@ -3984,34 +4594,205 @@ export function ModuleWorkspace({ module }: { module: string }) {
           </section>
         </>
       ) : module === "analytics" ? (
+        isSupervisor ? (
+          <>
+            <div className="kpi-grid">
+              {analyticsKpis.map((k) => (
+                <div className="kpi" key={k.n}>
+                  <p className="text-xs text-muted-foreground">{k.n}</p>
+                  <p className="kpi-value">{k.v}</p>
+                  <span className="trend break-words">{k.sub}</span>
+                </div>
+              ))}
+            </div>
+
+            {(tab === "Floor overview" || tab === "Overview" || tab === "Orders") && (
+              <div className="space-y-5">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                  <OrderStatusPieChart orders={dbOrders} />
+                  <section className="panel">
+                    <div className="panel-head">
+                      <div>
+                        <h2 className="panel-title">Order pipeline</h2>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                          Open orders by status — no amounts
+                        </p>
+                      </div>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-8 text-xs"
+                        onClick={() => navigate({ to: "/orders" })}
+                      >
+                        Open orders
+                      </Button>
+                    </div>
+                    <div className="divide-y divide-border">
+                      {dbOrders
+                        .filter((o) => !["Delivered", "Rejected"].includes(o.status))
+                        .slice(0, 8)
+                        .map((o) => (
+                          <div
+                            key={o.id}
+                            className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-[23px] py-3"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-sm font-semibold truncate">{o.customer_name}</p>
+                              <p className="text-[11px] text-muted-foreground truncate">
+                                #{o.id}
+                                {o.items_summary ? ` · ${o.items_summary}` : ""}
+                              </p>
+                            </div>
+                            <span
+                              className={`status shrink-0 ${
+                                o.status === "Pending approval" || o.status === "Procuring"
+                                  ? "warning"
+                                  : "brand"
+                              }`}
+                            >
+                              {o.status}
+                            </span>
+                          </div>
+                        ))}
+                      {dbOrders.filter((o) => !["Delivered", "Rejected"].includes(o.status))
+                        .length === 0 && (
+                        <p className="px-4 sm:px-[23px] py-8 text-sm text-muted-foreground">
+                          No open orders in the pipeline.
+                        </p>
+                      )}
+                    </div>
+                  </section>
+                </div>
+              </div>
+            )}
+
+            {(tab === "Floor overview" || tab === "Inventory") && (
+              <section className="panel mt-5">
+                <div className="panel-head">
+                  <div>
+                    <h2 className="panel-title">Stock pressure</h2>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Available vs reorder — going out of stock first
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => navigate({ to: "/inventory" })}
+                  >
+                    Open inventory
+                  </Button>
+                </div>
+                <div className="divide-y divide-border">
+                  {dbProducts
+                    .map((p) => {
+                      const outbound = outboundOrderedQuantity(dbOrders, p);
+                      const available = availableFromStock(Number(p.on_hand) || 0, outbound);
+                      return { product: p, available, outbound };
+                    })
+                    .filter(
+                      ({ product, available }) =>
+                        available <= Number(product.reorder_level || 0),
+                    )
+                    .sort((a, b) => a.available - b.available)
+                    .slice(0, tab === "Inventory" ? 20 : 8)
+                    .map(({ product, available }) => (
+                      <div
+                        key={product.id || product.code}
+                        className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-[23px] py-3"
+                      >
+                        <div className="min-w-0">
+                          <p className="text-sm font-semibold truncate">{product.name}</p>
+                          <p className="text-[11px] text-muted-foreground truncate">
+                            {product.code ? `${product.code} · ` : ""}
+                            Reorder at {product.reorder_level} {product.unit}
+                          </p>
+                        </div>
+                        <span className="status warning shrink-0">
+                          {available <= 0 ? "Out of stock" : `${available} left`}
+                        </span>
+                      </div>
+                    ))}
+                  {dbProducts.filter((p) => {
+                    const outbound = outboundOrderedQuantity(dbOrders, p);
+                    return (
+                      availableFromStock(Number(p.on_hand) || 0, outbound) <=
+                      Number(p.reorder_level || 0)
+                    );
+                  }).length === 0 && (
+                    <p className="px-4 sm:px-[23px] py-8 text-sm text-muted-foreground">
+                      All tracked SKUs are above reorder level.
+                    </p>
+                  )}
+                </div>
+              </section>
+            )}
+
+            {(tab === "Floor overview" || tab === "Logistics") && (
+              <section className="panel mt-5">
+                <div className="panel-head">
+                  <div>
+                    <h2 className="panel-title">Out for delivery</h2>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      Who has the load and where it is going
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => navigate({ to: "/logistics" })}
+                  >
+                    Open logistics
+                  </Button>
+                </div>
+                <div className="divide-y divide-border">
+                  {dbDeliveries
+                    .filter((d) => d.status === "Out for delivery")
+                    .slice(0, tab === "Logistics" ? 20 : 8)
+                    .map((d) => {
+                      const order = dbOrders.find((o) => o.id === d.order_id);
+                      const destination =
+                        order?.delivery_address ||
+                        order?.destination_city ||
+                        "Destination not set";
+                      return (
+                        <div
+                          key={d.id || d.order_id}
+                          className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-[23px] py-3"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold truncate">
+                              {order?.customer_name || "Customer"} · #{d.order_id}
+                            </p>
+                            <p className="text-[11px] text-muted-foreground truncate">
+                              {d.driver_name || "—"}
+                              {d.vehicle_number ? ` · ${d.vehicle_number}` : ""} · {destination}
+                            </p>
+                          </div>
+                          <span className="status brand shrink-0">Out for delivery</span>
+                        </div>
+                      );
+                    })}
+                  {dbDeliveries.filter((d) => d.status === "Out for delivery").length === 0 && (
+                    <p className="px-4 sm:px-[23px] py-8 text-sm text-muted-foreground">
+                      Nothing out for delivery right now.
+                    </p>
+                  )}
+                </div>
+              </section>
+            )}
+          </>
+        ) : (
         <>
-          {/* EXECUTIVE BUSINESS INTELLIGENCE CONSOLE */}
+          {/* Tab-specific executive KPIs (inventory / funnel / revenue) */}
           <div className="kpi-grid">
-            {[
-              {
-                n: "Total ERP Gross",
-                v: money(dbOrders.reduce((s, o) => s + (Number(o.total_amount) || 0), 0)),
-                sub: currentUser?.role === "logistics" ? "Assigned to you" : "Across all companies",
-              },
-              { n: "Realized Collections", v: money(totalCollectedRevenue), sub: "Cash collected" },
-              {
-                n: "Active Customer Accounts",
-                v: String(dbCustomers.length),
-                sub: "Verified CRM clients",
-              },
-              {
-                n: "Lead Win Rate",
-                v:
-                  dbLeads.length > 0
-                    ? `${Math.round((dbLeads.filter((l) => l.stage === "Converted").length / dbLeads.length) * 100)}%`
-                    : "0%",
-                sub: "Conversion to customer",
-              },
-            ].map((k) => (
+            {analyticsKpis.map((k) => (
               <div className="kpi" key={k.n}>
                 <p className="text-xs text-muted-foreground">{k.n}</p>
                 <p className="kpi-value">{k.v}</p>
-                <span className="trend">{k.sub}</span>
+                <span className="trend break-words">{k.sub}</span>
               </div>
             ))}
           </div>
@@ -4308,6 +5089,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </div>
           ) : null}
         </>
+        )
       ) : module === "administration" ? (
         !isSuperAdmin ? (
           <TeamLogins />
@@ -4442,10 +5224,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                       </div>
 
                       <div className="pt-3 border-t border-border flex items-center justify-between gap-2 flex-wrap">
-                        {(isDispatched || isBooked) &&
-                          (currentUser?.role === "supervisor" ||
-                            currentUser?.role === "logistics" ||
-                            isSuperAdmin) && (
+                        {(isDispatched || isBooked) && currentUser?.role === "logistics" && (
                             <Button
                               size="sm"
                               variant="outline"
@@ -4529,24 +5308,28 @@ export function ModuleWorkspace({ module }: { module: string }) {
           {/* TOP KPI METRICS RIBBON */}
           <div className="leads-kpi-grid">
             <div className="leads-kpi-card">
-              <div className="flex items-center justify-between text-muted-foreground mb-1.5">
-                <span className="text-[11px] font-bold uppercase tracking-wider">Active Deals</span>
-                <Users className="size-4 text-primary" />
+              <div className="flex items-center justify-between gap-2 text-muted-foreground mb-1.5 min-w-0">
+                <span className="text-[11px] font-bold uppercase tracking-wider truncate">
+                  Active Deals
+                </span>
+                <Users className="size-4 text-primary shrink-0" />
               </div>
-              <p className="text-2xl font-black text-foreground">{dbLeads.length}</p>
+              <p className="leads-kpi-value text-2xl font-black text-foreground">
+                {dbLeads.length}
+              </p>
               <span className="text-[11px] font-medium text-muted-foreground mt-0.5 block">
                 Commercial prospects
               </span>
             </div>
 
             <div className="leads-kpi-card">
-              <div className="flex items-center justify-between text-muted-foreground mb-1.5">
-                <span className="text-[11px] font-bold uppercase tracking-wider">
+              <div className="flex items-center justify-between gap-2 text-muted-foreground mb-1.5 min-w-0">
+                <span className="text-[11px] font-bold uppercase tracking-wider truncate">
                   Pipeline Value
                 </span>
-                <TrendingUp className="size-4 text-emerald-600 dark:text-emerald-400" />
+                <TrendingUp className="size-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
               </div>
-              <p className="text-2xl font-black text-emerald-600 dark:text-emerald-400">
+              <p className="leads-kpi-value text-2xl font-black text-emerald-600 dark:text-emerald-400">
                 {money(dbLeads.reduce((sum, l) => sum + (Number(l.estimated_value) || 0), 0))}
               </p>
               <span className="text-[11px] font-medium text-muted-foreground mt-0.5 block">
@@ -4555,13 +5338,13 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </div>
 
             <div className="leads-kpi-card">
-              <div className="flex items-center justify-between text-muted-foreground mb-1.5">
-                <span className="text-[11px] font-bold uppercase tracking-wider">
+              <div className="flex items-center justify-between gap-2 text-muted-foreground mb-1.5 min-w-0">
+                <span className="text-[11px] font-bold uppercase tracking-wider truncate">
                   In Qualification
                 </span>
-                <Target className="size-4 text-amber-500" />
+                <Target className="size-4 text-amber-500 shrink-0" />
               </div>
-              <p className="text-2xl font-black text-foreground">
+              <p className="leads-kpi-value text-2xl font-black text-foreground">
                 {dbLeads.filter((l) => l.stage === "Qualified" || l.stage === "Follow-up").length}
               </p>
               <span className="text-[11px] font-medium text-muted-foreground mt-0.5 block">
@@ -4570,12 +5353,14 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </div>
 
             <div className="leads-kpi-card">
-              <div className="flex items-center justify-between text-muted-foreground mb-1.5">
-                <span className="text-[11px] font-bold uppercase tracking-wider">Converted</span>
-                <UserCheck className="size-4 text-primary" />
+              <div className="flex items-center justify-between gap-2 text-muted-foreground mb-1.5 min-w-0">
+                <span className="text-[11px] font-bold uppercase tracking-wider truncate">
+                  Converted
+                </span>
+                <UserCheck className="size-4 text-primary shrink-0" />
               </div>
-              <div className="flex items-baseline gap-2">
-                <p className="text-2xl font-black text-foreground">
+              <div className="flex flex-wrap items-baseline gap-2 min-w-0">
+                <p className="leads-kpi-value text-2xl font-black text-foreground">
                   {dbLeads.filter((l) => l.stage === "Converted").length}
                 </p>
                 <span className="text-xs font-bold text-primary">
@@ -4596,13 +5381,13 @@ export function ModuleWorkspace({ module }: { module: string }) {
           </div>
 
           {/* SEARCH, FILTER & ACTION CONTROLS */}
-          <div className="mb-6 flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl border border-border bg-card shadow-2xs">
-            <div className="flex flex-wrap items-center gap-3 flex-1 min-w-[260px]">
-              <div className="relative flex-1 min-w-[200px] max-w-md">
+          <div className="leads-toolbar mb-6 flex flex-wrap items-center justify-between gap-3 p-3 sm:p-3.5 rounded-2xl border border-border bg-card shadow-2xs">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3 flex-1 min-w-0 w-full">
+              <div className="relative flex-1 min-w-0 w-full sm:max-w-md">
                 <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
                 <input
                   type="text"
-                  placeholder="Search leads by name, contact, phone, city..."
+                  placeholder="Search leads…"
                   value={leadSearchQuery}
                   onChange={(e) => setLeadSearchQuery(e.target.value)}
                   className="w-full text-xs font-medium pl-9 pr-8 h-9 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
@@ -4618,12 +5403,12 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 )}
               </div>
 
-              <div className="flex items-center gap-1.5">
-                <Filter className="size-3.5 text-muted-foreground" />
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Filter className="size-3.5 text-muted-foreground shrink-0" />
                 <select
                   value={leadPriorityFilter}
                   onChange={(e) => setLeadPriorityFilter(e.target.value)}
-                  className="text-xs font-medium h-9 px-2.5 rounded-lg border border-border bg-background"
+                  className="text-xs font-medium h-9 px-2.5 rounded-lg border border-border bg-background max-w-full"
                 >
                   <option value="All">All Priorities</option>
                   <option value="High">High Priority</option>
@@ -4633,8 +5418,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
               </div>
             </div>
 
-            <div className="flex items-center gap-2.5 w-full sm:w-auto justify-between sm:justify-end">
-              <span className="text-xs text-muted-foreground font-medium">
+            <div className="flex items-center gap-2.5 w-full sm:w-auto justify-between sm:justify-end min-w-0">
+              <span className="text-xs text-muted-foreground font-medium truncate">
                 {
                   dbLeads.filter((l) => {
                     const matchesSearch =
@@ -4651,7 +5436,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               </span>
               <Button
                 size="sm"
-                className="h-9 px-4 text-xs font-semibold shrink-0"
+                className="h-9 px-3 sm:px-4 text-xs font-semibold shrink-0"
                 onClick={() => setLeadModal(true)}
               >
                 <Plus className="size-4 mr-1" />
@@ -4660,8 +5445,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </div>
           </div>
 
-          {/* EMPTY LEADS PROMPT BANNER */}
-          {dbLeads.length === 0 && (
+          {/* EMPTY LEADS PROMPT BANNER — only after leads finished loading */}
+          {!loading && dbLeads.length === 0 && (
             <div className="p-8 mb-6 text-center rounded-2xl border border-dashed border-border bg-card/60 space-y-3">
               <Users className="size-10 mx-auto text-muted-foreground opacity-50" />
               <div>
@@ -4678,7 +5463,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
           )}
 
           {/* MOBILE / FIELD STAGE FILTER PILLS */}
-          <div className="leads-stage-pills hidden md:hidden items-center gap-1.5 overflow-x-auto pb-2 mb-4 scrollbar-none">
+          <div className="leads-stage-pills flex md:hidden items-center gap-1.5 overflow-x-auto pb-2 mb-4 scrollbar-none">
             {["All", "New", "Qualified", "Follow-up", "Converted"].map((stage) => {
               const count =
                 stage === "All" ? dbLeads.length : dbLeads.filter((l) => l.stage === stage).length;
@@ -4700,9 +5485,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
             })}
           </div>
 
-          {/* PIPELINE KANBAN VIEW */}
-          {tab === "Pipeline" || tab === "Overview" ? (
-            <div className="leads-pipeline-grid">
+          {/* PIPELINE KANBAN VIEW — always for leads (ignore stale tabs from other modules) */}
+          <div className="leads-pipeline-grid">
               {["New", "Qualified", "Follow-up", "Converted"]
                 .filter(
                   (stage) => leadMobileStageFilter === "All" || leadMobileStageFilter === stage,
@@ -4828,151 +5612,18 @@ export function ModuleWorkspace({ module }: { module: string }) {
                     </div>
                   );
                 })}
-            </div>
-          ) : (
-            /* LIST VIEW — summary only; click row for full details */
-            <div className="panel overflow-hidden leads-directory">
-              <div className="panel-head leads-directory-head">
-                <div className="min-w-0">
-                  <h3 className="panel-title">Prospect Directory</h3>
-                  <span className="text-xs text-muted-foreground block mt-0.5">
-                    Click a row for full lead details
-                  </span>
-                </div>
-              </div>
-
-              <div className="leads-directory-cards">
-                {dbLeads
-                  .filter((l) => {
-                    const matchesSearch =
-                      !leadSearchQuery ||
-                      `${l.business_name} ${l.contact_person} ${l.phone} ${l.city} ${l.product_interest} ${l.requirement || ""}`
-                        .toLowerCase()
-                        .includes(leadSearchQuery.toLowerCase());
-                    const matchesPriority =
-                      leadPriorityFilter === "All" || l.priority === leadPriorityFilter;
-                    return matchesSearch && matchesPriority;
-                  })
-                  .map((l) => (
-                    <article
-                      key={`card-${l.id || l.business_name}`}
-                      className="leads-directory-card"
-                      onClick={() => setSelectedLeadDetails(l)}
-                      title="Click to view full lead details"
-                    >
-                      <div className="leads-directory-card-top">
-                        <div className="min-w-0">
-                          <h4 className="leads-directory-card-title">{l.business_name}</h4>
-                          <p className="leads-directory-card-meta">
-                            {l.contact_person || "—"}
-                            {l.city ? ` · ${l.city}` : ""}
-                          </p>
-                        </div>
-                        <div className="flex flex-col items-end gap-1 shrink-0">
-                          <span
-                            className={`lead-priority-badge ${
-                              l.priority === "High"
-                                ? "lead-priority-high"
-                                : l.priority === "Medium"
-                                  ? "lead-priority-medium"
-                                  : "lead-priority-low"
-                            }`}
-                          >
-                            {l.priority || "Medium"}
-                          </span>
-                          <span className="text-[10px] font-bold text-muted-foreground uppercase">
-                            {l.stage}
-                          </span>
-                        </div>
-                      </div>
-                      <p className="text-[11px] font-semibold text-muted-foreground pt-1">
-                        {companies.find((c) => c.id === l.company_id)?.short || "—"}
-                        <span className="float-right text-primary">Details →</span>
-                      </p>
-                    </article>
-                  ))}
-              </div>
-
-              <div className="table-scroll leads-directory-table">
-                <table className="data-table leads-directory-summary">
-                  <thead>
-                    <tr>
-                      <th>Business</th>
-                      <th>Contact</th>
-                      <th>Company</th>
-                      <th>Stage</th>
-                      <th>Priority</th>
-                      <th className="text-right"> </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {dbLeads
-                      .filter((l) => {
-                        const matchesSearch =
-                          !leadSearchQuery ||
-                          `${l.business_name} ${l.contact_person} ${l.phone} ${l.city} ${l.product_interest} ${l.requirement || ""}`
-                            .toLowerCase()
-                            .includes(leadSearchQuery.toLowerCase());
-                        const matchesPriority =
-                          leadPriorityFilter === "All" || l.priority === leadPriorityFilter;
-                        return matchesSearch && matchesPriority;
-                      })
-                      .map((l) => (
-                        <tr
-                          key={l.id || l.business_name}
-                          onClick={() => setSelectedLeadDetails(l)}
-                          className="cursor-pointer hover:bg-muted/40 transition-colors group"
-                          title="Click to view full lead details"
-                        >
-                          <td className="font-bold text-foreground group-hover:text-primary transition-colors">
-                            {l.business_name}
-                          </td>
-                          <td className="text-xs">
-                            <div className="font-medium">{l.contact_person || "—"}</div>
-                            {l.city ? (
-                              <div className="text-muted-foreground mt-0.5">{l.city}</div>
-                            ) : null}
-                          </td>
-                          <td className="text-xs text-muted-foreground whitespace-nowrap">
-                            {companies.find((c) => c.id === l.company_id)?.short || "—"}
-                          </td>
-                          <td className="text-xs font-semibold whitespace-nowrap">{l.stage}</td>
-                          <td>
-                            <span
-                              className={`lead-priority-badge ${
-                                l.priority === "High"
-                                  ? "lead-priority-high"
-                                  : l.priority === "Medium"
-                                    ? "lead-priority-medium"
-                                    : "lead-priority-low"
-                              }`}
-                            >
-                              {l.priority || "Medium"}
-                            </span>
-                          </td>
-                          <td className="text-right whitespace-nowrap">
-                            <span className="text-[11px] font-bold text-primary inline-flex items-center justify-end gap-1 min-w-[5.5rem]">
-                              {l.stage === "Converted" ? "Customer →" : "Details →"}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+          </div>
         </>
       ) : module === "logistics" ? (
         <>
           {(() => {
             const isDriver = currentUser?.role === "logistics";
+            // Super Admin + Supervisor: read-only — out for delivery, by whom, to where.
+            const isLogisticsOversight = isSuperAdmin || isSupervisor;
             const canAssignVehicle =
               !isDriver &&
-              (hasPermission("logistics.dispatch") ||
-                hasPermission("orders.edit") ||
-                isSuperAdmin ||
-                currentUser?.role === "supervisor");
+              !isLogisticsOversight &&
+              (hasPermission("logistics.dispatch") || hasPermission("orders.edit"));
 
             // Driver sees ONLY trips explicitly assigned to them
             const driverTrips = isDriver
@@ -4983,11 +5634,91 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 )
               : dbDeliveries;
 
+            const outForDeliveryTrips = dbDeliveries.filter(
+              (d) => d.status === "Out for delivery",
+            );
+
             // Orders awaiting vehicle & driver assignment from Order Desk (must have invoice generated)
             const ordersReadyForAssignment = dbOrders.filter(
               (o) =>
                 o.status === "Ready to dispatch" && !dbDeliveries.some((d) => d.order_id === o.id),
             );
+
+            if (isLogisticsOversight) {
+              return (
+                <div className="space-y-5">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/25 bg-primary/10 px-2.5 py-1 text-[11px] font-bold text-primary">
+                      <Truck className="size-3.5" />
+                      {outForDeliveryTrips.length} out for delivery
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {outForDeliveryTrips.map((delivery) => {
+                      const order = dbOrders.find((o) => o.id === delivery.order_id);
+                      const destination =
+                        order?.delivery_address ||
+                        order?.destination_city ||
+                        "Destination not set";
+                      return (
+                        <article
+                          key={delivery.id || delivery.order_id}
+                          className="logistics-card rounded-xl border border-border bg-card p-4 space-y-3"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                                Order #{delivery.order_id} ·{" "}
+                                {companies.find((c) => c.id === delivery.company_id)?.short || "—"}
+                              </p>
+                              <h3 className="mt-0.5 text-sm font-extrabold text-foreground truncate">
+                                {order?.customer_name || "Customer"}
+                              </h3>
+                            </div>
+                            <span className="status brand shrink-0">Out for delivery</span>
+                          </div>
+
+                          <div className="rounded-xl border border-border/70 bg-muted/25 p-3 space-y-2 text-xs">
+                            <div className="flex items-start justify-between gap-2">
+                              <span className="text-muted-foreground font-medium shrink-0">
+                                With
+                              </span>
+                              <span className="font-semibold text-foreground text-right">
+                                {delivery.driver_name || "—"}
+                                {delivery.vehicle_number ? (
+                                  <span className="block text-[11px] font-mono font-normal text-muted-foreground">
+                                    {delivery.vehicle_number}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </div>
+                            <div className="pt-2 border-t border-border/50">
+                              <span className="text-muted-foreground font-medium block">
+                                Going to
+                              </span>
+                              <span className="mt-0.5 block font-medium text-foreground leading-snug">
+                                {destination}
+                              </span>
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+
+                  {outForDeliveryTrips.length === 0 && (
+                    <div className="py-12 text-center rounded-2xl border border-dashed border-border bg-card p-8">
+                      <Truck className="size-8 mx-auto text-muted-foreground/50 mb-3" />
+                      <h3 className="text-sm font-bold text-foreground">Nothing out for delivery</h3>
+                      <p className="text-xs text-muted-foreground mt-1 max-w-sm mx-auto">
+                        Active trips appear here with the driver and destination only.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              );
+            }
 
             return (
               <div className="space-y-6">
@@ -5341,8 +6072,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
                               </div>
                             )}
 
-                            {/* POD ACTION FOR OUT FOR DELIVERY */}
-                            {delivery.status === "Out for delivery" && (
+                            {/* POD ACTION — drivers only */}
+                            {isDriver && delivery.status === "Out for delivery" && (
                               <Button
                                 size="sm"
                                 className="w-full h-9 text-xs font-bold gap-1.5 bg-primary text-primary-foreground shadow-xs"
@@ -5386,8 +6117,6 @@ export function ModuleWorkspace({ module }: { module: string }) {
                                     currentStatus === "Returned to Godown";
                                   const canUpdateReturn =
                                     currentUser?.role === "logistics" ||
-                                    currentUser?.role === "supervisor" ||
-                                    isSuperAdmin ||
                                     hasPermission("logistics.dispatch");
 
                                   return (
@@ -5608,17 +6337,29 @@ export function ModuleWorkspace({ module }: { module: string }) {
           })()}
         </>
       ) : module === "field-visits" ? (
-        <div className="space-y-6">
+        <div className={currentUser?.role === "sales" ? "space-y-4" : "space-y-6"}>
           {tab === "Log a visit" ? (
             /* CLEAN LOG VISIT FORM */
-            <div className="panel max-w-3xl mx-auto p-6 md:p-8 space-y-6">
-              <div className="flex items-center justify-between pb-4 border-b border-border">
+            <div
+              className={`panel mx-auto space-y-5 ${
+                currentUser?.role === "sales"
+                  ? "max-w-xl p-4 sm:p-5"
+                  : "max-w-3xl p-6 md:p-8 space-y-6"
+              }`}
+            >
+              <div className="flex items-center justify-between pb-3 border-b border-border">
                 <div>
-                  <h2 className="text-xl font-black tracking-tight text-foreground">
+                  <h2
+                    className={`font-black tracking-tight text-foreground ${
+                      currentUser?.role === "sales" ? "text-base" : "text-xl"
+                    }`}
+                  >
                     Log Field Visit
                   </h2>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Record on-site meeting outcomes, GPS coordinates, voice memo and photos
+                    {currentUser?.role === "sales"
+                      ? "Client, purpose, notes, GPS and proof"
+                      : "Record on-site meeting outcomes, GPS coordinates, voice memo and photos"}
                   </p>
                 </div>
                 <Button
@@ -5666,9 +6407,10 @@ export function ModuleWorkspace({ module }: { module: string }) {
                   </div>
                   <div>
                     <label className="text-[11px] font-semibold text-muted-foreground block mb-1">
-                      Client Account
+                      Client Account <span className="text-destructive">*</span>
                     </label>
                     <select
+                      required
                       value={visitSelectedCustomer}
                       onChange={(e) => setVisitSelectedCustomer(e.target.value)}
                       className="w-full text-xs font-semibold h-10 px-3 rounded-lg border border-border bg-background cursor-pointer"
@@ -6013,265 +6755,333 @@ export function ModuleWorkspace({ module }: { module: string }) {
           ) : (
             /* CLEAN LOGGED VISITS HISTORY VIEW (DEFAULT) */
             <>
-              {/* Summary KPIs */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="p-4 rounded-xl border border-border bg-card shadow-2xs">
-                  <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                    Total Visits
-                  </span>
-                  <p className="text-xl font-black text-foreground mt-1">
-                    {visibleFieldVisits.length}
-                  </p>
-                </div>
-                <div className="p-4 rounded-xl border border-border bg-card shadow-2xs">
-                  <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                    Completed
-                  </span>
-                  <p className="text-xl font-black text-emerald-600 dark:text-emerald-400 mt-1">
-                    {visibleFieldVisits.filter((v) => v.status === "Completed").length}
-                  </p>
-                </div>
-                <div className="p-4 rounded-xl border border-border bg-card shadow-2xs">
-                  <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                    GPS Geotagged
-                  </span>
-                  <p className="text-xl font-black text-primary mt-1">
-                    {visibleFieldVisits.filter((v) => v.gps_latitude).length}
-                  </p>
-                </div>
-                <div className="p-4 rounded-xl border border-border bg-card shadow-2xs">
-                  <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                    Voice Briefings
-                  </span>
-                  <p className="text-xl font-black text-purple-600 dark:text-purple-400 mt-1">
-                    {visibleFieldVisits.filter((v) => v.voice_recording_path).length}
-                  </p>
-                </div>
-              </div>
+              {(() => {
+                const isSalesVisits = currentUser?.role === "sales";
+                const filteredVisits = visibleFieldVisits.filter((v) => {
+                  if (!canViewAllFieldVisits || visitSalesFilter === "All") return true;
+                  const fLower = visitSalesFilter.toLowerCase();
+                  return (
+                    (v.assigned_to_name && v.assigned_to_name.toLowerCase().includes(fLower)) ||
+                    (v.creator_name && v.creator_name.toLowerCase().includes(fLower))
+                  );
+                });
+                const completedCount = visibleFieldVisits.filter(
+                  (v) => v.status === "Completed",
+                ).length;
+                const gpsCount = visibleFieldVisits.filter((v) => v.gps_latitude).length;
+                const voiceCount = visibleFieldVisits.filter((v) => v.voice_recording_path).length;
 
-              {/* Logged Visits Cards */}
-              <div className="space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-base font-bold text-foreground">Logged Field Visits</h3>
-                    <p className="text-xs text-muted-foreground">
-                      {canViewAllFieldVisits
-                        ? `${visibleFieldVisits.length} visits recorded across ${
-                            company === "all"
-                              ? "all companies"
-                              : companies.find((c) => c.id === company)?.short
-                          }`
-                        : `${visibleFieldVisits.length} field visits logged by you`}
-                    </p>
-                  </div>
-                  {canLogFieldVisit && (
-                    <Button
-                      size="sm"
-                      onClick={() => setTab("Log a visit")}
-                      className="text-xs font-semibold cursor-pointer self-start sm:self-auto"
+                return (
+                  <div className={`space-y-4 ${isSalesVisits ? "sales-visits-compact" : ""}`}>
+                    {/* Summary KPIs — compact strip for sales */}
+                    <div
+                      className={
+                        isSalesVisits
+                          ? "flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg border border-border bg-card px-3 py-2 text-[11px]"
+                          : "grid grid-cols-2 sm:grid-cols-4 gap-3"
+                      }
                     >
-                      <Plus className="size-3.5 mr-1" />
-                      Log Field Visit
-                    </Button>
-                  )}
-                </div>
-
-                {/* Filter Toolbar (Sales Person Dropdown for Supervisor/Admin, or User Notice) */}
-                {canViewAllFieldVisits ? (
-                  <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-card border border-border shadow-2xs">
-                    <div className="flex items-center gap-2.5 flex-1 min-w-[240px]">
-                      <UserCheck className="size-4 text-primary shrink-0" />
-                      <span className="text-xs font-semibold text-foreground shrink-0">
-                        Filter by Sales Person:
-                      </span>
-                      <select
-                        aria-label="Filter field visits by sales person"
-                        value={visitSalesFilter}
-                        onChange={(e) => setVisitSalesFilter(e.target.value)}
-                        className="text-xs py-1.5 px-3 rounded-lg border border-border bg-background text-foreground font-medium focus:outline-hidden focus:ring-1 focus:ring-primary cursor-pointer max-w-xs"
-                      >
-                        <option value="All">
-                          All Sales Representatives ({visibleFieldVisits.length})
-                        </option>
-                        {Array.from(
-                          new Set([
-                            ...visibleFieldVisits.map((v) => v.assigned_to_name).filter(Boolean),
-                            ...visibleFieldVisits.map((v) => v.creator_name).filter(Boolean),
-                          ] as string[]),
-                        )
-                          .filter(Boolean)
-                          .map((officer) => {
-                            const count = visibleFieldVisits.filter((v) => {
-                              const oLower = officer.toLowerCase();
-                              return (
-                                (v.assigned_to_name &&
-                                  v.assigned_to_name.toLowerCase().includes(oLower)) ||
-                                (v.creator_name && v.creator_name.toLowerCase().includes(oLower))
-                              );
-                            }).length;
-                            return (
-                              <option key={officer} value={officer}>
-                                {officer} ({count} {count === 1 ? "visit" : "visits"})
-                              </option>
-                            );
-                          })}
-                      </select>
-
-                      {visitSalesFilter !== "All" && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => setVisitSalesFilter("All")}
-                          className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground cursor-pointer"
-                        >
-                          <X className="size-3 mr-1" />
-                          Reset
-                        </Button>
+                      {isSalesVisits ? (
+                        <>
+                          <span className="text-muted-foreground">
+                            Total{" "}
+                            <strong className="text-foreground">{visibleFieldVisits.length}</strong>
+                          </span>
+                          <span className="text-muted-foreground">
+                            Done{" "}
+                            <strong className="text-emerald-600 dark:text-emerald-400">
+                              {completedCount}
+                            </strong>
+                          </span>
+                          <span className="text-muted-foreground">
+                            GPS <strong className="text-primary">{gpsCount}</strong>
+                          </span>
+                          <span className="text-muted-foreground">
+                            Voice{" "}
+                            <strong className="text-purple-600 dark:text-purple-400">
+                              {voiceCount}
+                            </strong>
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <div className="p-4 rounded-xl border border-border bg-card shadow-2xs">
+                            <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
+                              Total Visits
+                            </span>
+                            <p className="text-xl font-black text-foreground mt-1">
+                              {visibleFieldVisits.length}
+                            </p>
+                          </div>
+                          <div className="p-4 rounded-xl border border-border bg-card shadow-2xs">
+                            <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
+                              Completed
+                            </span>
+                            <p className="text-xl font-black text-emerald-600 dark:text-emerald-400 mt-1">
+                              {completedCount}
+                            </p>
+                          </div>
+                          <div className="p-4 rounded-xl border border-border bg-card shadow-2xs">
+                            <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
+                              GPS Geotagged
+                            </span>
+                            <p className="text-xl font-black text-primary mt-1">{gpsCount}</p>
+                          </div>
+                          <div className="p-4 rounded-xl border border-border bg-card shadow-2xs">
+                            <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
+                              Voice Briefings
+                            </span>
+                            <p className="text-xl font-black text-purple-600 dark:text-purple-400 mt-1">
+                              {voiceCount}
+                            </p>
+                          </div>
+                        </>
                       )}
                     </div>
 
-                    <span className="text-xs text-muted-foreground">
-                      Showing{" "}
-                      <strong className="text-foreground">
-                        {
-                          visibleFieldVisits.filter((v) => {
-                            if (visitSalesFilter === "All") return true;
-                            const fLower = visitSalesFilter.toLowerCase();
-                            return (
-                              (v.assigned_to_name &&
-                                v.assigned_to_name.toLowerCase().includes(fLower)) ||
-                              (v.creator_name && v.creator_name.toLowerCase().includes(fLower))
-                            );
-                          }).length
-                        }
-                      </strong>{" "}
-                      of {visibleFieldVisits.length} visits
-                    </span>
-                  </div>
-                ) : (
-                  <div className="flex items-center justify-between p-3 rounded-xl bg-card border border-border shadow-2xs text-xs text-muted-foreground">
-                    <span className="flex items-center gap-2">
-                      <UserCheck className="size-4 text-primary" />
-                      Showing only visits logged by you (<strong>{currentUser?.name}</strong>)
-                    </span>
-                    <span>{visibleFieldVisits.length} visits</span>
-                  </div>
-                )}
-
-                <div className="field-visit-rail flex flex-row flex-nowrap items-stretch gap-3 overflow-x-auto overflow-y-hidden">
-                  {visibleFieldVisits
-                    .filter((v) => {
-                      if (!canViewAllFieldVisits || visitSalesFilter === "All") return true;
-                      const fLower = visitSalesFilter.toLowerCase();
-                      return (
-                        (v.assigned_to_name && v.assigned_to_name.toLowerCase().includes(fLower)) ||
-                        (v.creator_name && v.creator_name.toLowerCase().includes(fLower))
-                      );
-                    })
-                    .map((v) => (
-                      <button
-                        type="button"
-                        className="field-visit-rail-card shrink-0"
-                        key={v.id || v.customer_name}
-                        onClick={() => setSelectedVisitDetail(v)}
-                        title="Open full visit details"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-muted-foreground uppercase tracking-wider bg-muted/60 px-2 py-0.5 rounded-md">
-                            <Building2 className="size-3 text-primary" />
-                            {companies.find((c) => c.id === v.company_id)?.short || "Firm"}
-                          </span>
-                          <span
-                            className={`status ${v.status === "Completed" ? "success" : "brand"}`}
-                          >
-                            {v.status}
-                          </span>
-                        </div>
-                        <div className="min-w-0 text-left">
-                          <h4 className="text-sm font-extrabold text-foreground tracking-tight truncate">
-                            {v.customer_name}
-                          </h4>
-                          <p className="mt-0.5 text-[11px] text-muted-foreground font-mono">
-                            {v.scheduled_date} · {v.scheduled_time}
+                    <div className="space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div>
+                          <h3 className="text-sm font-bold text-foreground">
+                            {isSalesVisits ? "Your visits" : "Logged Field Visits"}
+                          </h3>
+                          <p className="text-[11px] text-muted-foreground">
+                            {canViewAllFieldVisits
+                              ? `${visibleFieldVisits.length} visits recorded across ${
+                                  company === "all"
+                                    ? "all companies"
+                                    : companies.find((c) => c.id === company)?.short
+                                }`
+                              : `${visibleFieldVisits.length} logged by you`}
                           </p>
                         </div>
-                        <span className="inline-flex self-start text-[11px] font-semibold px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
-                          {v.purpose}
-                        </span>
-                        <p className="text-xs text-muted-foreground line-clamp-2 text-left min-h-[2.5rem]">
-                          {v.outcome_notes || "No outcome notes yet."}
-                        </p>
-                        <div className="flex flex-row flex-wrap items-center gap-1.5">
-                          {v.gps_latitude ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
-                              <MapPin className="size-3" />
-                              GPS
+                        {canLogFieldVisit && (
+                          <Button
+                            size="sm"
+                            onClick={() => setTab("Log a visit")}
+                            className="h-8 text-xs font-semibold cursor-pointer self-start sm:self-auto"
+                          >
+                            <Plus className="size-3.5 mr-1" />
+                            Log visit
+                          </Button>
+                        )}
+                      </div>
+
+                      {canViewAllFieldVisits ? (
+                        <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-card border border-border shadow-2xs">
+                          <div className="flex items-center gap-2.5 flex-1 min-w-[240px]">
+                            <UserCheck className="size-4 text-primary shrink-0" />
+                            <span className="text-xs font-semibold text-foreground shrink-0">
+                              Filter by Sales Person:
                             </span>
-                          ) : null}
-                          {v.voice_recording_path ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-purple-700 dark:text-purple-300 bg-purple-500/10 px-2 py-0.5 rounded-md border border-purple-500/20">
-                              <Volume2 className="size-3" />
-                              Voice
-                            </span>
-                          ) : null}
-                          {v.photos && v.photos.length > 0 ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-500/10 px-2 py-0.5 rounded-md border border-sky-500/20">
-                              <Camera className="size-3" />
-                              {v.photos.length}
-                            </span>
-                          ) : null}
-                        </div>
-                        <div className="mt-auto flex flex-row items-center justify-between gap-2 pt-2 border-t border-border/70 text-[11px]">
-                          <span className="text-muted-foreground truncate">
-                            {v.assigned_to_name || v.creator_name || "—"}
+                            <select
+                              aria-label="Filter field visits by sales person"
+                              value={visitSalesFilter}
+                              onChange={(e) => setVisitSalesFilter(e.target.value)}
+                              className="text-xs py-1.5 px-3 rounded-lg border border-border bg-background text-foreground font-medium focus:outline-hidden focus:ring-1 focus:ring-primary cursor-pointer max-w-xs"
+                            >
+                              <option value="All">
+                                All Sales Representatives ({visibleFieldVisits.length})
+                              </option>
+                              {Array.from(
+                                new Set([
+                                  ...visibleFieldVisits
+                                    .map((v) => v.assigned_to_name)
+                                    .filter(Boolean),
+                                  ...visibleFieldVisits.map((v) => v.creator_name).filter(Boolean),
+                                ] as string[]),
+                              )
+                                .filter(Boolean)
+                                .map((officer) => {
+                                  const count = visibleFieldVisits.filter((v) => {
+                                    const oLower = officer.toLowerCase();
+                                    return (
+                                      (v.assigned_to_name &&
+                                        v.assigned_to_name.toLowerCase().includes(oLower)) ||
+                                      (v.creator_name &&
+                                        v.creator_name.toLowerCase().includes(oLower))
+                                    );
+                                  }).length;
+                                  return (
+                                    <option key={officer} value={officer}>
+                                      {officer} ({count} {count === 1 ? "visit" : "visits"})
+                                    </option>
+                                  );
+                                })}
+                            </select>
+
+                            {visitSalesFilter !== "All" && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setVisitSalesFilter("All")}
+                                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground cursor-pointer"
+                              >
+                                <X className="size-3 mr-1" />
+                                Reset
+                              </Button>
+                            )}
+                          </div>
+
+                          <span className="text-xs text-muted-foreground">
+                            Showing{" "}
+                            <strong className="text-foreground">{filteredVisits.length}</strong> of{" "}
+                            {visibleFieldVisits.length} visits
                           </span>
-                          <span className="font-semibold text-primary shrink-0">Open →</span>
                         </div>
-                      </button>
-                    ))}
-                </div>
+                      ) : null}
 
-                {visibleFieldVisits.length > 0 &&
-                  visibleFieldVisits.filter((v) => {
-                    if (!canViewAllFieldVisits || visitSalesFilter === "All") return true;
-                    const fLower = visitSalesFilter.toLowerCase();
-                    return (
-                      (v.assigned_to_name && v.assigned_to_name.toLowerCase().includes(fLower)) ||
-                      (v.creator_name && v.creator_name.toLowerCase().includes(fLower))
-                    );
-                  }).length === 0 && (
-                    <div className="p-12 text-center rounded-2xl border border-dashed border-border text-muted-foreground text-xs space-y-3">
-                      <p>
-                        No field visits found assigned to sales representative{" "}
-                        <strong className="text-foreground">"{visitSalesFilter}"</strong>.
-                      </p>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setVisitSalesFilter("All")}
-                        className="cursor-pointer"
-                      >
-                        Show All Sales Representatives
-                      </Button>
+                      {isSalesVisits ? (
+                        <div className="rounded-xl border border-border bg-card overflow-hidden">
+                          {filteredVisits.length === 0 ? (
+                            <div className="px-4 py-8 text-center text-xs text-muted-foreground space-y-3">
+                              <p>You haven&apos;t logged any field visits yet.</p>
+                              {canLogFieldVisit && (
+                                <Button size="sm" onClick={() => setTab("Log a visit")}>
+                                  <Plus className="size-3.5 mr-1" />
+                                  Log your first visit
+                                </Button>
+                              )}
+                            </div>
+                          ) : (
+                            <div className="divide-y divide-border">
+                              {filteredVisits.map((v) => (
+                                <button
+                                  type="button"
+                                  key={v.id || `${v.customer_name}-${v.scheduled_date}`}
+                                  onClick={() => setSelectedVisitDetail(v)}
+                                  className="w-full flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5 text-left hover:bg-muted/40 transition-colors"
+                                >
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                      <p className="text-xs font-bold text-foreground truncate">
+                                        {v.customer_name}
+                                      </p>
+                                      <span className="text-[10px] font-semibold text-primary bg-primary/10 px-1.5 py-0.5 rounded">
+                                        {v.purpose}
+                                      </span>
+                                    </div>
+                                    <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                                      {companies.find((c) => c.id === v.company_id)?.short || "—"} ·{" "}
+                                      {v.scheduled_date} · {v.scheduled_time}
+                                      {v.gps_latitude ? " · GPS" : ""}
+                                      {v.voice_recording_path ? " · Voice" : ""}
+                                      {v.photos && v.photos.length > 0
+                                        ? ` · ${v.photos.length} photo${v.photos.length === 1 ? "" : "s"}`
+                                        : ""}
+                                    </p>
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <span
+                                      className={`status ${
+                                        v.status === "Completed" ? "success" : "brand"
+                                      }`}
+                                    >
+                                      {v.status}
+                                    </span>
+                                    <span className="text-[11px] font-semibold text-primary">→</span>
+                                  </div>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <>
+                          <div className="field-visit-rail flex flex-row flex-nowrap items-stretch gap-3 overflow-x-auto overflow-y-hidden">
+                            {filteredVisits.map((v) => (
+                              <button
+                                type="button"
+                                className="field-visit-rail-card shrink-0"
+                                key={v.id || v.customer_name}
+                                onClick={() => setSelectedVisitDetail(v)}
+                                title="Open full visit details"
+                              >
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-muted-foreground uppercase tracking-wider bg-muted/60 px-2 py-0.5 rounded-md">
+                                    <Building2 className="size-3 text-primary" />
+                                    {companies.find((c) => c.id === v.company_id)?.short || "Firm"}
+                                  </span>
+                                  <span
+                                    className={`status ${
+                                      v.status === "Completed" ? "success" : "brand"
+                                    }`}
+                                  >
+                                    {v.status}
+                                  </span>
+                                </div>
+                                <div className="min-w-0 text-left">
+                                  <h4 className="text-sm font-extrabold text-foreground tracking-tight truncate">
+                                    {v.customer_name}
+                                  </h4>
+                                  <p className="mt-0.5 text-[11px] text-muted-foreground font-mono">
+                                    {v.scheduled_date} · {v.scheduled_time}
+                                  </p>
+                                </div>
+                                <span className="inline-flex self-start text-[11px] font-semibold px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
+                                  {v.purpose}
+                                </span>
+                                <p className="text-xs text-muted-foreground line-clamp-2 text-left min-h-[2.5rem]">
+                                  {v.outcome_notes || "No outcome notes yet."}
+                                </p>
+                                <div className="flex flex-row flex-wrap items-center gap-1.5">
+                                  {v.gps_latitude ? (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
+                                      <MapPin className="size-3" />
+                                      GPS
+                                    </span>
+                                  ) : null}
+                                  {v.voice_recording_path ? (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-purple-700 dark:text-purple-300 bg-purple-500/10 px-2 py-0.5 rounded-md border border-purple-500/20">
+                                      <Volume2 className="size-3" />
+                                      Voice
+                                    </span>
+                                  ) : null}
+                                  {v.photos && v.photos.length > 0 ? (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-500/10 px-2 py-0.5 rounded-md border border-sky-500/20">
+                                      <Camera className="size-3" />
+                                      {v.photos.length}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                <div className="mt-auto flex flex-row items-center justify-between gap-2 pt-2 border-t border-border/70 text-[11px]">
+                                  <span className="text-muted-foreground truncate">
+                                    {v.assigned_to_name || v.creator_name || "—"}
+                                  </span>
+                                  <span className="font-semibold text-primary shrink-0">Open →</span>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+
+                          {visibleFieldVisits.length > 0 && filteredVisits.length === 0 && (
+                            <div className="p-8 text-center rounded-2xl border border-dashed border-border text-muted-foreground text-xs space-y-3">
+                              <p>
+                                No field visits found for{" "}
+                                <strong className="text-foreground">"{visitSalesFilter}"</strong>.
+                              </p>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setVisitSalesFilter("All")}
+                                className="cursor-pointer"
+                              >
+                                Show All Sales Representatives
+                              </Button>
+                            </div>
+                          )}
+
+                          {visibleFieldVisits.length === 0 && (
+                            <div className="p-8 text-center rounded-2xl border border-dashed border-border text-muted-foreground text-xs space-y-3">
+                              <p>No field visits logged yet.</p>
+                            </div>
+                          )}
+                        </>
+                      )}
                     </div>
-                  )}
-
-                {visibleFieldVisits.length === 0 && (
-                  <div className="p-12 text-center rounded-2xl border border-dashed border-border text-muted-foreground text-xs space-y-3">
-                    <p>
-                      {canViewAllFieldVisits
-                        ? "No field visits logged yet."
-                        : "You haven't logged any field visits yet."}
-                    </p>
-                    {canLogFieldVisit && (
-                      <Button size="sm" onClick={() => setTab("Log a visit")}>
-                        <Plus className="size-3.5 mr-1" />
-                        Log Your First Field Visit
-                      </Button>
-                    )}
                   </div>
-                )}
-              </div>
+                );
+              })()}
             </>
           )}
         </div>
@@ -6358,23 +7168,23 @@ export function ModuleWorkspace({ module }: { module: string }) {
                       Receive Goods
                     </Button>
                   )}
-                  {(isSuperAdmin || isSupervisor) && (
+                  {isSuperAdmin && (
                     <Button
                       size="icon"
                       variant="ghost"
                       className="size-7 text-muted-foreground hover:text-primary hover:bg-primary/10 cursor-pointer"
-                      title="Edit Purchase Order (Super Admin & Supervisor)"
+                      title="Edit Purchase Order"
                       onClick={() => openEditPo(p)}
                     >
                       <Pencil className="size-3.5" />
                     </Button>
                   )}
-                  {(isSuperAdmin || isSupervisor) && (
+                  {isSuperAdmin && (
                     <Button
                       size="icon"
                       variant="ghost"
                       className="size-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
-                      title="Delete Purchase Order (Super Admin & Supervisor)"
+                      title="Delete Purchase Order"
                       onClick={() => {
                         setDeleteTarget({
                           type: "Purchase Order",
@@ -6682,7 +7492,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               </select>
             </label>
             <label className="drawer-field">
-              Name
+              Business name <span className="text-destructive">*</span>
               <input
                 required
                 value={leadName}
@@ -6691,7 +7501,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               />
             </label>
             <label className="drawer-field">
-              Contact person
+              Contact person <span className="text-destructive">*</span>
               <input
                 required
                 value={leadContact}
@@ -6700,9 +7510,10 @@ export function ModuleWorkspace({ module }: { module: string }) {
               />
             </label>
             <label className="drawer-field">
-              Phone
+              Phone number <span className="text-destructive">*</span>
               <input
                 type="tel"
+                required
                 value={leadPhone}
                 onChange={(e) => setLeadPhone(e.target.value)}
                 placeholder="+91 98..."
@@ -6764,7 +7575,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </label>
             {leadSource === "Referral" && (
               <label className="drawer-field">
-                Referred by
+                Referred by <span className="text-destructive">*</span>
                 <input
                   required
                   value={leadReferrer}
@@ -6835,7 +7646,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
           </SheetHeader>
           <form onSubmit={handleCreateCustomer} className="mt-6 space-y-4">
             <label className="drawer-field">
-              Legal name
+              Legal name <span className="text-destructive">*</span>
               <input
                 required
                 value={custLegalName}
@@ -6852,9 +7663,10 @@ export function ModuleWorkspace({ module }: { module: string }) {
               />
             </label>
             <label className="drawer-field">
-              Phone
+              Phone number <span className="text-destructive">*</span>
               <input
                 type="tel"
+                required
                 value={custPhone}
                 onChange={(e) => setCustPhone(e.target.value)}
                 placeholder="+91 98..."
@@ -6906,8 +7718,9 @@ export function ModuleWorkspace({ module }: { module: string }) {
               </select>
             </label>
             <label className="drawer-field">
-              Contact person
+              Contact person <span className="text-destructive">*</span>
               <input
+                required
                 value={custContact}
                 onChange={(e) => setCustContact(e.target.value)}
                 placeholder="Primary contact name"
@@ -6962,7 +7775,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
           </SheetHeader>
           <form onSubmit={handleUpdateCustomer} className="mt-6 space-y-4">
             <label className="drawer-field">
-              Customer / Business Name
+              Customer / Business Name <span className="text-destructive">*</span>
               <input
                 required
                 value={editCustName}
@@ -6979,9 +7792,10 @@ export function ModuleWorkspace({ module }: { module: string }) {
               />
             </label>
             <label className="drawer-field">
-              Phone Number
+              Phone Number <span className="text-destructive">*</span>
               <input
                 type="tel"
+                required
                 value={editCustPhone}
                 onChange={(e) => setEditCustPhone(e.target.value)}
                 placeholder="+91 98765 43210"
@@ -7072,7 +7886,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               </select>
             </label>
             <label className="drawer-field">
-              Product Code (SKU)
+              Product Code (SKU) <span className="text-destructive">*</span>
               <input
                 required
                 value={prodCode}
@@ -7081,7 +7895,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               />
             </label>
             <label className="drawer-field">
-              Product Name
+              Product Name <span className="text-destructive">*</span>
               <input
                 required
                 value={prodName}
@@ -7090,7 +7904,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               />
             </label>
             <label className="drawer-field">
-              Category
+              Category <span className="text-destructive">*</span>
               <input
                 required
                 value={prodCategory}
@@ -7099,7 +7913,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               />
             </label>
             <label className="drawer-field">
-              Unit
+              Unit <span className="text-destructive">*</span>
               <select
                 value={isCustomProdUnit ? "custom" : prodUnit}
                 onChange={(e) => {
@@ -7148,7 +7962,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </label>
             <div className="grid grid-cols-2 gap-3">
               <label className="drawer-field">
-                Selling Price (₹) *
+                Selling Price (₹) <span className="text-destructive">*</span>
                 <input
                   type="number"
                   step="any"
@@ -7163,7 +7977,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 </span>
               </label>
               <label className="drawer-field">
-                Wholesale Price (₹) *
+                Wholesale Price (₹) <span className="text-destructive">*</span>
                 <input
                   type="number"
                   step="any"
@@ -7215,7 +8029,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
           </SheetHeader>
           <form onSubmit={handleInboundStock} className="mt-6 space-y-4 pb-12">
             <label className="drawer-field">
-              Select Product
+              Select Product <span className="text-destructive">*</span>
               <select
                 value={inboundProductId}
                 onChange={(e) => {
@@ -7235,7 +8049,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </label>
             <div className="grid grid-cols-2 gap-3">
               <label className="drawer-field">
-                Inbound Quantity Received
+                Inbound Quantity Received <span className="text-destructive">*</span>
                 <input
                   type="number"
                   required
@@ -7330,7 +8144,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
               {/* On-Hand Stock Input with live delta */}
               <div className="space-y-1.5">
                 <label className="drawer-field">
-                  Physical On-Hand Stock Quantity ({editStockUnit})
+                  Physical On-Hand Stock Quantity ({editStockUnit}){" "}
+                  <span className="text-destructive">*</span>
                   <input
                     type="number"
                     step="any"
@@ -7380,7 +8195,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               {/* Selling Price & Wholesale Price */}
               <div className="grid grid-cols-2 gap-3">
                 <label className="drawer-field">
-                  Selling Price (₹) *
+                  Selling Price (₹) <span className="text-destructive">*</span>
                   <input
                     type="number"
                     step="any"
@@ -7395,7 +8210,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                   </span>
                 </label>
                 <label className="drawer-field">
-                  Wholesale Price (₹) *
+                  Wholesale Price (₹) <span className="text-destructive">*</span>
                   <input
                     type="number"
                     step="any"
@@ -7531,49 +8346,38 @@ export function ModuleWorkspace({ module }: { module: string }) {
         </SheetContent>
       </Sheet>
 
-      {/* CUSTOMER DETAILS DOSSIER SHEET */}
-      <Sheet
-        open={!!selectedCustomerDetails}
-        onOpenChange={(open) => !open && setSelectedCustomerDetails(null)}
-      >
-        <SheetContent className="w-full sm:max-w-xl md:max-w-2xl overflow-y-auto max-h-screen p-6 sm:p-8">
-          <SheetHeader className="pb-4 border-b border-border/70">
-            <div className="flex items-start justify-between gap-4 pr-6">
-              <div className="flex items-center gap-3.5 min-w-0">
-                <span className="avatar size-12 text-sm font-bold shrink-0 bg-primary/10 text-primary border border-primary/20">
-                  {selectedCustomerDetails?.initials}
+      {/* CUSTOMER DETAILS DOSSIER PAGE */}
+      {module === "customers" && customerId && selectedCustomerDetails && (
+        <section className="customer-dossier-page mt-5">
+          <div className="customer-dossier-identity mb-5 flex items-center gap-3.5 min-w-0 rounded-2xl border border-border bg-card p-4 sm:p-5 shadow-xs">
+            <span className="avatar customer-dossier-avatar size-14 text-sm font-bold shrink-0 bg-primary/10 text-primary border border-primary/20">
+              {selectedCustomerDetails.initials}
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="status success text-xs font-semibold py-0.5 px-2.5">
+                  {selectedCustomerDetails.status}
                 </span>
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <SheetTitle className="text-xl font-bold truncate">
-                      {selectedCustomerDetails?.name}
-                    </SheetTitle>
-                    <span className="status success text-xs font-semibold py-0.5 px-2.5">
-                      {selectedCustomerDetails?.status}
-                    </span>
-                  </div>
-                  <SheetDescription className="text-xs text-muted-foreground mt-0.5">
-                    {companies.find((c) => c.id === selectedCustomerDetails?.company_id)?.name ||
-                      "Avighna Group"}{" "}
-                    · Customer ID {selectedCustomerDetails?.id || "—"} ·{" "}
-                    {Number(selectedCustomerDetails?.credit_days) || 30} credit days
-                  </SheetDescription>
-                </div>
+                <span className="text-xs font-semibold text-muted-foreground">
+                  {companies.find((c) => c.id === selectedCustomerDetails.company_id)?.name ||
+                    "Avighna Group"}
+                </span>
               </div>
+              <p className="customer-dossier-meta text-xs text-muted-foreground mt-1.5 font-mono">
+                Customer ID {selectedCustomerDetails.id || "—"}
+              </p>
             </div>
-          </SheetHeader>
+          </div>
 
-          {selectedCustomerDetails && (
-            <div className="mt-5 space-y-5">
+          <div className="customer-dossier-body">
               {/* Primary Action Bar */}
-              <div className="flex items-center gap-3 flex-wrap pb-2 border-b border-border/40">
+              <div className="customer-dossier-actions flex items-center gap-3 flex-wrap pb-3 border-b border-border/40">
                 <Button
                   size="sm"
                   className="h-9 px-3.5 text-xs font-semibold cursor-pointer shadow-xs gap-1.5"
                   onClick={() => {
                     const cust = selectedCustomerDetails;
                     if (!cust) return;
-                    setSelectedCustomerDetails(null);
                     navigateToCreateOrder({
                       customerName: cust.name,
                       companyId: cust.company_id,
@@ -7597,21 +8401,27 @@ export function ModuleWorkspace({ module }: { module: string }) {
                   Edit Profile
                 </Button>
 
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-9 px-3.5 text-xs font-semibold hover:border-primary cursor-pointer shadow-xs gap-1.5 bg-background text-foreground"
-                  onClick={() => {
-                    const cust = selectedCustomerDetails;
-                    setSelectedCustomerDetails(null);
-                    setVisitFirm(cust.company_id);
-                    setVisitSelectedCustomer(cust.name);
-                    setTab("Log a visit");
-                  }}
-                >
-                  <MapPin className="size-3.5 text-muted-foreground" />
-                  Log Visit
-                </Button>
+                {currentUser?.role === "sales" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-9 px-3.5 text-xs font-semibold hover:border-primary cursor-pointer shadow-xs gap-1.5 bg-background text-foreground"
+                    onClick={() => {
+                      const cust = selectedCustomerDetails;
+                      navigate({
+                        to: "/field-visits",
+                        search: {
+                          customer: cust.name,
+                          company: cust.company_id,
+                          log: "1",
+                        } as unknown as Record<string, string>,
+                      });
+                    }}
+                  >
+                    <MapPin className="size-3.5 text-muted-foreground" />
+                    Log Visit
+                  </Button>
+                )}
 
                 {isSuperAdmin && (
                   <Button
@@ -7630,7 +8440,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                           setDbCustomers((prev) =>
                             prev.filter((x) => (x.id || x.name) !== (cust.id || cust.name)),
                           );
-                          setSelectedCustomerDetails(null);
+                          navigate({ to: "/customers" });
                         },
                       });
                     }}
@@ -8191,10 +9001,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                         type="button"
                         key={v.id || v.customer_name}
                         className="field-visit-rail-card shrink-0"
-                        onClick={() => {
-                          setSelectedCustomerDetails(null);
-                          setSelectedVisitDetail(v);
-                        }}
+                        onClick={() => setSelectedVisitDetail(v)}
                         title="Open full visit details"
                       >
                         <div className="flex items-center justify-between gap-2">
@@ -8220,10 +9027,9 @@ export function ModuleWorkspace({ module }: { module: string }) {
                   </p>
                 )}
               </div>
-            </div>
-          )}
-        </SheetContent>
-      </Sheet>
+          </div>
+        </section>
+      )}
 
       {/* FIELD VISIT FULL DETAIL */}
       <Sheet
@@ -8373,7 +9179,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                       </Button>
                     );
                   }
-                  if (isSuperAdmin || isSupervisor) {
+                  if (isSuperAdmin) {
                     return (
                       <Button
                         size="sm"
@@ -8621,7 +9427,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               </select>
             </label>
             <label className="drawer-field">
-              Supplier (Bill from)
+              Supplier (Bill from) <span className="text-destructive">*</span>
               <input
                 required
                 value={poSupplier}
@@ -8630,7 +9436,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               />
             </label>
             <label className="drawer-field">
-              Product / Description of Goods
+              Product / Description of Goods <span className="text-destructive">*</span>
               <input
                 required
                 value={poProduct}
@@ -8640,7 +9446,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </label>
             <div className="grid grid-cols-3 gap-3">
               <label className="drawer-field">
-                Quantity
+                Quantity <span className="text-destructive">*</span>
                 <input
                   type="number"
                   required
@@ -8649,7 +9455,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 />
               </label>
               <label className="drawer-field">
-                Unit
+                Unit <span className="text-destructive">*</span>
                 <select
                   value={isCustomPoUnit ? "custom" : poUnit}
                   onChange={(e) => {
@@ -8697,7 +9503,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 )}
               </label>
               <label className="drawer-field">
-                Rate / Unit Price
+                Rate / Unit Price <span className="text-destructive">*</span>
                 <input
                   type="number"
                   required
@@ -8758,7 +9564,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               </select>
             </label>
             <label className="drawer-field">
-              Supplier Name
+              Supplier Name <span className="text-destructive">*</span>
               <input
                 required
                 value={editPoSupplier}
@@ -8767,7 +9573,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               />
             </label>
             <label className="drawer-field">
-              Product Name
+              Product Name <span className="text-destructive">*</span>
               <input
                 required
                 value={editPoProduct}
@@ -8777,7 +9583,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </label>
             <div className="grid grid-cols-3 gap-3">
               <label className="drawer-field">
-                Quantity
+                Quantity <span className="text-destructive">*</span>
                 <input
                   type="number"
                   required
@@ -8834,7 +9640,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 )}
               </label>
               <label className="drawer-field">
-                Unit Price
+                Unit Price <span className="text-destructive">*</span>
                 <input
                   type="number"
                   required
@@ -8875,7 +9681,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
           <form onSubmit={handleUpdateVisit} className="mt-6 space-y-4 pb-12">
             <div className="grid grid-cols-2 gap-3">
               <label className="drawer-field">
-                Visit Date
+                Visit Date <span className="text-destructive">*</span>
                 <input
                   type="date"
                   required
@@ -8884,7 +9690,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 />
               </label>
               <label className="drawer-field">
-                Visit Time
+                Visit Time <span className="text-destructive">*</span>
                 <input
                   type="time"
                   required
@@ -8961,7 +9767,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               </select>
             </label>
             <label className="drawer-field">
-              Customer Name
+              Customer Name <span className="text-destructive">*</span>
               <input
                 required
                 value={visitCustomer}
@@ -8979,7 +9785,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               </select>
             </label>
             <label className="drawer-field">
-              Date
+              Date <span className="text-destructive">*</span>
               <input
                 type="date"
                 required
@@ -8988,7 +9794,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               />
             </label>
             <label className="drawer-field">
-              Time
+              Time <span className="text-destructive">*</span>
               <input
                 required
                 value={visitTime}
@@ -9081,7 +9887,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
               <>
                 <div className="grid grid-cols-2 gap-3">
                   <label className="drawer-field">
-                    Scheduled Delivery Date
+                    Scheduled Delivery Date <span className="text-destructive">*</span>
                     <input
                       type="date"
                       required
@@ -9106,7 +9912,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
                 <div className="space-y-1.5">
                   <label className="drawer-field">
-                    Select Company Fleet Vehicle *
+                    Select Company Fleet Vehicle <span className="text-destructive">*</span>
                     <select
                       value={vehicleNo}
                       onChange={(e) => {
@@ -9145,7 +9951,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
                 <div className="grid grid-cols-2 gap-3">
                   <label className="drawer-field">
-                    Driver Name *
+                    Driver Name <span className="text-destructive">*</span>
                     <input
                       required
                       list="driver-logins"
@@ -9568,7 +10374,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 <p className="text-xs font-bold text-foreground">Receiver Sign-off Details</p>
                 <div className="grid grid-cols-2 gap-3">
                   <label className="drawer-field">
-                    Received By Name *
+                    Received By Name <span className="text-destructive">*</span>
                     <input
                       required
                       value={podReceiverName}
@@ -9782,10 +10588,11 @@ export function ModuleWorkspace({ module }: { module: string }) {
               </p>
             </div>
             <label className="drawer-field">
-              Amount to Record (₹)
+              Amount to Record (₹) <span className="text-destructive">*</span>
               <input
                 type="number"
                 required
+                min="0.01"
                 value={payAmount}
                 onChange={(e) => setPayAmount(e.target.value)}
               />
@@ -9842,7 +10649,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
           <form onSubmit={handleSaveVehicle} className="mt-6 space-y-4">
             <label className="drawer-field">
-              Vehicle Make & Model *
+              Vehicle Make & Model <span className="text-destructive">*</span>
               <input
                 required
                 value={truckName}
@@ -9852,7 +10659,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </label>
 
             <label className="drawer-field">
-              Plate Registration Number *
+              Plate Registration Number <span className="text-destructive">*</span>
               <input
                 required
                 value={truckPlate}
@@ -9883,8 +10690,9 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </label>
 
             <label className="drawer-field">
-              Current Vehicle Status *
+              Current Vehicle Status <span className="text-destructive">*</span>
               <select
+                required
                 value={truckStatus}
                 onChange={(e) => setTruckStatus(e.target.value as VehicleStatus)}
               >

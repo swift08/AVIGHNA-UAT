@@ -25,6 +25,7 @@ export const createStaffLogin = createServerFn({ method: "POST" })
   .validator(
     (input: {
       creatorRole: RoleType;
+      creatorName?: string;
       name: string;
       email: string;
       password: string;
@@ -34,8 +35,8 @@ export const createStaffLogin = createServerFn({ method: "POST" })
     }) => input,
   )
   .handler(async ({ data }) => {
-    if (!canManageStaff(data.creatorRole)) {
-      return { ok: false as const, error: "Only the owner can create accounts." };
+    if (!canProposeStaff(data.creatorRole) && !canManageStaff(data.creatorRole)) {
+      return { ok: false as const, error: "You cannot create team logins." };
     }
     const allowed = new Set(featuresCreatorCanAssign(data.creatorRole));
     const features = parseFeatureIds(data.features);
@@ -51,19 +52,24 @@ export const createStaffLogin = createServerFn({ method: "POST" })
       };
     }
 
+    const needsApproval = data.creatorRole === "supervisor";
+    const status: StaffStatus = needsApproval ? "Pending approval" : "Active";
     const role = roleForFeatures(features);
     const admin = adminClient();
     const { data: created, error } = await admin.auth.admin.createUser({
       email,
       password: data.password,
       email_confirm: true,
+      ban_duration: needsApproval ? "876600h" : undefined,
       user_metadata: {
         full_name: name,
         role,
         features,
         phone: data.phone?.trim() || "",
         company: data.companyId || "all",
-        status: "Active",
+        status,
+        proposed_by_role: data.creatorRole,
+        proposed_by_name: data.creatorName?.trim() || "",
       },
     });
     if (error || !created.user) {
@@ -86,9 +92,14 @@ export const createStaffLogin = createServerFn({ method: "POST" })
       role_id: role,
       initials,
       default_company_id: data.companyId && data.companyId !== "all" ? data.companyId : "all",
+      is_active: !needsApproval,
     });
 
-    return { ok: true as const, email };
+    return {
+      ok: true as const,
+      email,
+      pending: needsApproval,
+    };
   });
 
 export const listStaffLogins = createServerFn({ method: "GET" }).handler(async () => {
@@ -117,8 +128,12 @@ export const listStaffLogins = createServerFn({ method: "GET" }).handler(async (
         Boolean(user.banned_until) && new Date(user.banned_until as string).getTime() > Date.now();
       const metaStatus = String(user.user_metadata?.["status"] || "");
       const inactiveProfile = profile?.is_active === false;
-      const status: StaffStatus =
-        banned || inactiveProfile || metaStatus.toLowerCase() === "inactive"
+      const pending =
+        metaStatus.toLowerCase() === "pending approval" ||
+        metaStatus.toLowerCase() === "pending";
+      const status: StaffStatus = pending
+        ? "Pending approval"
+        : banned || inactiveProfile || metaStatus.toLowerCase() === "inactive"
           ? "Inactive"
           : "Active";
       const metaName = String(user.user_metadata?.["full_name"] || "").trim();
@@ -131,12 +146,14 @@ export const listStaffLogins = createServerFn({ method: "GET" }).handler(async (
         features: parseFeatureIds(user.user_metadata?.["features"]),
         phone: String(user.user_metadata?.["phone"] || profile?.phone || ""),
         status,
+        proposedByName: String(user.user_metadata?.["proposed_by_name"] || ""),
+        proposedByRole: String(user.user_metadata?.["proposed_by_role"] || ""),
       };
     });
   return { ok: true as const, users };
 });
 
-export type StaffStatus = "Active" | "Inactive";
+export type StaffStatus = "Active" | "Inactive" | "Pending approval";
 
 export type StaffLogin = {
   id: string;
@@ -146,6 +163,8 @@ export type StaffLogin = {
   features: string[];
   phone: string;
   status: StaffStatus;
+  proposedByName?: string;
+  proposedByRole?: string;
 };
 
 /** Private Supabase Storage bucket — never public. Access only via short-lived signed URLs. */
@@ -158,6 +177,11 @@ const STAFF_BUCKET_OPTIONS = {
 
 export function canManageStaff(role: string | undefined) {
   return role === "super_admin";
+}
+
+/** Supervisors may propose logins; Super Admin activates them. */
+export function canProposeStaff(role: string | undefined) {
+  return role === "super_admin" || role === "supervisor";
 }
 
 export function staffPdfName(name: string) {
@@ -229,8 +253,13 @@ export const updateStaffLogin = createServerFn({ method: "POST" })
     if (features && (!features.length || features.length !== data.features?.length)) {
       return { ok: false as const, error: "Choose one or more known features." };
     }
-    if (data.status && data.status !== "Active" && data.status !== "Inactive") {
-      return { ok: false as const, error: "Status must be Active or Inactive." };
+    if (
+      data.status &&
+      data.status !== "Active" &&
+      data.status !== "Inactive" &&
+      data.status !== "Pending approval"
+    ) {
+      return { ok: false as const, error: "Invalid status." };
     }
 
     const admin = adminClient();
@@ -299,6 +328,65 @@ export const updateStaffLogin = createServerFn({ method: "POST" })
         await admin.from("user_profiles").update(profilePatch).eq("email", updated.user.email);
       }
     }
+    return { ok: true as const };
+  });
+
+export const approveStaffLogin = createServerFn({ method: "POST" })
+  .validator((input: { actorRole: RoleType; userId: string }) => input)
+  .handler(async ({ data }) => {
+    const denied = ownerGate(data.actorRole);
+    if (denied) return denied;
+    const admin = adminClient();
+    const existing = await admin.auth.admin.getUserById(data.userId);
+    if (existing.error || !existing.data.user) {
+      return { ok: false as const, error: existing.error?.message || "Could not load login." };
+    }
+    const meta = { ...(existing.data.user.user_metadata || {}) };
+    const current = String(meta["status"] || "");
+    if (current.toLowerCase() !== "pending approval" && current.toLowerCase() !== "pending") {
+      return { ok: false as const, error: "This login is not waiting for approval." };
+    }
+    meta["status"] = "Active";
+    meta["approved_by_role"] = "super_admin";
+    meta["approved_at"] = new Date().toISOString();
+    const { error } = await admin.auth.admin.updateUserById(data.userId, {
+      ban_duration: "none",
+      user_metadata: meta,
+    });
+    if (error) return { ok: false as const, error: error.message };
+    await admin.from("user_profiles").update({ is_active: true }).eq("id", data.userId);
+    if (existing.data.user.email) {
+      await admin
+        .from("user_profiles")
+        .update({ is_active: true })
+        .eq("email", existing.data.user.email);
+    }
+    return { ok: true as const };
+  });
+
+export const rejectStaffLogin = createServerFn({ method: "POST" })
+  .validator((input: { actorRole: RoleType; userId: string }) => input)
+  .handler(async ({ data }) => {
+    const denied = ownerGate(data.actorRole);
+    if (denied) return denied;
+    const admin = adminClient();
+    const existing = await admin.auth.admin.getUserById(data.userId);
+    if (existing.error || !existing.data.user) {
+      return { ok: false as const, error: existing.error?.message || "Could not load login." };
+    }
+    const metaStatus = String(existing.data.user.user_metadata?.["status"] || "");
+    if (metaStatus.toLowerCase() !== "pending approval" && metaStatus.toLowerCase() !== "pending") {
+      return { ok: false as const, error: "Only pending login requests can be rejected." };
+    }
+    const listed = await admin.storage.from(STAFF_BUCKET).list(data.userId);
+    if (listed.data?.length) {
+      await admin.storage
+        .from(STAFF_BUCKET)
+        .remove(listed.data.map((file) => `${data.userId}/${file.name}`));
+    }
+    await admin.from("user_profiles").delete().eq("id", data.userId);
+    const { error } = await admin.auth.admin.deleteUser(data.userId);
+    if (error) return { ok: false as const, error: error.message };
     return { ok: true as const };
   });
 

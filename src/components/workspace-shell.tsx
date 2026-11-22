@@ -38,6 +38,7 @@ import {
   BellOff,
   Plus,
   Scale,
+  BarChart3,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -103,6 +104,13 @@ export const navigation = [
       { name: "Inventory", url: "/inventory", icon: Package, perm: "inventory.view" },
       { name: "Purchases", url: "/purchases", icon: FileText, perm: "purchases.view" },
       { name: "Logistics", url: "/logistics", icon: Truck, perm: "logistics.view" },
+      {
+        name: "Floor analytics",
+        url: "/analytics",
+        icon: BarChart3,
+        perm: "analytics.view",
+        supervisorOnly: true,
+      },
     ],
   },
   {
@@ -129,6 +137,9 @@ function navVisible(
 ) {
   if ("superAdminOnly" in item && item.superAdminOnly) return role === "super_admin";
   if ("salesOnly" in item && item.salesOnly) return role === "sales" && hasPermission(item.perm!);
+  if ("supervisorOnly" in item && item.supervisorOnly) {
+    return role === "supervisor" && (!item.perm || hasPermission(item.perm));
+  }
   if ("accountsOrSuperAdminOnly" in item && item.accountsOrSuperAdminOnly) {
     return (
       (role === "accounts" || role === "super_admin") &&
@@ -137,6 +148,12 @@ function navVisible(
   }
   // Sales uses "Payments due" instead of the Finance Invoices link.
   if (item.name === "Invoices" && role === "sales") return false;
+  // Supervisors do not use Purchases — accounts owns procurement.
+  if (item.name === "Purchases" && role === "supervisor") return false;
+  // Finance Analytics stays accounts/SA; supervisors use Floor analytics under Operations.
+  if (item.name === "Analytics" && role === "supervisor") return false;
+  // Supervisors use Administration only for Team logins (propose → SA approve).
+  if (item.name === "Administration" && role === "supervisor") return true;
   return !item.perm || hasPermission(item.perm);
 }
 
@@ -386,7 +403,12 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                     asChild
                     key={item.url}
                     variant="workspace"
-                    className={path === item.url ? "active" : ""}
+                    className={
+                      path === item.url ||
+                      (item.url !== "/" && path.startsWith(`${item.url}/`))
+                        ? "active"
+                        : ""
+                    }
                     title={item.name}
                   >
                     <Link to={item.url}>
@@ -577,7 +599,8 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
               <span>Leads</span>
             </Link>
           )}
-          {hasPermission("field_visits.view") && (
+          {/* Sales logs visits; supervisors review them in sidebar — bottom nav stays ops-focused. */}
+          {currentUser?.role === "sales" && hasPermission("field_visits.view") && (
             <Link
               to="/field-visits"
               className={`mobile-bottom-nav-item ${path === "/field-visits" ? "active" : ""}`}
@@ -595,6 +618,15 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
               <span>Orders</span>
             </Link>
           )}
+          {currentUser?.role !== "sales" && hasPermission("inventory.view") && (
+            <Link
+              to="/inventory"
+              className={`mobile-bottom-nav-item ${path === "/inventory" ? "active" : ""}`}
+            >
+              <Package className="size-4" />
+              <span>Stock</span>
+            </Link>
+          )}
           {hasPermission("logistics.view") && (
             <Link
               to="/logistics"
@@ -607,7 +639,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           {currentUser.role === "sales" && hasPermission("customers.view") && (
             <Link
               to="/customers"
-              className={`mobile-bottom-nav-item ${path === "/customers" ? "active" : ""}`}
+              className={`mobile-bottom-nav-item ${path === "/customers" || path.startsWith("/customers/") ? "active" : ""}`}
             >
               <Building2 className="size-4" />
               <span>Customers</span>
@@ -686,7 +718,12 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                           asChild
                           key={item.url}
                           variant="workspace"
-                          className={`w-full justify-start text-xs ${path === item.url ? "active font-bold" : ""}`}
+                          className={`w-full justify-start text-xs ${
+                            path === item.url ||
+                            (item.url !== "/" && path.startsWith(`${item.url}/`))
+                              ? "active font-bold"
+                              : ""
+                          }`}
                           onClick={() => setMobileMenuOpen(false)}
                         >
                           <Link to={item.url}>

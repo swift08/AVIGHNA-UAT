@@ -17,5 +17,7 @@ export const Route = createFileRoute("/leads")({
       { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
-  component: () => <ModuleWorkspace module="leads" />,
+  component: function LeadsPage() {
+    return <ModuleWorkspace key="leads-workspace" module="leads" />;
+  },
 });

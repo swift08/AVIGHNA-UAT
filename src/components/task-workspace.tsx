@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, Plus, CheckCircle2, ArrowRight } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { Button } from "@/components/ui/button";
@@ -11,11 +11,33 @@ import {
 } from "@/components/ui/sheet";
 import { companies } from "@/lib/workspace-data";
 import { useWorkspace } from "./workspace-provider";
-import { fetchTasks, createTask, toggleTask, type DBTask } from "@/lib/erp-service";
+import {
+  fetchTasks,
+  createTask,
+  toggleTask,
+  taskAssignerName,
+  type DBTask,
+} from "@/lib/erp-service";
+import { ROLE_NAMES, SYSTEM_USERS } from "@/lib/auth-service";
 import { scopeForDriver } from "@/lib/driver-scope";
+import { missingRequired } from "@/lib/form-required";
+import { toast } from "sonner";
+
+function roleLabelForName(name: string) {
+  const user = SYSTEM_USERS.find(
+    (u) =>
+      u.name.toLowerCase() === name.toLowerCase() ||
+      u.name.toLowerCase().includes(name.toLowerCase().split(" (")[0] || "") ||
+      name.toLowerCase().includes(u.name.toLowerCase().split(" (")[0] || ""),
+  );
+  if (!user) return "";
+  return user.roleName || ROLE_NAMES[user.role] || user.role;
+}
 
 export function TaskWorkspace({ compact = false }: { compact?: boolean }) {
   const { company, currentUser, hasPermission } = useWorkspace();
+  const isSuperAdmin =
+    currentUser?.role === "super_admin" || currentUser?.permissions?.includes("*");
   const [tasks, setTasks] = useState<DBTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
@@ -29,37 +51,92 @@ export function TaskWorkspace({ compact = false }: { compact?: boolean }) {
     let active = true;
     setLoading(true);
     fetchTasks(company).then((res) => {
-      if (active) {
-        setTasks(scopeForDriver(currentUser, { tasks: res }).tasks ?? []);
-        setLoading(false);
-      }
+      if (!active) return;
+      // Drivers stay scoped to their own plate; Super Admin and others keep full company set.
+      const scoped = scopeForDriver(currentUser, { tasks: res }).tasks ?? [];
+      setTasks(scoped);
+      setLoading(false);
     });
     return () => {
       active = false;
     };
   }, [company, currentUser]);
 
-  const visible = tasks.filter((t) => company === "all" || t.company_id === company);
+  const visible = useMemo(() => {
+    const companyFiltered = tasks.filter((t) => company === "all" || t.company_id === company);
+    // Super Admin sees every role’s tasks (open + completed), with assigner/assignee.
+    if (isSuperAdmin) {
+      return [...companyFiltered].sort((a, b) => Number(a.done) - Number(b.done));
+    }
+    // Sales only sees tasks assigned to them. Others see assigned-to or assigned-by.
+    const me = (currentUser?.name || "").trim().toLowerCase();
+    if (!me) return companyFiltered;
+    const isSales = currentUser?.role === "sales";
+    return companyFiltered.filter((t) => {
+      const assignee = (t.assigned_to_name || "").toLowerCase();
+      const assignedToMe =
+        assignee.includes(me) || me.includes(assignee.split(" (")[0] || "");
+      if (isSales) return assignedToMe;
+      const from = taskAssignerName(t).toLowerCase();
+      return (
+        assignedToMe || from.includes(me) || me.includes(from.split(" (")[0] || "")
+      );
+    });
+  }, [tasks, company, isSuperAdmin, currentUser?.name, currentUser?.role]);
+
   const openCount = visible.filter((t) => !t.done).length;
+  const doneCount = visible.filter((t) => t.done).length;
+
+  const assigneeOptions = useMemo(() => {
+    const base = SYSTEM_USERS.filter((u) => u.role !== "super_admin" || isSuperAdmin);
+    return base.map((u) => ({
+      value: u.name.split(" (")[0] || u.name,
+      label: `${u.name.split(" (")[0] || u.name} · ${u.roleName}`,
+    }));
+  }, [isSuperAdmin]);
 
   const handleToggle = async (t: DBTask) => {
     const updatedDone = !t.done;
-    setTasks((prev) => prev.map((p) => (p.id === t.id ? { ...p, done: updatedDone } : p)));
+    setTasks((prev) =>
+      prev.map((p) =>
+        p.id === t.id
+          ? { ...p, done: updatedDone, status: updatedDone ? "Completed" : "Pending" }
+          : p,
+      ),
+    );
     if (t.id) {
       await toggleTask(t.id, updatedDone);
     }
   };
 
+  const canAddTask =
+    currentUser?.role !== "sales" && hasPermission("tasks.manage");
+
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canAddTask) {
+      toast.error("Sales can only complete assigned tasks.");
+      return;
+    }
+    const requiredError = missingRequired([
+      { label: "Task name", value: name },
+      { label: "Assigned to", value: person },
+      { label: "Due date", value: due },
+    ]);
+    if (requiredError) {
+      toast.error("Required fields missing", { description: requiredError });
+      return;
+    }
+    const creatorName = currentUser?.name || "Harshith (Owner)";
     try {
       const created = await createTask({
-        title: name,
+        title: name.trim(),
         companyId: taskCompany,
         assignedToName: person,
         dueDate: due,
         priority,
-        creatorName: currentUser?.name || "Ravi Kumar",
+        creatorName,
+        creatorId: currentUser?.id,
       });
       if (created) {
         setTasks((prev) => [created as DBTask, ...prev]);
@@ -72,6 +149,8 @@ export function TaskWorkspace({ compact = false }: { compact?: boolean }) {
           title: name,
           company_id: taskCompany,
           assigned_to_name: person,
+          created_by_name: creatorName,
+          description: `[Assigned by: ${creatorName}]`,
           due_date: due,
           priority,
           status: "Pending",
@@ -91,9 +170,15 @@ export function TaskWorkspace({ compact = false }: { compact?: boolean }) {
           <div className="border-b border-border px-4 py-3.5">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <h2 className="panel-title">My work</h2>
+                <h2 className="panel-title">{isSuperAdmin ? "Team work" : "My work"}</h2>
                 <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  {openCount === 0 ? "Nothing open" : `${openCount} open`}
+                  {isSuperAdmin
+                    ? openCount === 0 && doneCount === 0
+                      ? "No tasks across roles"
+                      : `${openCount} open · ${doneCount} completed`
+                    : openCount === 0
+                      ? "Nothing open"
+                      : `${openCount} open`}
                 </p>
               </div>
               <Button
@@ -108,7 +193,7 @@ export function TaskWorkspace({ compact = false }: { compact?: boolean }) {
                 </Link>
               </Button>
             </div>
-            {hasPermission("tasks.manage") && (
+            {canAddTask && (
               <Button
                 size="sm"
                 className="mt-3 h-8 w-full gap-1.5 text-xs font-semibold"
@@ -127,12 +212,12 @@ export function TaskWorkspace({ compact = false }: { compact?: boolean }) {
         ) : (
           <div className="panel-head">
             <div className="flex items-center gap-2">
-              <h2 className="panel-title">Team work</h2>
+              <h2 className="panel-title">{isSuperAdmin ? "Team work" : "My work"}</h2>
               <span className="rounded bg-secondary px-2 py-0.5 text-xs font-semibold text-muted-foreground">
                 {openCount}
               </span>
             </div>
-            {hasPermission("tasks.manage") && (
+            {canAddTask && (
               <Button
                 size="sm"
                 className="h-8 gap-1.5 text-xs font-semibold"
@@ -153,40 +238,83 @@ export function TaskWorkspace({ compact = false }: { compact?: boolean }) {
           <p className="p-8 text-center text-xs text-muted-foreground">Loading tasks...</p>
         )}
         {!loading &&
-          visible.map((t) => (
-            <div key={t.id} className={`task-row ${t.done ? "completed" : ""}`}>
-              <Button
-                variant="ghost"
-                className={`task-check ${t.done ? "done" : ""}`}
-                aria-label={`${t.done ? "Reopen" : "Complete"} ${t.title}`}
-                onClick={() => handleToggle(t)}
-              >
-                {t.done && <Check className="size-3" />}
-              </Button>
-              <div className="min-w-0 flex-1">
-                <p className="task-name text-xs font-semibold leading-5">{t.title}</p>
-                <p className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className={t.priority === "High" ? "text-warning" : ""}>{t.due_date}</span>
-                  <span>·</span>
-                  {companies.find((c) => c.id === t.company_id)?.short}
-                </p>
+          visible.map((t) => {
+            const from = taskAssignerName(t);
+            const assigneeRole = roleLabelForName(t.assigned_to_name || "");
+            const fromRole = from ? roleLabelForName(from) : "";
+            return (
+              <div key={t.id} className={`task-row ${t.done ? "completed" : ""}`}>
+                <Button
+                  variant="ghost"
+                  className={`task-check ${t.done ? "done" : ""}`}
+                  aria-label={`${t.done ? "Reopen" : "Complete"} ${t.title}`}
+                  onClick={() => handleToggle(t)}
+                >
+                  {t.done && <Check className="size-3" />}
+                </Button>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <p className="task-name text-xs font-semibold leading-5">{t.title}</p>
+                    {isSuperAdmin && (
+                      <span
+                        className={`inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                          t.done
+                            ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400"
+                            : "bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                        }`}
+                      >
+                        {t.done ? "Completed" : t.status || "Open"}
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+                    <span className={t.priority === "High" ? "text-warning" : ""}>{t.due_date}</span>
+                    <span>·</span>
+                    <span>{companies.find((c) => c.id === t.company_id)?.short}</span>
+                    {(isSuperAdmin || from) && (
+                      <>
+                        <span>·</span>
+                        <span>
+                          To {t.assigned_to_name || "—"}
+                          {assigneeRole ? ` (${assigneeRole})` : ""}
+                        </span>
+                        {from ? (
+                          <>
+                            <span>·</span>
+                            <span>
+                              From {from}
+                              {fromRole ? ` (${fromRole})` : ""}
+                            </span>
+                          </>
+                        ) : null}
+                      </>
+                    )}
+                  </p>
+                </div>
+                <span
+                  className="avatar size-7 text-[10px] font-bold"
+                  title={t.assigned_to_name || "Assignee"}
+                >
+                  {(t.assigned_to_name || "?")
+                    .split(" ")
+                    .map((w) => w[0])
+                    .join("")
+                    .slice(0, 2)
+                    .toUpperCase()}
+                </span>
               </div>
-              <span className="avatar size-7 text-[10px] font-bold">
-                {(t.assigned_to_name || "?")
-                  .split(" ")
-                  .map((w) => w[0])
-                  .join("")
-                  .slice(0, 2)
-                  .toUpperCase()}
-              </span>
-            </div>
-          ))}
+            );
+          })}
         {!loading && visible.length === 0 && (
           <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
             <CheckCircle2 className="size-8 text-muted-foreground/30 mb-2" />
-            <p className="text-xs font-medium text-foreground">No tasks assigned</p>
+            <p className="text-xs font-medium text-foreground">
+              {isSuperAdmin ? "No team tasks yet" : "No tasks assigned"}
+            </p>
             <p className="text-[11px] text-muted-foreground mt-0.5">
-              Everything is clear in this workspace.
+              {isSuperAdmin
+                ? "Tasks assigned across sales, accounts, logistics, and supervisors will appear here."
+                : "Everything is clear in this workspace."}
             </p>
           </div>
         )}
@@ -195,11 +323,15 @@ export function TaskWorkspace({ compact = false }: { compact?: boolean }) {
         <SheetContent>
           <SheetHeader>
             <SheetTitle>Create a task</SheetTitle>
-            <SheetDescription>Assign work across your organization</SheetDescription>
+            <SheetDescription>
+              {isSuperAdmin
+                ? "Assign work to any role — completion status stays visible here"
+                : "Assign work across your organization"}
+            </SheetDescription>
           </SheetHeader>
           <form onSubmit={handleCreate}>
             <label className="drawer-field">
-              Task name
+              Task name <span className="text-destructive">*</span>
               <input
                 required
                 value={name}
@@ -218,16 +350,17 @@ export function TaskWorkspace({ compact = false }: { compact?: boolean }) {
               </select>
             </label>
             <label className="drawer-field">
-              Assigned to
-              <select value={person} onChange={(e) => setPerson(e.target.value)}>
-                <option value="Ravi Kumar">Ravi Kumar · Sales</option>
-                <option value="Suresh Rao">Suresh Rao · Accounts</option>
-                <option value="Mahesh Patel">Mahesh Patel · Logistics</option>
-                <option value="Arun Nair">Arun Nair · Supervisor</option>
+              Assigned to <span className="text-destructive">*</span>
+              <select required value={person} onChange={(e) => setPerson(e.target.value)}>
+                {assigneeOptions.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="drawer-field">
-              Due date
+              Due date <span className="text-destructive">*</span>
               <input type="date" required value={due} onChange={(e) => setDue(e.target.value)} />
             </label>
             <label className="drawer-field">

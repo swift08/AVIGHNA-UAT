@@ -9,12 +9,15 @@ import {
   type RoleType,
 } from "@/lib/auth-service";
 import {
+  approveStaffLogin,
   canManageStaff,
+  canProposeStaff,
   createStaffLogin,
   deleteStaffLogin,
   listStaffDocuments,
   listStaffLogins,
   openStaffDocument,
+  rejectStaffLogin,
   updateStaffLogin,
   uploadStaffDocument,
   type StaffLogin,
@@ -52,6 +55,7 @@ function StaffCard({
   const [password, setPassword] = useState("");
   const [files, setFiles] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const isPending = user.status === "Pending approval";
 
   useEffect(() => {
     setStatus(user.status || "Active");
@@ -59,13 +63,13 @@ function StaffCard({
   }, [user.status, user.features]);
 
   useEffect(() => {
-    if (!owner) return;
+    if (!owner || isPending) return;
     listStaffDocuments({ data: { actorRole: "super_admin", userId: user.id } })
       .then((res) => {
         if (res.ok) setFiles(res.files);
       })
       .catch(() => undefined);
-  }, [owner, user.id]);
+  }, [owner, user.id, isPending]);
 
   const run = async (work: () => Promise<{ ok: boolean; error?: string }>, done: string) => {
     setBusy(true);
@@ -92,7 +96,7 @@ function StaffCard({
         <h4 className="min-w-0 flex-1 text-sm font-bold text-foreground break-words">
           {user.name}
         </h4>
-        {owner ? (
+        {owner && !isPending ? (
           <select
             value={status}
             disabled={busy}
@@ -120,7 +124,11 @@ function StaffCard({
             <option value="Inactive">Inactive</option>
           </select>
         ) : (
-          <span className={`status shrink-0 ${status === "Active" ? "success" : ""}`}>
+          <span
+            className={`status shrink-0 ${
+              isPending ? "warning" : status === "Active" ? "success" : ""
+            }`}
+          >
             {status}
           </span>
         )}
@@ -132,8 +140,50 @@ function StaffCard({
           : ROLE_NAMES[user.role as RoleType] || user.role}
         {user.phone ? ` · ${user.phone}` : ""}
       </p>
+      {isPending && (
+        <p className="text-[11px] text-amber-700 dark:text-amber-300">
+          Proposed by {user.proposedByName || "Supervisor"}
+          {user.proposedByRole ? ` (${user.proposedByRole})` : ""}. Waiting for Super Admin
+          approval — login stays locked until approved.
+        </p>
+      )}
 
-      {owner && (
+      {owner && isPending && (
+        <div className="flex flex-wrap gap-2 border-t border-border pt-3">
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy}
+            className="h-8 text-xs font-semibold"
+            onClick={() =>
+              void run(
+                () => approveStaffLogin({ data: { actorRole: "super_admin", userId: user.id } }),
+                `${user.name} approved — they can sign in now.`,
+              ).then((ok) => ok && onChanged())
+            }
+          >
+            Approve login
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            className="h-8 text-xs text-destructive"
+            onClick={() => {
+              if (!window.confirm(`Reject and delete the request for ${user.name}?`)) return;
+              void run(
+                () => rejectStaffLogin({ data: { actorRole: "super_admin", userId: user.id } }),
+                `${user.name} request rejected.`,
+              ).then((ok) => ok && onChanged());
+            }}
+          >
+            Reject
+          </Button>
+        </div>
+      )}
+
+      {owner && !isPending && (
         <details className="border-t border-border pt-3">
           <summary className="cursor-pointer text-xs font-semibold text-muted-foreground hover:text-foreground">
             Manage access
@@ -289,6 +339,8 @@ function StaffCard({
 
 export function TeamLogins() {
   const { currentUser } = useWorkspace();
+  const owner = canManageStaff(currentUser?.role);
+  const canPropose = canProposeStaff(currentUser?.role);
   const allowed = featuresCreatorCanAssign(currentUser?.role);
   const [users, setUsers] = useState<StaffLogin[]>([]);
   const [name, setName] = useState("");
@@ -316,13 +368,16 @@ export function TeamLogins() {
     load();
   }, []);
 
-  if (allowed.length === 0) {
+  if (!canPropose || allowed.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
-        Only the owner (super admin) can create accounts.
+        Only the owner or a supervisor can create team login requests.
       </p>
     );
   }
+
+  const pendingUsers = users.filter((u) => u.status === "Pending approval");
+  const activeUsers = users.filter((u) => u.status !== "Pending approval");
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -334,6 +389,7 @@ export function TeamLogins() {
       const res = await createStaffLogin({
         data: {
           creatorRole: currentUser.role,
+          creatorName: currentUser.name,
           name,
           email,
           password,
@@ -345,7 +401,11 @@ export function TeamLogins() {
       if (!res.ok) {
         setError(res.error);
       } else {
-        setNotice(`${res.email} can sign in now.`);
+        setNotice(
+          res.pending
+            ? `${res.email} sent to Super Admin for approval. They cannot sign in until approved.`
+            : `${res.email} can sign in now.`,
+        );
         setName("");
         setEmail("");
         setPassword("");
@@ -365,7 +425,9 @@ export function TeamLogins() {
       <div>
         <h3 className="text-sm font-bold">Team logins</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          Create a login ID and tick every feature that person should use. A logistics-only ID still sees only the trips assigned to that name.
+          {owner
+            ? "Create a login ID and tick every feature that person should use. Approve supervisor requests before they can sign in."
+            : "Propose a login ID and tick the features they need. Super Admin must approve before the login becomes active."}
         </p>
       </div>
 
@@ -451,7 +513,13 @@ export function TeamLogins() {
             disabled={saving || features.length === 0}
             className="h-9 text-xs font-semibold"
           >
-            {saving ? "Creating..." : "Create login ID"}
+            {saving
+              ? owner
+                ? "Creating..."
+                : "Submitting..."
+              : owner
+                ? "Create login ID"
+                : "Submit for Super Admin approval"}
           </Button>
         </div>
       </form>
@@ -459,21 +527,53 @@ export function TeamLogins() {
       {error && <p className="text-xs text-destructive">{error}</p>}
       {notice && <p className="text-xs text-success">{notice}</p>}
 
-      <div className="module-grid">
-        {users.map((user) => (
-          <StaffCard
-            key={user.id}
-            user={user}
-            owner={canManageStaff(currentUser?.role)}
-            onChanged={load}
-            onError={setError}
-            onNotice={setNotice}
-          />
-        ))}
-      </div>
-      {users.length === 0 && (
-        <p className="text-xs text-muted-foreground">No extra logins yet.</p>
+      {pendingUsers.length > 0 && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <h4 className="text-sm font-bold text-foreground">
+              {owner ? "Awaiting your approval" : "Pending Super Admin approval"}
+            </h4>
+            <span className="text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+              {pendingUsers.length} request{pendingUsers.length === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div className="module-grid">
+            {pendingUsers.map((user) => (
+              <StaffCard
+                key={user.id}
+                user={user}
+                owner={owner}
+                onChanged={load}
+                onError={setError}
+                onNotice={setNotice}
+              />
+            ))}
+          </div>
+        </div>
       )}
+
+      <div className="space-y-3">
+        {owner || activeUsers.length > 0 ? (
+          <h4 className="text-sm font-bold text-foreground">
+            {owner ? "Active & inactive logins" : "Team logins (view)"}
+          </h4>
+        ) : null}
+        <div className="module-grid">
+          {activeUsers.map((user) => (
+            <StaffCard
+              key={user.id}
+              user={user}
+              owner={owner}
+              onChanged={load}
+              onError={setError}
+              onNotice={setNotice}
+            />
+          ))}
+        </div>
+        {activeUsers.length === 0 && pendingUsers.length === 0 && (
+          <p className="text-xs text-muted-foreground">No extra logins yet.</p>
+        )}
+      </div>
 
       <p className="text-[11px] text-muted-foreground">
         When you assign a trip, the driver name must match this login’s full name.

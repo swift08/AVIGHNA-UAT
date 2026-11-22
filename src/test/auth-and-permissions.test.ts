@@ -54,7 +54,8 @@ describe("Avighna One — Authentication, Security & Granular Permissions Audit"
       expect(hasUserPermission(sales, "leads.convert")).toBe(true);
       expect(hasUserPermission(sales, "customers.manage")).toBe(true);
       expect(hasUserPermission(sales, "field_visits.conduct")).toBe(true);
-      expect(hasUserPermission(sales, "tasks.manage")).toBe(true);
+      expect(hasUserPermission(sales, "tasks.view")).toBe(true);
+      expect(hasUserPermission(sales, "tasks.manage")).toBe(false);
       expect(hasUserPermission(sales, "invoices.view")).toBe(true);
       expect(hasUserPermission(sales, "payments.record")).toBe(true);
 
@@ -71,8 +72,10 @@ describe("Avighna One — Authentication, Security & Granular Permissions Audit"
       expect(hasUserPermission(supervisor, "orders.approve")).toBe(true);
       expect(hasUserPermission(supervisor, "inventory.adjust")).toBe(true);
       expect(hasUserPermission(supervisor, "inventory.shortage_approve")).toBe(true);
+      expect(hasUserPermission(supervisor, "field_visits.view")).toBe(true);
+      expect(hasUserPermission(supervisor, "analytics.view")).toBe(true);
 
-      // Must NOT have purchases, accounts, analytics, amounts, or logistics dispatch
+      // Must NOT have purchases, accounts, amounts, logistics dispatch, or visit logging
       expect(hasUserPermission(supervisor, "purchases.view")).toBe(false);
       expect(hasUserPermission(supervisor, "purchases.create")).toBe(false);
       expect(hasUserPermission(supervisor, "purchases.receive")).toBe(false);
@@ -80,8 +83,9 @@ describe("Avighna One — Authentication, Security & Granular Permissions Audit"
       expect(hasUserPermission(supervisor, "payments.record")).toBe(false);
       expect(hasUserPermission(supervisor, "logistics.dispatch")).toBe(false);
       expect(hasUserPermission(supervisor, "admin.manage")).toBe(false);
-      expect(hasUserPermission(supervisor, "analytics.view")).toBe(false);
       expect(hasUserPermission(supervisor, "finance.view_amounts")).toBe(false);
+      expect(hasUserPermission(supervisor, "field_visits.conduct")).toBe(false);
+      expect(hasUserPermission(supervisor, "field_visits.schedule")).toBe(false);
     });
 
     it("accounts role can view & generate invoices and record payments, but cannot approve orders or dispatch logistics", () => {
@@ -231,7 +235,8 @@ describe("Avighna One — Authentication, Security & Granular Permissions Audit"
       expect(permissionsForFeatures(["leads"])).not.toContain("invoices.generate");
       expect(roleForFeatures(["logistics"])).toBe("logistics");
       expect(roleForFeatures(["leads", "orders"])).toBe("custom");
-      expect(featuresCreatorCanAssign("supervisor")).toEqual([]);
+      expect(featuresCreatorCanAssign("supervisor").length).toBeGreaterThan(0);
+      expect(featuresCreatorCanAssign("supervisor")).not.toContain("administration");
       expect(featuresCreatorCanAssign("super_admin")).toContain("administration");
 
       const profile = profileFromAuth({

@@ -127,10 +127,17 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       });
       const profile = data.user ? profileFromAuth(data.user) : null;
       if (!error && profile) {
-        const status = String(data.user?.user_metadata?.["status"] || "Active");
-        if (status.toLowerCase() === "inactive") {
+        const status = String(data.user?.user_metadata?.["status"] || "Active").toLowerCase();
+        if (status === "inactive") {
           await supabase.auth.signOut();
           return { success: false, error: "This account is inactive." };
+        }
+        if (status === "pending approval" || status === "pending") {
+          await supabase.auth.signOut();
+          return {
+            success: false,
+            error: "This login is waiting for Super Admin approval.",
+          };
         }
         clearLoginRateLimit(emailOrRole);
         setDemoActor(null);

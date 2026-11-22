@@ -593,7 +593,7 @@ export function CoaImportButton({
       <Button
         size="sm"
         variant="outline"
-        className="h-8 gap-1.5 text-xs font-semibold"
+        className="inventory-toolbar-btn h-8 gap-1.5 text-xs font-semibold"
         onClick={() => {
           reset();
           setCompanyId(defaultCompanyId === "all" ? "asian" : defaultCompanyId);
@@ -601,7 +601,8 @@ export function CoaImportButton({
         }}
       >
         <FileUp className="size-3.5" />
-        Import Product from COA
+        <span className="inventory-btn-full">Import Product from COA</span>
+        <span className="inventory-btn-short">COA Import</span>
       </Button>
 
       <Sheet

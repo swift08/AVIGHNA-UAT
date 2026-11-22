@@ -1,5 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { ModuleWorkspace } from "@/components/module-workspace";
+import { Outlet, createFileRoute } from "@tanstack/react-router";
+
 export const Route = createFileRoute("/customers")({
   head: () => ({
     meta: [
@@ -17,5 +17,5 @@ export const Route = createFileRoute("/customers")({
       { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
-  component: () => <ModuleWorkspace module="customers" />,
+  component: () => <Outlet />,
 });

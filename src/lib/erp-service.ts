@@ -154,12 +154,31 @@ export interface DBTask {
   customer_id?: string | undefined;
   assigned_to?: string | undefined;
   assigned_to_name: string;
+  /** Display name of who assigned the task (from description tag or column). */
+  created_by_name?: string | undefined;
   due_date: string;
   priority: "High" | "Medium" | "Low";
   status: "Pending" | "In Progress" | "Completed" | "Overdue" | "Cancelled";
   done: boolean;
   attachments?: string[] | undefined;
   created_at?: string | undefined;
+}
+
+const TASK_ASSIGNER_MARK = /\[Assigned by:\s*([^\]]+)\]/i;
+
+export function parseTaskAssigner(description?: string | null): string {
+  const match = description?.match(TASK_ASSIGNER_MARK);
+  return match?.[1]?.trim() || "";
+}
+
+export function withTaskAssigner(description: string | undefined, creatorName: string): string {
+  const tag = `[Assigned by: ${creatorName.trim()}]`;
+  const cleaned = (description || "").replace(TASK_ASSIGNER_MARK, "").trim();
+  return cleaned ? `${tag} ${cleaned}` : tag;
+}
+
+export function taskAssignerName(task: Pick<DBTask, "created_by_name" | "description">): string {
+  return task.created_by_name?.trim() || parseTaskAssigner(task.description) || "";
 }
 
 export interface DBPurchaseOrder {
@@ -1299,7 +1318,10 @@ export async function fetchTasks(companyId: CompanyId): Promise<DBTask[]> {
     }
     const { data, error } = await query;
     if (error || !data) throw error;
-    return data as DBTask[];
+    return (data as DBTask[]).map((task) => ({
+      ...task,
+      created_by_name: task.created_by_name || parseTaskAssigner(task.description) || undefined,
+    }));
   } catch {
     return [];
   }
@@ -1312,20 +1334,41 @@ export async function createTask(payload: {
   dueDate: string;
   priority: "High" | "Medium" | "Low";
   creatorName: string;
+  creatorId?: string | undefined;
 }) {
-  const { data, error } = await supabase
-    .from("tasks")
-    .insert({
-      title: payload.title,
-      company_id: payload.companyId,
-      assigned_to_name: payload.assignedToName,
-      due_date: payload.dueDate,
-      priority: payload.priority,
-      status: "Pending",
-      done: false,
-    })
-    .select()
-    .single();
+  const description = withTaskAssigner(undefined, payload.creatorName);
+  const baseRow = {
+    title: payload.title,
+    company_id: payload.companyId,
+    assigned_to_name: payload.assignedToName,
+    due_date: payload.dueDate,
+    priority: payload.priority,
+    status: "Pending" as const,
+    done: false,
+    description,
+  };
+
+  let data: DBTask | null = null;
+  let error: { message?: string; code?: string } | null = null;
+
+  const withCreatorId = payload.creatorId
+    ? { ...baseRow, created_by: payload.creatorId }
+    : baseRow;
+
+  ({ data, error } = await supabase.from("tasks").insert(withCreatorId).select().single());
+
+  if (
+    error &&
+    (error.code === "PGRST204" ||
+      error.code === "23503" ||
+      error.message?.includes("column") ||
+      error.message?.includes("foreign key") ||
+      error.message?.includes("created_by"))
+  ) {
+    const retry = await supabase.from("tasks").insert(baseRow).select().single();
+    data = retry.data as DBTask | null;
+    error = retry.error;
+  }
 
   if (error) throw error;
 
@@ -1335,10 +1378,14 @@ export async function createTask(payload: {
     module: "tasks",
     action: "create",
     recordId: data?.id || "TASK",
-    description: `${payload.creatorName} created Task: ${payload.title}`,
+    description: `${payload.creatorName} assigned Task "${payload.title}" to ${payload.assignedToName}`,
   });
 
-  return data;
+  return {
+    ...data,
+    created_by_name: payload.creatorName,
+    description,
+  } as DBTask;
 }
 
 export async function toggleTask(taskId: string, done: boolean) {
