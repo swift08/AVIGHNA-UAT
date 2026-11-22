@@ -319,7 +319,7 @@ export function TeamLogins() {
   if (allowed.length === 0) {
     return (
       <p className="text-xs text-muted-foreground">
-        Only the owner and the supervisor can create login IDs.
+        Only the owner (super admin) can create accounts.
       </p>
     );
   }

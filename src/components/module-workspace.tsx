@@ -37,7 +37,6 @@ import {
   Pencil,
   Copy,
   Columns3,
-  List,
   ShieldCheck,
   FileText,
   History,
@@ -71,9 +70,21 @@ import {
   ConversionFunnelBarChart,
   ProductCategoryCharts,
 } from "./analytics-charts";
-import { companies, money } from "@/lib/workspace-data";
+import { companies, money as moneyFormat } from "@/lib/workspace-data";
 import { SYSTEM_USERS } from "@/lib/auth-service";
 import { scopeForDriver } from "@/lib/driver-scope";
+import { buildSalesInvoiceHtml, suggestSalesInvoiceNumber } from "@/lib/sales-invoice";
+import {
+  buildPurchaseOrderHtml,
+  encodePoNotes,
+  parsePoNotes,
+  suggestPurchaseOrderNumber,
+} from "@/lib/purchase-order-doc";
+import {
+  getPurchaseOrderDocument,
+  openPurchaseOrderDocument,
+  savePurchaseOrderDocument,
+} from "@/lib/po-documents";
 import { listStaffLogins } from "@/lib/login-admin";
 import { TeamLogins } from "./team-logins";
 import { CoaImportButton, ProductBatchesPanel } from "./coa-import";
@@ -129,6 +140,8 @@ import {
   updateVehicleStatus,
   outboundOrderedQuantity,
   availableFromStock,
+  parsePurchaseReference,
+  parseOrderItemsSummary,
   type DBOrder,
   type DBProduct,
   type DBLead,
@@ -218,6 +231,14 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("All statuses");
   const [tab, setTab] = useState("Overview");
+  // Payment collectors (sales) can see due/collection amounts on Accounts only.
+  const canViewAmounts =
+    hasPermission("finance.view_amounts") ||
+    (module === "accounts" && hasPermission("payments.record"));
+  const money = (value: number) => (canViewAmounts ? moneyFormat(value) : "—");
+  const canGenerateInvoices = hasPermission("invoices.generate");
+  const isSalesCollector =
+    currentUser?.role === "sales" && hasPermission("payments.record") && !canGenerateInvoices;
 
   const isSuperAdmin = currentUser?.role === "super_admin" || hasPermission("*");
   const isSupervisor =
@@ -402,6 +423,9 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const [customPoUnit, setCustomPoUnit] = useState("");
   const [poPrice, setPoPrice] = useState("250");
   const [poCompany, setPoCompany] = useState("asian");
+  const [poRemark, setPoRemark] = useState("GST Extra");
+  const [poPdfFile, setPoPdfFile] = useState<File | null>(null);
+  const [poDocTick, setPoDocTick] = useState(0);
 
   // Purchase Order Edit modal state (Super Admin and Supervisor)
   const [editPoModal, setEditPoModal] = useState(false);
@@ -463,9 +487,11 @@ export function ModuleWorkspace({ module }: { module: string }) {
   // Media Inspection & Audio Player State
   const [selectedVisitAudio, setSelectedVisitAudio] = useState<DBFieldVisit | null>(null);
   const [selectedVisitPhoto, setSelectedVisitPhoto] = useState<string | null>(null);
+  const [selectedVisitDetail, setSelectedVisitDetail] = useState<DBFieldVisit | null>(null);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [audioTimer, setAudioTimer] = useState(0);
   const [visitSalesFilter, setVisitSalesFilter] = useState("All");
+  const canLogFieldVisit = hasPermission("field_visits.conduct");
 
   // Dispatch modal state
   const [dispatchModal, setDispatchModal] = useState(false);
@@ -671,7 +697,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
     inventory: "Inventory intelligence",
     purchases: "Purchases",
     logistics: "Dispatch control",
-    accounts: "Invoices",
+    accounts: isSalesCollector ? "Payments due" : "Invoices",
     credit: "Credit control",
     analytics: "Revenue intelligence",
     administration: "Administration",
@@ -686,8 +712,9 @@ export function ModuleWorkspace({ module }: { module: string }) {
     inventory: "Know what’s on hand. Stay ahead of what’s next.",
     purchases: "From supplier to stock, without the guesswork.",
     logistics: "Keep your deliveries moving.",
-    accounts:
-      "Ready to invoice shows orders after Supervisor confirmed/added the vehicle. Enter bill details, then raise the invoice. After that book the driver on Order desk.",
+    accounts: isSalesCollector
+      ? "See outstanding invoices, collect payments in the field, and track receipts."
+      : "Ready to invoice shows orders after Supervisor confirmed/added the vehicle. Enter bill details, then raise the invoice. After that book the driver on Order desk.",
     credit:
       "Limits, days and credit/debit notes. Accounts adjusts receivables — warehouse handles stock.",
     analytics: "The numbers behind your next decision.",
@@ -1611,23 +1638,77 @@ export function ModuleWorkspace({ module }: { module: string }) {
     reloadData();
   };
 
+  const handleViewPurchaseOrder = (po: DBPurchaseOrder) => {
+    const uploaded = getPurchaseOrderDocument(po.id);
+    if (uploaded) {
+      openPurchaseOrderDocument(po.id);
+      return;
+    }
+    const html = buildPurchaseOrderHtml(po);
+    const win = window.open("", "_blank");
+    if (win) {
+      win.document.open();
+      win.document.write(html);
+      win.document.close();
+    }
+  };
+
+  const handleUploadPoPdf = async (po: DBPurchaseOrder, file: File | null) => {
+    if (!file) return;
+    try {
+      const saved = await savePurchaseOrderDocument(po.id, file, {
+        itemName: po.product_name,
+        documentType: "supplier_invoice",
+      });
+      setPoDocTick((n) => n + 1);
+      toast.success(`Supplier invoice uploaded for ${po.product_name}: ${saved.name}`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not upload supplier invoice PDF.");
+    }
+  };
+
   const handleCreatePO = async (e: React.FormEvent) => {
     e.preventDefault();
     const finalPoUnit = isCustomPoUnit ? customPoUnit.trim() || "units" : poUnit;
-    await createPurchaseOrder({
-      companyId: poCompany,
+    const poId = suggestPurchaseOrderNumber(poCompany, String(Date.now()).slice(-2));
+    const created = await createPurchaseOrder({
+      companyId: poCompany === "all" ? "ganesh" : poCompany,
       supplierName: poSupplier,
       productName: poProduct,
       quantity: parseFloat(poQuantity) || 10,
       unit: finalPoUnit,
       unitPrice: parseFloat(poPrice) || 100,
-      creatorName: currentUser?.name || "Ravi Kumar",
+      poId,
+      notes: encodePoNotes({
+        text: poRemark,
+        remark: poRemark,
+        documentName: poPdfFile?.name,
+        documentKey: poPdfFile ? poId : undefined,
+        documentType: poPdfFile ? "supplier_invoice" : undefined,
+        itemName: poProduct,
+      }),
+      creatorName: currentUser?.name || "Suresh Rao (Accounts)",
     });
+    if (poPdfFile) {
+      try {
+        await savePurchaseOrderDocument(created.id, poPdfFile, {
+          itemName: poProduct,
+          documentType: "supplier_invoice",
+        });
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Item saved, but supplier invoice PDF upload failed.",
+        );
+      }
+    }
     setPoModal(false);
     setPoSupplier("");
     setPoProduct("");
+    setPoRemark("GST Extra");
+    setPoPdfFile(null);
     setIsCustomPoUnit(false);
     setCustomPoUnit("");
+    setPoDocTick((n) => n + 1);
     reloadData();
   };
 
@@ -1989,209 +2070,28 @@ export function ModuleWorkspace({ module }: { module: string }) {
   const requiredModulePerm = modulePermissions[module];
   const isModuleAllowed =
     module === "administration"
-      ? isSuperAdmin || isSupervisor || hasPermission("admin.manage")
-      : !requiredModulePerm || hasPermission(requiredModulePerm);
-
-  if (!isModuleAllowed) {
-    // Field roles land here after a role switch or a stale link — send them home.
-    if (currentUser?.role === "sales" || currentUser?.role === "logistics") {
-      return <Navigate to="/" />;
-    }
-    return (
-      <main className="content">
-        <p className="eyebrow mb-2">
-          {company === "all"
-            ? "Organization workspace"
-            : companies.find((c) => c.id === company)?.short}
-        </p>
-        <h1 className="page-heading">{titles[module] || module}</h1>
-        <div className="mt-8 max-w-md mx-auto text-center p-8 rounded-2xl border border-border bg-card shadow-sm space-y-4">
-          <div className="size-12 rounded-full bg-warning/15 text-warning flex items-center justify-center mx-auto">
-            <Lock className="size-6" />
-          </div>
-          <div>
-            <h2 className="text-base font-bold text-foreground">Access Restricted</h2>
-            <p className="text-xs text-muted-foreground mt-1.5">
-              <strong>{currentUser?.roleName || "This login"}</strong> does not include this
-              feature.
-            </p>
-          </div>
-          <div className="flex flex-wrap justify-center gap-3 pt-2">
-            <Button size="sm" variant="outline" asChild>
-              <a href="/">Return to Overview</a>
-            </Button>
-          </div>
-        </div>
-      </main>
-    );
-  }
+      ? isSuperAdmin || hasPermission("admin.manage")
+      : module === "analytics"
+        ? (isSuperAdmin || currentUser?.role === "accounts") &&
+          hasPermission("analytics.view")
+        : !requiredModulePerm || hasPermission(requiredModulePerm);
 
   const handleDownloadInvoice = (inv: DBInvoice, ord?: DBOrder | null) => {
-    const comp = companies.find((c) => c.id === inv.company_id);
     const orderDetails = ord || dbOrders.find((o) => o.id === inv.order_id);
-    const issueDate = inv.created_at
-      ? inv.created_at.split("T")[0]
-      : new Date().toISOString().split("T")[0];
-    const dueDate = inv.due_date || "Within 15 Days";
-    const subtotal = orderDetails?.subtotal || inv.amount * 0.8475;
-    const tax = orderDetails?.tax || inv.amount * 0.1525;
-    const cgst = tax / 2;
-    const sgst = tax / 2;
-    const total = inv.amount;
-
-    const htmlContent = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <title>Tax Invoice - #${inv.id}</title>
-  <style>
-    @page { size: A4 portrait; margin: 12mm; }
-    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
-    body { background: #fff; color: #1e293b; padding: 24px; line-height: 1.4; font-size: 13px; }
-    .invoice-card { max-width: 800px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 8px; padding: 32px; }
-    .header { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #0f172a; padding-bottom: 20px; }
-    .company-title { font-size: 22px; font-weight: 800; color: #0f172a; letter-spacing: -0.5px; }
-    .badge-gst { display: inline-block; background: #f1f5f9; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: 700; color: #475569; margin-top: 6px; }
-    .inv-header-right { text-align: right; }
-    .inv-title { font-size: 24px; font-weight: 800; color: #15803d; letter-spacing: -0.5px; text-transform: uppercase; }
-    .inv-meta { margin-top: 6px; font-size: 12px; color: #475569; }
-    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin: 24px 0; padding: 16px; background: #f8fafc; border-radius: 6px; border: 1px solid #e2e8f0; }
-    .sec-label { font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.5px; color: #64748b; margin-bottom: 4px; }
-    .name-bold { font-size: 15px; font-weight: 700; color: #0f172a; }
-    .meta-text { font-size: 12px; color: #475569; margin-top: 2px; }
-    table { width: 100%; border-collapse: collapse; margin: 24px 0; }
-    th { background: #0f172a; color: #fff; text-align: left; padding: 10px 12px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-    td { padding: 12px; border-bottom: 1px solid #e2e8f0; font-size: 12px; color: #334155; }
-    .num { text-align: right; }
-    .totals-area { display: flex; justify-content: space-between; align-items: flex-start; margin-top: 16px; }
-    .bank-box { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px; width: 48%; font-size: 11px; }
-    .totals-box { width: 45%; }
-    .totals-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 12px; color: #475569; }
-    .totals-row.grand { border-top: 2px solid #0f172a; border-bottom: 2px solid #0f172a; font-size: 16px; font-weight: 800; color: #0f172a; padding: 10px 0; margin-top: 8px; }
-    .footer { margin-top: 36px; padding-top: 20px; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: flex-end; }
-    .sign-box { text-align: right; }
-    .sign-line { width: 180px; border-top: 1px solid #0f172a; margin-top: 48px; padding-top: 4px; font-size: 11px; font-weight: 600; color: #334155; }
-    .no-print-bar { background: #0f172a; color: #fff; padding: 12px 24px; margin-bottom: 20px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; }
-    .print-btn { background: #22c55e; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; font-weight: 700; cursor: pointer; font-size: 13px; }
-    @media print {
-      body { padding: 0; }
-      .invoice-card { border: none; padding: 0; }
-      .no-print-bar { display: none !important; }
-    }
-  </style>
-</head>
-<body>
-  <div class="no-print-bar">
-    <div><strong>Tax Invoice Preview:</strong> #${inv.id} &mdash; ${inv.customer_name}</div>
-    <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
-  </div>
-  <div class="invoice-card">
-    <div class="header">
-      <div>
-        <div class="company-title">${comp?.name || "Avighna Food Products Pvt Ltd"}</div>
-        <div class="meta-text">Corporate Office: Plot 42-A, Industrial Growth Centre, Phase II</div>
-        <div class="meta-text">Phone: +91 98201 44520 &bull; Email: billing@avighnaone.com</div>
-        <div class="badge-gst">GSTIN: 27AABCA1234F1ZX &bull; State Code: 27 (Maharashtra)</div>
-      </div>
-      <div class="inv-header-right">
-        <div class="inv-title">TAX INVOICE</div>
-        <div class="inv-meta"><strong>Invoice No:</strong> #${inv.id}</div>
-        <div class="inv-meta"><strong>Issue Date:</strong> ${issueDate}</div>
-        <div class="inv-meta"><strong>Due Date:</strong> ${dueDate}</div>
-        <div class="inv-meta"><strong>Status:</strong> ${inv.status.toUpperCase()}</div>
-      </div>
-    </div>
-
-    <div class="grid-2">
-      <div>
-        <div class="sec-label">Billed To (Customer):</div>
-        <div class="name-bold">${inv.customer_name}</div>
-        <div class="meta-text">${orderDetails?.delivery_address || "Client Warehouse & Receiving Hub"}</div>
-        <div class="meta-text">Contact: ${orderDetails?.contact_person || "Accounts / Procurement"}</div>
-        <div class="meta-text">GSTIN: 27BBDCE9876K1Z8</div>
-      </div>
-      <div>
-        <div class="sec-label">Dispatched From & Order Details:</div>
-        <div class="name-bold">${comp?.short || "Avighna"} Central Distribution Hub</div>
-        <div class="meta-text"><strong>Sales Order:</strong> #${inv.order_id || (orderDetails ? orderDetails.id : "N/A")}</div>
-        <div class="meta-text"><strong>Payment Terms:</strong> Net 15 Days B2B Commercial</div>
-        <div class="meta-text"><strong>Place of Supply:</strong> Maharashtra (27)</div>
-      </div>
-    </div>
-
-    <table>
-      <thead>
-        <tr>
-          <th>#</th>
-          <th>Description of Goods</th>
-          <th>HSN/SAC</th>
-          <th class="num">Qty</th>
-          <th class="num">Rate (₹)</th>
-          <th class="num">Amount (₹)</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr>
-          <td>1</td>
-          <td><strong>${orderDetails?.items_summary || "Commercial B2B Food & Industrial Raw Supplies"}</strong></td>
-          <td>0402</td>
-          <td class="num">1 Lot</td>
-          <td class="num">${Math.round(subtotal).toLocaleString("en-IN")}</td>
-          <td class="num">${Math.round(subtotal).toLocaleString("en-IN")}</td>
-        </tr>
-      </tbody>
-    </table>
-
-    <div class="totals-area">
-      <div class="bank-box">
-        <div class="sec-label" style="margin-bottom: 8px;">Bank & Remittance Details:</div>
-        <div><strong>Bank Name:</strong> HDFC Bank Ltd</div>
-        <div><strong>A/C Name:</strong> ${comp?.name || "Avighna Food Products Pvt Ltd"}</div>
-        <div><strong>Account No:</strong> 50200088921478</div>
-        <div><strong>IFSC Code:</strong> HDFC0001248</div>
-        <div><strong>Branch:</strong> Andheri East Industrial Estate, Mumbai</div>
-      </div>
-      <div class="totals-box">
-        <div class="totals-row">
-          <span>Taxable Subtotal:</span>
-          <span>₹${Math.round(subtotal).toLocaleString("en-IN")}</span>
-        </div>
-        <div class="totals-row">
-          <span>CGST (9.0%):</span>
-          <span>₹${Math.round(cgst).toLocaleString("en-IN")}</span>
-        </div>
-        <div class="totals-row">
-          <span>SGST (9.0%):</span>
-          <span>₹${Math.round(sgst).toLocaleString("en-IN")}</span>
-        </div>
-        <div class="totals-row grand">
-          <span>Grand Total:</span>
-          <span>₹${Number(total).toLocaleString("en-IN")}</span>
-        </div>
-        <div class="totals-row" style="margin-top: 6px; font-weight: 700; color: #15803d;">
-          <span>Remaining Balance:</span>
-          <span>₹${Number(inv.remaining_amount).toLocaleString("en-IN")}</span>
-        </div>
-      </div>
-    </div>
-
-    <div class="footer">
-      <div>
-        <div style="font-size: 11px; font-weight: 600; color: #475569;">Terms & Conditions:</div>
-        <div style="font-size: 10px; color: #64748b; max-width: 450px; margin-top: 4px;">
-          1. Goods once sold will be accepted back only in accordance with credit note policy.<br>
-          2. Interest @ 18% p.a. will be levied on delayed payments beyond credit period.<br>
-          3. Subject to local jurisdiction only.
-        </div>
-      </div>
-      <div class="sign-box">
-        <div style="font-size: 11px; font-weight: 700;">For ${comp?.short || "Avighna"} Enterprise</div>
-        <div class="sign-line">Authorized Signatory / Accounts</div>
-      </div>
-    </div>
-  </div>
-</body>
-</html>`;
+    const customer = dbCustomers.find(
+      (c) =>
+        (inv.customer_id && c.id === inv.customer_id) ||
+        c.name.trim().toLowerCase() === inv.customer_name.trim().toLowerCase(),
+    );
+    const delivery = dbDeliveries.find(
+      (d) => d.order_id === inv.order_id || d.invoice_id === inv.id,
+    );
+    const htmlContent = buildSalesInvoiceHtml({
+      invoice: inv,
+      order: orderDetails || null,
+      customer: customer || null,
+      delivery: delivery || null,
+    });
 
     const printWindow = window.open("", "_blank");
     if (printWindow) {
@@ -2205,7 +2105,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `Invoice_${inv.id}_${inv.customer_name.replace(/[^a-zA-Z0-9]/g, "_")}.html`;
+      link.download = `Sales_${String(inv.id).replace(/[\\/]/g, "_")}.html`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -2423,6 +2323,10 @@ export function ModuleWorkspace({ module }: { module: string }) {
     const now = Date.now();
 
     return companyInvoices.filter((inv) => {
+      if (tab === "Payments due" && !(Number(inv.remaining_amount) > 0 && inv.status !== "Paid")) {
+        return false;
+      }
+
       const matchesSearch =
         invoiceSearch === "" ||
         `${inv.id} ${inv.customer_name} ${inv.order_id || ""}`
@@ -2471,11 +2375,41 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
       return matchesSearch && matchesStatus && matchesDate && matchesOverdueOnly;
     });
-  }, [companyInvoices, invoiceSearch, invoiceStatusFilter, invoiceDateFilter, invoiceOverdueOnly]);
+  }, [
+    companyInvoices,
+    invoiceSearch,
+    invoiceStatusFilter,
+    invoiceDateFilter,
+    invoiceOverdueOnly,
+    tab,
+  ]);
+
+  useEffect(() => {
+    if (module !== "accounts" || !isSalesCollector) return;
+    if (tab === "Overview" || tab === "All sections" || tab === "Receivables") {
+      setTab("Payments due");
+    }
+  }, [module, isSalesCollector, tab]);
+
+  useEffect(() => {
+    if (module !== "analytics" || isSuperAdmin) return;
+    if (
+      tab === "Company Comparison" ||
+      tab === "Product Performance" ||
+      tab === "Conversion Funnel"
+    ) {
+      setTab("Revenue Trends");
+    }
+  }, [module, isSuperAdmin, tab]);
+
+  useEffect(() => {
+    if (module !== "field-visits") return;
+    if (!canLogFieldVisit && tab === "Log a visit") setTab("Visit history");
+  }, [module, canLogFieldVisit, tab]);
 
   const handleOpenRaiseInvoiceModal = (o: DBOrder) => {
     setSelectedOrderForInvoice(o);
-    setCustomInvoiceNumber(`INV-${o.id.replace("ORD-", "")}`);
+    setCustomInvoiceNumber(suggestSalesInvoiceNumber(o.company_id, o.id));
     const cust = dbCustomers.find(
       (c) =>
         (o.customer_id && c.id === o.customer_id) ||
@@ -2484,7 +2418,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
     const due = new Date();
     due.setDate(due.getDate() + (Number(cust?.credit_days) || 30));
     setCustomDueDate(due.toISOString().split("T")[0] || "");
-    setCustomBillNotes("Standard Tax Invoice against Verified Order");
+    setCustomBillNotes("Sales tax invoice for logistics delivery copy");
     setRaiseInvoiceModal(true);
   };
 
@@ -2508,6 +2442,44 @@ export function ModuleWorkspace({ module }: { module: string }) {
     }
   };
 
+  // Keep this after all hooks — an early return above would change hook order on role switch.
+  if (!isModuleAllowed) {
+    if (
+      currentUser?.role === "sales" ||
+      currentUser?.role === "logistics" ||
+      currentUser?.role === "supervisor"
+    ) {
+      return <Navigate to="/" />;
+    }
+    return (
+      <main className="content">
+        <p className="eyebrow mb-2">
+          {company === "all"
+            ? "Organization workspace"
+            : companies.find((c) => c.id === company)?.short}
+        </p>
+        <h1 className="page-heading">{titles[module] || module}</h1>
+        <div className="mt-8 max-w-md mx-auto text-center p-8 rounded-2xl border border-border bg-card shadow-sm space-y-4">
+          <div className="size-12 rounded-full bg-warning/15 text-warning flex items-center justify-center mx-auto">
+            <Lock className="size-6" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-foreground">Access Restricted</h2>
+            <p className="text-xs text-muted-foreground mt-1.5">
+              <strong>{currentUser?.roleName || "This login"}</strong> does not include this
+              feature.
+            </p>
+          </div>
+          <div className="flex flex-wrap justify-center gap-3 pt-2">
+            <Button size="sm" variant="outline" asChild>
+              <a href="/">Return to Overview</a>
+            </Button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="content">
       <p className="eyebrow mb-2">
@@ -2526,24 +2498,30 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 ? ["Companies", "Users", "Fleet", "Roles", "Audit"]
                 : ["Team logins"]
               : module === "field-visits"
-                ? ["Visit history", "Log a visit"]
+                ? canLogFieldVisit
+                  ? ["Visit history", "Log a visit"]
+                  : ["Visit history"]
                 : module === "accounts"
-                  ? [
-                      "All sections",
-                      "Ready to invoice",
-                      "Dispatch inbox",
-                      "Issued invoices",
-                      "Payment Collections",
-                    ]
-                  : module === "analytics"
-                    ? [
-                        "Revenue Trends",
-                        "Company Comparison",
-                        "Product Performance",
-                        "Conversion Funnel",
+                  ? isSalesCollector
+                    ? ["Payments due", "Payment Collections"]
+                    : [
+                        "All sections",
+                        "Ready to invoice",
+                        "Dispatch inbox",
+                        "Issued invoices",
+                        "Payment Collections",
                       ]
+                  : module === "analytics"
+                    ? isSuperAdmin
+                      ? [
+                          "Revenue Trends",
+                          "Company Comparison",
+                          "Product Performance",
+                          "Conversion Funnel",
+                        ]
+                      : ["Revenue Trends"]
                     : module === "leads"
-                      ? ["Pipeline", "List"]
+                      ? []
                       : ["Overview"]
             ).map((t) => {
               const isSelected =
@@ -2552,12 +2530,11 @@ export function ModuleWorkspace({ module }: { module: string }) {
                   tab === "Overview" &&
                   t === (isSuperAdmin ? "Companies" : "Team logins")) ||
                 (module === "field-visits" && tab === "Overview" && t === "Visit history") ||
-                (module === "leads" && tab === "Overview" && t === "Pipeline") ||
                 (module === "accounts" &&
                   (tab === "Overview" ||
                     tab === "Receivables" ||
                     tab === "Invoices & Receivables") &&
-                  t === "All sections") ||
+                  t === (isSalesCollector ? "Payments due" : "All sections")) ||
                 (module === "analytics" && tab === "Overview" && t === "Revenue Trends");
 
               const getIcon = (label: string) => {
@@ -2570,10 +2547,6 @@ export function ModuleWorkspace({ module }: { module: string }) {
                     return <Clock className="size-3.5" />;
                   case "Dispatch inbox":
                     return <Truck className="size-3.5" />;
-                  case "Pipeline":
-                    return <Columns3 className="size-3.5" />;
-                  case "List":
-                    return <List className="size-3.5" />;
                   case "Companies":
                     return <Building2 className="size-3.5" />;
                   case "Users":
@@ -2592,6 +2565,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
                     return <FileCheck2 className="size-3.5" />;
                   case "Payment Collections":
                     return <IndianRupee className="size-3.5" />;
+                  case "Payments due":
+                    return <Clock className="size-3.5" />;
                   case "Awaiting Invoicing":
                     return <Clock className="size-3.5" />;
                   case "Revenue Trends":
@@ -2638,7 +2613,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
           )}
           {module === "field-visits" &&
             tab !== "Log a visit" &&
-            hasPermission("field_visits.conduct") && (
+            canLogFieldVisit && (
               <Button
                 size="sm"
                 onClick={() => setTab("Log a visit")}
@@ -2726,137 +2701,132 @@ export function ModuleWorkspace({ module }: { module: string }) {
 
               return (
                 <article
-                  className="module-item cursor-pointer hover:border-primary/60 hover:shadow-md transition-all group select-none flex flex-col justify-between"
+                  className="module-item customer-card cursor-pointer hover:border-primary/60 hover:shadow-md transition-all group select-none flex flex-col"
                   key={c.id || c.name}
                   onClick={() => setSelectedCustomerDetails(c)}
                   title={`Click to view customer details & history for ${c.name}`}
                 >
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <span className="avatar size-10 text-xs font-bold group-hover:scale-105 transition-transform">
-                        {c.initials}
-                      </span>
-                      <span className="status success">{c.status}</span>
-                    </div>
-                    <h2 className="mt-4 font-bold text-base text-foreground group-hover:text-primary transition-colors flex items-center justify-between">
-                      <span>{c.name}</span>
-                      <ArrowRight className="size-4 opacity-0 group-hover:opacity-100 transition-opacity text-primary" />
-                    </h2>
-                    {c.id && (
-                      <p className="mt-1 font-mono text-[10px] text-muted-foreground">ID {c.id}</p>
-                    )}
-                    <p className="mt-1 text-xs text-muted-foreground font-medium flex items-center gap-1.5">
-                      <Building2 className="size-3 text-primary shrink-0" />
-                      <span>
-                        {companies.find((co) => co.id === c.company_id)?.name || "Asian Apex & Co."}
-                      </span>
-                    </p>
-
-                    <div className="mt-4 border-t border-border pt-3 space-y-2 text-xs">
-                      {/* Contact Person */}
-                      <div className="text-muted-foreground flex items-center justify-between">
-                        <span className="flex items-center gap-1.5">
-                          <Users className="size-3 text-primary shrink-0" /> Contact:
-                        </span>
-                        <span className="text-foreground font-semibold">{cardContact}</span>
+                  <div className="customer-card-head">
+                    <span className="avatar size-10 text-xs font-bold group-hover:scale-105 transition-transform shrink-0">
+                      {c.initials}
+                    </span>
+                    <div className="customer-card-title min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <h2 className="font-bold text-base text-foreground group-hover:text-primary transition-colors leading-snug break-words">
+                          {c.name}
+                        </h2>
+                        <span className="status success shrink-0">{c.status}</span>
                       </div>
-
-                      {/* Phone */}
-                      <div className="text-muted-foreground flex items-center justify-between">
-                        <span className="flex items-center gap-1.5">
-                          <Phone className="size-3 text-primary shrink-0" /> Phone:
+                      <p className="mt-1 text-xs text-muted-foreground font-medium flex items-center gap-1.5 min-w-0">
+                        <Building2 className="size-3 text-primary shrink-0" />
+                        <span className="truncate">
+                          {companies.find((co) => co.id === c.company_id)?.name || "Asian Apex & Co."}
                         </span>
-                        {cardPhone ? (
-                          <span className="text-foreground font-mono font-bold">{cardPhone}</span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openEditCustomer(c);
-                            }}
-                            className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
-                          >
-                            + Add Phone
-                          </button>
-                        )}
-                      </div>
-
-                      {/* Email */}
-                      <div className="text-muted-foreground flex items-center justify-between">
-                        <span className="flex items-center gap-1.5">
-                          <Mail className="size-3 text-primary shrink-0" /> Email:
-                        </span>
-                        {cardEmail ? (
-                          <span
-                            className="text-foreground font-medium truncate max-w-[160px]"
-                            title={cardEmail}
-                          >
-                            {cardEmail}
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openEditCustomer(c);
-                            }}
-                            className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
-                          >
-                            + Add Email
-                          </button>
-                        )}
-                      </div>
-
-                      {/* Address */}
-                      <div className="text-muted-foreground flex items-start justify-between gap-2">
-                        <span className="flex items-center gap-1.5 shrink-0">
-                          <MapPin className="size-3 text-primary shrink-0" /> Address:
-                        </span>
-                        {cardAddress ? (
-                          <span
-                            className="text-foreground font-medium truncate max-w-[160px] text-right"
-                            title={cardAddress}
-                          >
-                            {cardAddress}
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              openEditCustomer(c);
-                            }}
-                            className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer"
-                          >
-                            + Add Address
-                          </button>
-                        )}
-                      </div>
+                      </p>
+                      {c.id && (
+                        <p
+                          className="mt-1 font-mono text-[10px] text-muted-foreground truncate"
+                          title={c.id}
+                        >
+                          ID {c.id}
+                        </p>
+                      )}
                     </div>
                   </div>
 
-                  {/* Card bottom bar */}
-                  <div className="mt-4 pt-2.5 border-t border-border/60 flex items-center justify-between text-[11px] text-primary font-semibold">
-                    <span className="hover:underline">Open Customer Dossier →</span>
-                    <div className="flex items-center gap-3">
+                  <div className="customer-card-details">
+                    <div className="customer-card-row">
+                      <span className="customer-card-label">
+                        <Users className="size-3 text-primary shrink-0" /> Contact
+                      </span>
+                      <span className="customer-card-value">{cardContact}</span>
+                    </div>
+
+                    <div className="customer-card-row">
+                      <span className="customer-card-label">
+                        <Phone className="size-3 text-primary shrink-0" /> Phone
+                      </span>
+                      {cardPhone ? (
+                        <span className="customer-card-value font-mono font-bold">{cardPhone}</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEditCustomer(c);
+                          }}
+                          className="customer-card-value text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer text-left"
+                        >
+                          + Add Phone
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="customer-card-row">
+                      <span className="customer-card-label">
+                        <Mail className="size-3 text-primary shrink-0" /> Email
+                      </span>
+                      {cardEmail ? (
+                        <span className="customer-card-value" title={cardEmail}>
+                          {cardEmail}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEditCustomer(c);
+                          }}
+                          className="customer-card-value text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer text-left"
+                        >
+                          + Add Email
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="customer-card-row">
+                      <span className="customer-card-label">
+                        <MapPin className="size-3 text-primary shrink-0" /> Address
+                      </span>
+                      {cardAddress ? (
+                        <span className="customer-card-value" title={cardAddress}>
+                          {cardAddress}
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEditCustomer(c);
+                          }}
+                          className="customer-card-value text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline cursor-pointer text-left"
+                        >
+                          + Add Address
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="customer-card-footer">
+                    <span className="customer-card-cta">Open Customer Dossier →</span>
+                    <div className="flex items-center gap-1 shrink-0">
                       <Button
                         size="icon"
                         variant="ghost"
-                        className="size-6 text-muted-foreground hover:text-primary hover:bg-primary/10 cursor-pointer"
+                        className="size-7 text-muted-foreground hover:text-primary hover:bg-primary/10 cursor-pointer"
                         title="Edit Customer Details"
                         onClick={(e) => {
                           e.stopPropagation();
                           openEditCustomer(c);
                         }}
                       >
-                        <Pencil className="size-3" />
+                        <Pencil className="size-3.5" />
                       </Button>
                       {isSuperAdmin && (
                         <Button
                           size="icon"
                           variant="ghost"
-                          className="size-6 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                          className="size-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
                           title="Delete Customer (Super Admin)"
                           onClick={(e) => {
                             e.stopPropagation();
@@ -2988,15 +2958,17 @@ export function ModuleWorkspace({ module }: { module: string }) {
                     {p.category} · {p.code}
                   </p>
                   <h2 className="mt-2 text-sm font-bold">{p.name}</h2>
-                  <div className="mt-1.5 flex items-center gap-2 flex-wrap text-[11px]">
-                    <span className="font-semibold text-foreground">
-                      Selling: ₹{p.unit_price}/{p.unit}
-                    </span>
-                    <span className="text-muted-foreground/60">·</span>
-                    <span className="text-muted-foreground">
-                      Wholesale: ₹{p.wholesale_price || p.unit_price}/{p.unit}
-                    </span>
-                  </div>
+                  {canViewAmounts && (
+                    <div className="mt-1.5 flex items-center gap-2 flex-wrap text-[11px]">
+                      <span className="font-semibold text-foreground">
+                        Selling: ₹{p.unit_price}/{p.unit}
+                      </span>
+                      <span className="text-muted-foreground/60">·</span>
+                      <span className="text-muted-foreground">
+                        Wholesale: ₹{p.wholesale_price || p.unit_price}/{p.unit}
+                      </span>
+                    </div>
+                  )}
                   <div className="mt-6 grid grid-cols-3 gap-2 border-t border-border pt-4">
                     {[
                       { n: "Total Stock", v: totalStock },
@@ -3053,38 +3025,90 @@ export function ModuleWorkspace({ module }: { module: string }) {
         <>
           {/* INVOICES & FINANCE DESK KPIS */}
           <div className="kpi-grid">
-            <div className="kpi">
-              <p className="text-xs text-muted-foreground">Dispatch inbox</p>
-              <p className="kpi-value">{companyDeliveries.length}</p>
-              <span className="trend">Loads Accounts can see</span>
-            </div>
-            <div className="kpi">
-              <p className="text-xs text-muted-foreground">Ready to invoice</p>
-              <p className="kpi-value">{ordersReadyToInvoice.length}</p>
-              <span className="trend">Approved orders</span>
-            </div>
-            <div className="kpi">
-              <p className="text-xs text-muted-foreground">Invoiced</p>
-              <p className="kpi-value">
-                {money(companyInvoices.reduce((s, i) => s + (Number(i.amount) || 0), 0))}
-              </p>
-              <span className="trend">{companyInvoices.length} documents</span>
-            </div>
-            <div className="kpi">
-              <p className="text-xs text-muted-foreground">Awaiting payment</p>
-              <p className="kpi-value">
-                {
-                  companyInvoices.filter(
-                    (i) => i.status !== "Paid" && (Number(i.remaining_amount) || 0) > 0,
-                  ).length
-                }
-              </p>
-              <span className="trend">Pending settlement</span>
-            </div>
+            {isSalesCollector ? (
+              <>
+                <div className="kpi">
+                  <p className="text-xs text-muted-foreground">Payments due</p>
+                  <p className="kpi-value">
+                    {
+                      companyInvoices.filter(
+                        (i) => i.status !== "Paid" && (Number(i.remaining_amount) || 0) > 0,
+                      ).length
+                    }
+                  </p>
+                  <span className="trend">Open invoices</span>
+                </div>
+                <div className="kpi">
+                  <p className="text-xs text-muted-foreground">Amount due</p>
+                  <p className="kpi-value">
+                    {money(
+                      companyInvoices.reduce(
+                        (s, i) =>
+                          i.status !== "Paid" ? s + (Number(i.remaining_amount) || 0) : s,
+                        0,
+                      ),
+                    )}
+                  </p>
+                  <span className="trend">Outstanding collections</span>
+                </div>
+                <div className="kpi">
+                  <p className="text-xs text-muted-foreground">Collected</p>
+                  <p className="kpi-value">{money(totalCollectedRevenue)}</p>
+                  <span className="trend">{dbPayments.length} receipts</span>
+                </div>
+                <div className="kpi">
+                  <p className="text-xs text-muted-foreground">Overdue</p>
+                  <p className="kpi-value">
+                    {
+                      companyInvoices.filter((i) => {
+                        const today = new Date().toISOString().split("T")[0] || "";
+                        return (
+                          Number(i.remaining_amount) > 0 &&
+                          Boolean(i.due_date && i.due_date < today)
+                        );
+                      }).length
+                    }
+                  </p>
+                  <span className="trend">Past due date</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="kpi">
+                  <p className="text-xs text-muted-foreground">Dispatch inbox</p>
+                  <p className="kpi-value">{companyDeliveries.length}</p>
+                  <span className="trend">Loads Accounts can see</span>
+                </div>
+                <div className="kpi">
+                  <p className="text-xs text-muted-foreground">Ready to invoice</p>
+                  <p className="kpi-value">{ordersReadyToInvoice.length}</p>
+                  <span className="trend">Approved orders</span>
+                </div>
+                <div className="kpi">
+                  <p className="text-xs text-muted-foreground">Invoiced</p>
+                  <p className="kpi-value">
+                    {money(companyInvoices.reduce((s, i) => s + (Number(i.amount) || 0), 0))}
+                  </p>
+                  <span className="trend">{companyInvoices.length} documents</span>
+                </div>
+                <div className="kpi">
+                  <p className="text-xs text-muted-foreground">Awaiting payment</p>
+                  <p className="kpi-value">
+                    {
+                      companyInvoices.filter(
+                        (i) => i.status !== "Paid" && (Number(i.remaining_amount) || 0) > 0,
+                      ).length
+                    }
+                  </p>
+                  <span className="trend">Pending settlement</span>
+                </div>
+              </>
+            )}
           </div>
 
           {/* SECTION 1: READY TO INVOICE */}
-          {(tab === "All sections" || tab === "Ready to invoice" || tab === "Overview") && (
+          {canGenerateInvoices &&
+            (tab === "All sections" || tab === "Ready to invoice" || tab === "Overview") && (
             <section className="panel mb-6">
               <div className="panel-head flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                 <div>
@@ -3239,7 +3263,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
           )}
 
           {/* SECTION 2: DISPATCH INBOX */}
-          {(tab === "All sections" || tab === "Dispatch inbox") && (
+          {canGenerateInvoices && (tab === "All sections" || tab === "Dispatch inbox") && (
             <section className="panel mb-6">
               <div className="panel-head flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                 <div>
@@ -3342,18 +3366,22 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </section>
           )}
 
-          {/* SECTION 3: ISSUED INVOICES (Mirrored with attached screenshot reference) */}
-          {(tab === "All sections" || tab === "Issued invoices") && (
+          {/* SECTION 3: ISSUED INVOICES / PAYMENTS DUE */}
+          {(tab === "All sections" ||
+            tab === "Issued invoices" ||
+            tab === "Payments due") && (
             <section className="panel mb-6">
               <div className="panel-head flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                 <div>
                   <h2 className="panel-title flex items-center gap-2">
                     <FileCheck2 className="size-4 text-primary" />
-                    Issued invoices
+                    {tab === "Payments due" ? "Payments due" : "Issued invoices"}
                   </h2>
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Invoice ↔ sales order ↔ dispatch. Filters stay on this company.
+                  {tab === "Payments due"
+                    ? "Open balances ready for field collection. Record payment against each invoice."
+                    : "Invoice ↔ sales order ↔ dispatch. Filters stay on this company."}
                 </p>
               </div>
 
@@ -4028,7 +4056,9 @@ export function ModuleWorkspace({ module }: { module: string }) {
                               dbOrders.length,
                           ),
                         )
-                      : "₹0"}
+                      : canViewAmounts
+                        ? "₹0"
+                        : "—"}
                   </p>
                   <p className="text-[11px] text-muted-foreground mt-0.5">Per approved order</p>
                 </div>
@@ -4056,7 +4086,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 </div>
               </div>
             </div>
-          ) : tab === "Company Comparison" ? (
+          ) : isSuperAdmin && tab === "Company Comparison" ? (
             <div className="space-y-6">
               {/* Bar Graph & Visual Comparison */}
               <CompanyComparisonBarChart
@@ -4133,7 +4163,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 </div>
               </div>
             </div>
-          ) : tab === "Product Performance" ? (
+          ) : isSuperAdmin && tab === "Product Performance" ? (
             <div className="space-y-6">
               <ProductCategoryCharts products={dbProducts} />
               <div className="panel">
@@ -4206,8 +4236,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 </div>
               </div>
             </div>
-          ) : (
-            /* Conversion Funnel */
+          ) : isSuperAdmin ? (
+            /* Conversion Funnel — Super Admin only */
             <div className="space-y-6">
               <ConversionFunnelBarChart
                 leads={dbLeads}
@@ -4276,7 +4306,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 </div>
               </div>
             </div>
-          )}
+          ) : null}
         </>
       ) : module === "administration" ? (
         !isSuperAdmin ? (
@@ -4647,8 +4677,8 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </div>
           )}
 
-          {/* MOBILE STAGE FILTER PILLS (Strictly for Mobile screens) */}
-          <div className="md:hidden flex items-center gap-1.5 overflow-x-auto pb-2 mb-4 scrollbar-none">
+          {/* MOBILE / FIELD STAGE FILTER PILLS */}
+          <div className="leads-stage-pills hidden md:hidden items-center gap-1.5 overflow-x-auto pb-2 mb-4 scrollbar-none">
             {["All", "New", "Qualified", "Follow-up", "Converted"].map((stage) => {
               const count =
                 stage === "All" ? dbLeads.length : dbLeads.filter((l) => l.stage === stage).length;
@@ -4735,207 +4765,50 @@ export function ModuleWorkspace({ module }: { module: string }) {
                           return (
                             <div
                               key={l.id || l.business_name}
-                              className="lead-card cursor-pointer hover:border-primary/50 hover:shadow-md transition-all space-y-2.5"
+                              className="lead-card lead-card-summary cursor-pointer hover:border-primary/50 hover:shadow-md transition-all"
                               onClick={() => setSelectedLeadDetails(l)}
-                              title="Click to view full lead details & change stage"
+                              title="Click to view full lead details"
                             >
                               <div className="flex items-center justify-between gap-2">
                                 <span className="inline-flex items-center gap-1 text-[10px] font-bold text-muted-foreground uppercase tracking-wider bg-muted/60 px-2 py-0.5 rounded-md">
                                   <Building2 className="size-3 text-primary" />
                                   {companies.find((c) => c.id === l.company_id)?.short || "Firm"}
                                 </span>
-                                <div
-                                  className="flex items-center gap-1.5"
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  <select
-                                    value={l.stage}
-                                    onChange={(e) =>
-                                      handleUpdateLeadStage(
-                                        l.id!,
-                                        e.target.value as
-                                          "New" | "Qualified" | "Follow-up" | "Converted",
-                                      )
-                                    }
-                                    className="text-[10px] font-bold py-0.5 px-1.5 rounded border border-border bg-background cursor-pointer hover:border-primary text-foreground focus:ring-1 focus:ring-primary"
-                                    title="Change stage"
-                                  >
-                                    <option value="New">New</option>
-                                    <option value="Qualified">Qualified</option>
-                                    <option value="Follow-up">Follow-up</option>
-                                    <option value="Converted">Converted</option>
-                                  </select>
-                                  <span className={`lead-priority-badge ${priorityClass}`}>
-                                    {l.priority || "Medium"}
-                                  </span>
-                                </div>
+                                <span className={`lead-priority-badge ${priorityClass}`}>
+                                  {l.priority || "Medium"}
+                                </span>
                               </div>
 
                               <div>
-                                <h4 className="text-sm font-extrabold text-foreground tracking-tight leading-snug hover:text-primary transition-colors">
+                                <h4 className="text-sm font-extrabold text-foreground tracking-tight leading-snug">
                                   {l.business_name}
                                 </h4>
-                                <p className="text-xs text-muted-foreground mt-0.5 font-medium">
+                                <p className="text-xs text-muted-foreground mt-0.5 font-medium truncate">
                                   {l.contact_person}
+                                  {l.city ? ` · ${l.city}` : ""}
                                 </p>
                               </div>
 
-                              {/* Click-to-Call & WhatsApp Quick Action Bar */}
-                              {l.phone && (
-                                <div
-                                  className="flex items-center gap-2 pt-0.5"
-                                  onClick={(e) => e.stopPropagation()}
-                                >
-                                  <a
-                                    href={`tel:${l.phone}`}
-                                    className="lead-contact-btn flex-1"
-                                    title={`Call ${l.contact_person}`}
-                                  >
-                                    <Phone className="size-3 text-primary" />
-                                    <span>Call ({l.phone.slice(-4)})</span>
-                                  </a>
-                                  <a
-                                    href={`https://wa.me/${l.phone.replace(/[^0-9]/g, "")}`}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="lead-contact-btn flex-1"
-                                    title="Open WhatsApp chat"
-                                  >
-                                    <MessageSquare className="size-3 text-emerald-600 dark:text-emerald-400" />
-                                    <span>WhatsApp</span>
-                                  </a>
-                                </div>
-                              )}
-
-                              <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                                {l.city && (
-                                  <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground bg-muted/40 px-2 py-0.5 rounded border border-border/60">
-                                    <MapPin className="size-2.5 text-primary" /> {l.city}
-                                  </span>
-                                )}
-                                {l.product_interest && (
-                                  <span className="inline-flex items-center gap-1 text-[10px] font-medium text-foreground bg-accent/60 px-2 py-0.5 rounded border border-border/60">
-                                    <Package className="size-2.5 text-primary" />{" "}
-                                    {l.product_interest}
-                                  </span>
-                                )}
-                              </div>
-
-                              <div className="flex items-center justify-between border-t border-border pt-2 mt-1">
-                                <div>
+                              <div className="flex items-end justify-between gap-2 border-t border-border pt-2">
+                                <div className="min-w-0">
                                   <span className="text-[10px] text-muted-foreground uppercase font-bold block">
-                                    Deal Value
+                                    Deal value
                                   </span>
                                   <span className="text-sm font-black text-foreground">
                                     {money(l.estimated_value || 0)}
                                   </span>
                                 </div>
-                                <span className="text-[10px] text-muted-foreground">
-                                  {l.source === "Referral" && l.referred_by
-                                    ? `Referral · ${l.referred_by}`
-                                    : l.source || "WhatsApp"}
-                                </span>
-                              </div>
-
-                              {l.requirement && (
-                                <p className="text-[11px] text-muted-foreground line-clamp-2 bg-muted/30 p-2 rounded-lg border border-border/50 italic leading-relaxed">
-                                  "{l.requirement}"
-                                </p>
-                              )}
-
-                              {/* Interactive Stage Advancement Buttons */}
-                              <div
-                                className="flex items-center gap-3 pt-1 border-t border-border/60"
-                                onClick={(e) => e.stopPropagation()}
-                              >
-                                {l.stage === "New" && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleUpdateLeadStage(l.id!, "Qualified")}
-                                    className="flex-1 py-1 px-2 rounded-md bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 text-[11px] font-bold flex items-center justify-center gap-1 transition-colors"
-                                    title="Move to Qualified column"
-                                  >
-                                    <span>Move to Qualified</span>
-                                    <ArrowRight className="size-3" />
-                                  </button>
-                                )}
-                                {l.stage === "Qualified" && (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleUpdateLeadStage(l.id!, "New")}
-                                      className="py-1 px-2 rounded-md bg-muted hover:bg-muted/80 text-muted-foreground border border-border text-[10px] font-semibold"
-                                      title="Move back to New"
-                                    >
-                                      ← New
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleUpdateLeadStage(l.id!, "Follow-up")}
-                                      className="flex-1 py-1 px-2 rounded-md bg-primary/10 hover:bg-primary/15 text-primary border border-primary/25 text-[11px] font-bold flex items-center justify-center gap-1 transition-colors"
-                                      title="Move to Follow-up column"
-                                    >
-                                      <span>Move to Follow-up</span>
-                                      <ArrowRight className="size-3" />
-                                    </button>
-                                  </>
-                                )}
-                                {l.stage === "Follow-up" && (
-                                  <>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleUpdateLeadStage(l.id!, "Qualified")}
-                                      className="py-1 px-2 rounded-md bg-muted hover:bg-muted/80 text-muted-foreground border border-border text-[10px] font-semibold"
-                                      title="Move back to Qualified"
-                                    >
-                                      ← Qualified
-                                    </button>
-                                    {hasPermission("leads.convert") && (
-                                      <button
-                                        type="button"
-                                        onClick={() => handleConvertLead(l)}
-                                        className="flex-1 py-1 px-2 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold flex items-center justify-center gap-1 shadow-xs transition-colors"
-                                      >
-                                        <UserCheck className="size-3.5" />
-                                        <span>Convert Customer</span>
-                                      </button>
-                                    )}
-                                  </>
+                                {l.stage === "Converted" ? (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+                                    <Check className="size-3" />
+                                    Converted
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-semibold text-muted-foreground">
+                                    View details →
+                                  </span>
                                 )}
                               </div>
-
-                              {l.stage !== "Converted" ? (
-                                hasPermission("leads.convert") && (
-                                  <button
-                                    type="button"
-                                    className="btn-convert-lead mt-1"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleConvertLead(l);
-                                    }}
-                                  >
-                                    <UserCheck className="size-3.5" />
-                                    <span>Convert to Customer</span>
-                                  </button>
-                                )
-                              ) : (
-                                <div className="mt-1 flex items-center justify-between gap-1.5 py-1.5 px-2 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-emerald-700 dark:text-emerald-300 text-xs font-bold">
-                                  <div className="flex items-center gap-1.5">
-                                    <Check className="size-3.5" />
-                                    <span>Active Customer</span>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      navigate({ to: "/customers" });
-                                    }}
-                                    className="text-[10px] font-bold underline hover:opacity-80 cursor-pointer"
-                                  >
-                                    View →
-                                  </button>
-                                </div>
-                              )}
                             </div>
                           );
                         })}
@@ -4957,30 +4830,79 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 })}
             </div>
           ) : (
-            /* LIST VIEW */
-            <div className="panel overflow-hidden">
-              <div className="panel-head flex items-center justify-between">
-                <div>
+            /* LIST VIEW — summary only; click row for full details */
+            <div className="panel overflow-hidden leads-directory">
+              <div className="panel-head leads-directory-head">
+                <div className="min-w-0">
                   <h3 className="panel-title">Prospect Directory</h3>
-                  <span className="text-xs text-muted-foreground">
-                    Comprehensive commercial prospect listing
+                  <span className="text-xs text-muted-foreground block mt-0.5">
+                    Click a row for full lead details
                   </span>
                 </div>
               </div>
-              <div className="table-scroll">
-                <table className="data-table">
+
+              <div className="leads-directory-cards">
+                {dbLeads
+                  .filter((l) => {
+                    const matchesSearch =
+                      !leadSearchQuery ||
+                      `${l.business_name} ${l.contact_person} ${l.phone} ${l.city} ${l.product_interest} ${l.requirement || ""}`
+                        .toLowerCase()
+                        .includes(leadSearchQuery.toLowerCase());
+                    const matchesPriority =
+                      leadPriorityFilter === "All" || l.priority === leadPriorityFilter;
+                    return matchesSearch && matchesPriority;
+                  })
+                  .map((l) => (
+                    <article
+                      key={`card-${l.id || l.business_name}`}
+                      className="leads-directory-card"
+                      onClick={() => setSelectedLeadDetails(l)}
+                      title="Click to view full lead details"
+                    >
+                      <div className="leads-directory-card-top">
+                        <div className="min-w-0">
+                          <h4 className="leads-directory-card-title">{l.business_name}</h4>
+                          <p className="leads-directory-card-meta">
+                            {l.contact_person || "—"}
+                            {l.city ? ` · ${l.city}` : ""}
+                          </p>
+                        </div>
+                        <div className="flex flex-col items-end gap-1 shrink-0">
+                          <span
+                            className={`lead-priority-badge ${
+                              l.priority === "High"
+                                ? "lead-priority-high"
+                                : l.priority === "Medium"
+                                  ? "lead-priority-medium"
+                                  : "lead-priority-low"
+                            }`}
+                          >
+                            {l.priority || "Medium"}
+                          </span>
+                          <span className="text-[10px] font-bold text-muted-foreground uppercase">
+                            {l.stage}
+                          </span>
+                        </div>
+                      </div>
+                      <p className="text-[11px] font-semibold text-muted-foreground pt-1">
+                        {companies.find((c) => c.id === l.company_id)?.short || "—"}
+                        <span className="float-right text-primary">Details →</span>
+                      </p>
+                    </article>
+                  ))}
+              </div>
+
+              <div className="table-scroll leads-directory-table">
+                <table className="data-table leads-directory-summary">
                   <thead>
                     <tr>
                       <th>Business</th>
+                      <th>Contact</th>
                       <th>Company</th>
-                      <th>Contact Person</th>
-                      <th>Phone</th>
-                      <th>City</th>
-                      <th>Product Interest</th>
-                      <th>Est. Value</th>
                       <th>Stage</th>
                       <th>Priority</th>
-                      <th className="text-right">Action</th>
+                      <th className="text-right"> </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -5000,51 +4922,21 @@ export function ModuleWorkspace({ module }: { module: string }) {
                           key={l.id || l.business_name}
                           onClick={() => setSelectedLeadDetails(l)}
                           className="cursor-pointer hover:bg-muted/40 transition-colors group"
+                          title="Click to view full lead details"
                         >
                           <td className="font-bold text-foreground group-hover:text-primary transition-colors">
                             {l.business_name}
                           </td>
-                          <td>
-                            <span className="text-xs text-muted-foreground">
-                              {companies.find((c) => c.id === l.company_id)?.short}
-                            </span>
+                          <td className="text-xs">
+                            <div className="font-medium">{l.contact_person || "—"}</div>
+                            {l.city ? (
+                              <div className="text-muted-foreground mt-0.5">{l.city}</div>
+                            ) : null}
                           </td>
-                          <td className="text-xs">{l.contact_person}</td>
-                          <td className="text-xs font-mono">
-                            {l.phone ? (
-                              <a
-                                href={`tel:${l.phone}`}
-                                onClick={(e) => e.stopPropagation()}
-                                className="text-primary hover:underline flex items-center gap-1"
-                              >
-                                <Phone className="size-3" /> {l.phone}
-                              </a>
-                            ) : (
-                              "—"
-                            )}
+                          <td className="text-xs text-muted-foreground whitespace-nowrap">
+                            {companies.find((c) => c.id === l.company_id)?.short || "—"}
                           </td>
-                          <td className="text-xs">{l.city || "—"}</td>
-                          <td className="text-xs font-medium">{l.product_interest || "General"}</td>
-                          <td className="text-xs font-bold text-foreground">
-                            {money(l.estimated_value || 0)}
-                          </td>
-                          <td onClick={(e) => e.stopPropagation()}>
-                            <select
-                              value={l.stage}
-                              onChange={(e) =>
-                                handleUpdateLeadStage(
-                                  l.id!,
-                                  e.target.value as "New" | "Qualified" | "Follow-up" | "Converted",
-                                )
-                              }
-                              className="text-xs font-semibold py-1 px-2 rounded-md border border-border bg-background cursor-pointer hover:border-primary text-foreground transition-colors"
-                            >
-                              <option value="New">New</option>
-                              <option value="Qualified">Qualified</option>
-                              <option value="Follow-up">Follow-up</option>
-                              <option value="Converted">Converted</option>
-                            </select>
-                          </td>
+                          <td className="text-xs font-semibold whitespace-nowrap">{l.stage}</td>
                           <td>
                             <span
                               className={`lead-priority-badge ${
@@ -5055,30 +4947,13 @@ export function ModuleWorkspace({ module }: { module: string }) {
                                     : "lead-priority-low"
                               }`}
                             >
-                              {l.priority}
+                              {l.priority || "Medium"}
                             </span>
                           </td>
-                          <td className="text-right" onClick={(e) => e.stopPropagation()}>
-                            {l.stage !== "Converted" && hasPermission("leads.convert") ? (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 text-xs font-semibold cursor-pointer"
-                                onClick={() => handleConvertLead(l)}
-                              >
-                                Convert
-                              </Button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => navigate({ to: "/customers" })}
-                                className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 hover:underline cursor-pointer flex items-center gap-1 justify-end ml-auto"
-                                title="View customer record"
-                              >
-                                <Check className="size-3" />
-                                <span>Customer →</span>
-                              </button>
-                            )}
+                          <td className="text-right whitespace-nowrap">
+                            <span className="text-[11px] font-bold text-primary inline-flex items-center justify-end gap-1 min-w-[5.5rem]">
+                              {l.stage === "Converted" ? "Customer →" : "Details →"}
+                            </span>
                           </td>
                         </tr>
                       ))}
@@ -5163,9 +5038,9 @@ export function ModuleWorkspace({ module }: { module: string }) {
                       <div>
                         <p className="font-bold text-foreground">Assigned Delivery Trips</p>
                         <p className="text-[11px] text-muted-foreground mt-0.5">
-                          Only trips assigned to you by the Order Desk appear here. You can open
-                          commercial invoices, navigate to destinations, and record complete,
-                          partial, or failed PODs.
+                          Only trips assigned to you by the Order Desk appear here. Open each
+                          delivery item’s analysis report (COA), sales invoices, purchase documents,
+                          navigate to destinations, and record complete, partial, or failed PODs.
                         </p>
                       </div>
                     </div>
@@ -5173,6 +5048,57 @@ export function ModuleWorkspace({ module }: { module: string }) {
                       {driverTrips.length} Trips Assigned
                     </span>
                   </div>
+                )}
+
+                {/* Accounts-uploaded purchase orders visible to logistics */}
+                {hasPermission("purchases.view") && dbPOs.length > 0 && (
+                  <section className="rounded-xl border border-border bg-card p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-bold text-foreground">
+                          Item purchase documents from Accounts
+                        </h3>
+                        <p className="text-[11px] text-muted-foreground mt-0.5">
+                          Supplier tax invoices uploaded for each purchased item (e.g. Maize Starch).
+                        </p>
+                      </div>
+                      <span className="text-[11px] font-bold text-muted-foreground">
+                        {dbPOs.length} item{dbPOs.length === 1 ? "" : "s"}
+                      </span>
+                    </div>
+                    <div className="space-y-2">
+                      {dbPOs.slice(0, isDriver ? 6 : 8).map((p) => {
+                        const uploaded = getPurchaseOrderDocument(p.id);
+                        return (
+                          <div
+                            key={`logistics-po-${p.id}-${poDocTick}`}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold text-foreground truncate">
+                                {p.product_name}
+                              </p>
+                              <p className="text-[10px] text-muted-foreground mt-0.5">
+                                #{p.id} · {p.supplier_name} · {p.quantity} {p.unit}
+                                {uploaded
+                                  ? ` · Supplier invoice: ${uploaded.name}`
+                                  : " · No supplier invoice uploaded yet"}
+                              </p>
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs font-semibold gap-1.5 shrink-0"
+                              onClick={() => handleViewPurchaseOrder(p)}
+                            >
+                              <FileText className="size-3.5" />
+                              {uploaded ? "Open item invoice" : "View PO"}
+                            </Button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
                 )}
 
                 {/* VIEW 1: TRIPS (Driver View or Order Desk Trips View) */}
@@ -5229,6 +5155,14 @@ export function ModuleWorkspace({ module }: { module: string }) {
                               <p className="text-xs text-muted-foreground mt-0.5 line-clamp-1">
                                 {order?.items_summary || "Order Items"}
                               </p>
+                              {parsePurchaseReference(order?.items_summary) ? (
+                                <p className="text-[11px] font-semibold text-foreground mt-1">
+                                  Purchase Ref:{" "}
+                                  <span className="font-mono text-primary">
+                                    {parsePurchaseReference(order?.items_summary)}
+                                  </span>
+                                </p>
+                              ) : null}
                               <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/50 text-xs font-semibold">
                                 <span className="text-emerald-600 dark:text-emerald-400 font-bold">
                                   {order?.total_amount ? money(order.total_amount) : "—"}
@@ -5293,16 +5227,77 @@ export function ModuleWorkspace({ module }: { module: string }) {
                           </div>
 
                           <div className="mt-4 pt-3 border-t border-border space-y-3">
-                            {/* INVOICE VIEWER BUTTON (MANDATORY REQUIREMENT: Driver must be able to open/read invoice) */}
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="w-full h-9 text-xs font-semibold gap-1.5"
-                              onClick={() => handleOpenInvoiceModal(delivery.order_id)}
-                            >
-                              <FileCheck2 className="size-3.5 text-primary" />
-                              View Commercial Invoice
-                            </Button>
+                            {/* Delivery items + product analysis report (COA) for the driver */}
+                            {(() => {
+                              const line = parseOrderItemsSummary(order?.items_summary);
+                              const productName = line?.productName || order?.items_summary || "Delivery item";
+                              const productKey = (line?.productName || "").trim().toLowerCase();
+                              const matchedProduct = productKey
+                                ? dbProducts.find((p) => {
+                                    const name = p.name.trim().toLowerCase();
+                                    const code = (p.code || "").trim().toLowerCase();
+                                    return (
+                                      name === productKey ||
+                                      code === productKey ||
+                                      name.includes(productKey) ||
+                                      productKey.includes(name)
+                                    );
+                                  })
+                                : undefined;
+                              const purchaseRef = parsePurchaseReference(order?.items_summary);
+                              return (
+                                <div className="rounded-xl border border-border bg-muted/20 p-3 space-y-2">
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0">
+                                      <p className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                                        Delivery items on this trip
+                                      </p>
+                                      <p className="text-xs font-bold text-foreground mt-0.5 truncate">
+                                        {line
+                                          ? `${line.productName} · ${line.quantity}`
+                                          : productName}
+                                      </p>
+                                      {purchaseRef ? (
+                                        <p className="text-[11px] font-semibold text-foreground mt-0.5">
+                                          Purchase Ref:{" "}
+                                          <span className="font-mono text-primary">{purchaseRef}</span>
+                                        </p>
+                                      ) : null}
+                                    </div>
+                                    <Package className="size-4 text-primary shrink-0 mt-0.5" />
+                                  </div>
+                                  {matchedProduct?.id ? (
+                                    <ProductBatchesPanel
+                                      productId={matchedProduct.id}
+                                      productName={matchedProduct.name}
+                                      tone="delivery"
+                                    />
+                                  ) : (
+                                    <p className="text-[11px] text-muted-foreground">
+                                      Analysis report unavailable — product catalog link not found for
+                                      this item.
+                                    </p>
+                                  )}
+                                </div>
+                              );
+                            })()}
+
+                            {/* Accounts sales invoice travels with the driver's order */}
+                            {invoice ? (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="w-full h-9 text-xs font-semibold gap-1.5"
+                                onClick={() => handleOpenInvoiceModal(delivery.order_id)}
+                              >
+                                <FileCheck2 className="size-3.5 text-primary" />
+                                View Sales Invoice · {invoice.id}
+                              </Button>
+                            ) : (
+                              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] font-semibold text-amber-700 dark:text-amber-300">
+                                Waiting for Accounts to raise the sales invoice on this order.
+                              </div>
+                            )}
 
                             {(delivery.gps_latitude != null ||
                               (delivery.photos && delivery.photos.length > 0)) && (
@@ -5558,6 +5553,14 @@ export function ModuleWorkspace({ module }: { module: string }) {
                                 <p className="text-xs text-foreground font-medium">
                                   {o.items_summary || "Items"}
                                 </p>
+                                {parsePurchaseReference(o.items_summary) ? (
+                                  <p className="text-[11px] font-semibold text-foreground mt-0.5">
+                                    Purchase Ref:{" "}
+                                    <span className="font-mono text-primary">
+                                      {parsePurchaseReference(o.items_summary)}
+                                    </span>
+                                  </p>
+                                ) : null}
                                 <p className="text-xs font-bold text-emerald-600 dark:text-emerald-400">
                                   {money(o.total_amount)}
                                 </p>
@@ -6061,7 +6064,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                         : `${visibleFieldVisits.length} field visits logged by you`}
                     </p>
                   </div>
-                  {hasPermission("field_visits.conduct") && (
+                  {canLogFieldVisit && (
                     <Button
                       size="sm"
                       onClick={() => setTab("Log a visit")}
@@ -6155,7 +6158,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                   </div>
                 )}
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="field-visit-rail flex flex-row flex-nowrap items-stretch gap-3 overflow-x-auto overflow-y-hidden">
                   {visibleFieldVisits
                     .filter((v) => {
                       if (!canViewAllFieldVisits || visitSalesFilter === "All") return true;
@@ -6166,224 +6169,65 @@ export function ModuleWorkspace({ module }: { module: string }) {
                       );
                     })
                     .map((v) => (
-                      <article
-                        className="p-5 rounded-2xl border border-border bg-card hover:border-primary/50 transition-all shadow-xs space-y-3 flex flex-col justify-between"
+                      <button
+                        type="button"
+                        className="field-visit-rail-card shrink-0"
                         key={v.id || v.customer_name}
+                        onClick={() => setSelectedVisitDetail(v)}
+                        title="Open full visit details"
                       >
-                        <div className="space-y-2.5">
-                          {/* Top row */}
-                          <div className="flex items-center justify-between gap-2">
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-muted-foreground uppercase tracking-wider bg-muted/60 px-2 py-0.5 rounded-md">
-                              <Building2 className="size-3 text-primary" />
-                              {companies.find((c) => c.id === v.company_id)?.short || "Firm"}
-                            </span>
-                            <div className="flex items-center gap-2">
-                              <span className="text-[11px] font-mono text-muted-foreground">
-                                {v.scheduled_date} · {v.scheduled_time}
-                              </span>
-                              <span
-                                className={`status ${v.status === "Completed" ? "success" : "brand"}`}
-                              >
-                                {v.status}
-                              </span>
-                            </div>
-                          </div>
-
-                          {/* Customer & Purpose */}
-                          <div>
-                            <h4 className="text-base font-black text-foreground tracking-tight">
-                              {v.customer_name}
-                            </h4>
-                            <span className="inline-block mt-0.5 text-xs font-semibold px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
-                              {v.purpose}
-                            </span>
-                          </div>
-
-                          {/* Outcome Notes */}
-                          {v.outcome_notes && (
-                            <div className="p-3 rounded-xl bg-muted/30 border border-border/70 text-xs text-foreground leading-relaxed">
-                              {v.outcome_notes}
-                            </div>
-                          )}
-
-                          {/* VERIFICATION & MEDIA (Visible & Interactive for Super Admin, Supervisor, and Sales) */}
-                          <div className="pt-2 border-t border-border/60 space-y-2">
-                            <div className="flex flex-wrap items-center gap-2">
-                              {/* GPS Geotag Link */}
-                              {v.gps_latitude ? (
-                                <a
-                                  href={`https://maps.google.com/?q=${v.gps_latitude},${v.gps_longitude || 77.5946}`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1 rounded-lg border border-emerald-500/20 transition-colors"
-                                  title="Click to view on Google Maps"
-                                >
-                                  <MapPin className="size-3.5 shrink-0" />
-                                  <span>
-                                    GPS: {v.gps_latitude.toFixed(4)}, {v.gps_longitude?.toFixed(4)}{" "}
-                                    ↗
-                                  </span>
-                                </a>
-                              ) : null}
-
-                              {/* Voice Recording Player Button (CLICKABLE!) */}
-                              {v.voice_recording_path ? (
-                                <button
-                                  type="button"
-                                  onClick={() => playAudioMemo(v)}
-                                  className="inline-flex items-center gap-1.5 text-xs font-bold text-primary bg-primary/10 hover:bg-primary/20 px-2.5 py-1 rounded-lg border border-primary/20 transition-colors cursor-pointer"
-                                  title="Click to listen to voice memo"
-                                >
-                                  {isPlayingAudio && selectedVisitAudio?.id === v.id ? (
-                                    <>
-                                      <Pause className="size-3 shrink-0 text-primary" />
-                                      <span>Playing Audio... ({audioTimer}s)</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Play className="size-3 shrink-0" />
-                                      <span>
-                                        Play Voice Memo{" "}
-                                        {!v.voice_recording_path.startsWith("data:") &&
-                                        v.voice_recording_path.match(/\d+s/)?.[0]
-                                          ? `(${v.voice_recording_path.match(/\d+s/)?.[0]})`
-                                          : ""}
-                                      </span>
-                                    </>
-                                  )}
-                                </button>
-                              ) : null}
-                            </div>
-
-                            {/* Attached Proof Photos (CLICKABLE!) */}
-                            {v.photos && v.photos.length > 0 && (
-                              <div className="space-y-1.5 pt-1">
-                                <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                                  Attached Photos ({v.photos.length})
-                                </span>
-                                <div className="flex flex-wrap items-center gap-2">
-                                  {v.photos.map((photoUrl, idx) => (
-                                    <button
-                                      key={idx}
-                                      type="button"
-                                      onClick={() => setSelectedVisitPhoto(photoUrl)}
-                                      className="size-14 rounded-xl overflow-hidden border border-border hover:border-primary hover:scale-105 transition-all shadow-xs cursor-pointer group bg-muted/40"
-                                      title="Click to view full photo"
-                                    >
-                                      <img
-                                        src={photoUrl}
-                                        alt={`Proof ${idx + 1}`}
-                                        className="w-full h-full object-cover group-hover:opacity-90 transition-opacity"
-                                        onError={(e) => {
-                                          if (e.currentTarget.src !== FALLBACK_PROOF_IMAGE) {
-                                            e.currentTarget.src = FALLBACK_PROOF_IMAGE;
-                                          }
-                                        }}
-                                      />
-                                    </button>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Card Footer */}
-                        <div className="pt-3 border-t border-border flex items-center justify-between text-xs">
-                          <span className="text-muted-foreground font-medium">
-                            Assigned: {v.assigned_to_name}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold text-muted-foreground uppercase tracking-wider bg-muted/60 px-2 py-0.5 rounded-md">
+                            <Building2 className="size-3 text-primary" />
+                            {companies.find((c) => c.id === v.company_id)?.short || "Firm"}
                           </span>
-                          <div className="flex items-center gap-2">
-                            {/* 1-Time Sales Edit or Admin/Supervisor Edit */}
-                            {(() => {
-                              const isEdited =
-                                v.outcome_notes?.includes("[Edited once") ||
-                                v.outcome_notes?.includes("[Edited on");
-                              const isSalesUser = currentUser?.role === "sales";
-
-                              if (isSalesUser) {
-                                if (isEdited) {
-                                  return (
-                                    <span
-                                      className="text-[10px] font-semibold text-muted-foreground bg-muted/70 px-2 py-1 rounded-md border border-border flex items-center gap-1"
-                                      title="This visit log has been edited once and cannot be modified again by sales."
-                                    >
-                                      <Lock className="size-2.5 text-muted-foreground" />
-                                      Edited (1/1 limit reached)
-                                    </span>
-                                  );
-                                }
-                                return (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 text-xs font-semibold cursor-pointer text-primary border-primary/30 hover:bg-primary/10"
-                                    onClick={() => openEditVisit(v)}
-                                    title="Sales representatives may edit their visit log once."
-                                  >
-                                    <Pencil className="size-3 mr-1" />
-                                    Edit Log (1 time)
-                                  </Button>
-                                );
-                              }
-
-                              if (isSuperAdmin || isSupervisor) {
-                                return (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 text-xs font-semibold cursor-pointer"
-                                    onClick={() => openEditVisit(v)}
-                                    title="Edit visit record"
-                                  >
-                                    <Pencil className="size-3 mr-1" />
-                                    Edit Visit
-                                  </Button>
-                                );
-                              }
-                              return null;
-                            })()}
-
-                            {isSuperAdmin && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 px-2 text-xs text-destructive hover:bg-destructive/10 cursor-pointer"
-                                title="Delete Field Visit (Super Admin)"
-                                onClick={() => {
-                                  setDeleteTarget({
-                                    type: "Field Visit",
-                                    id: v.id || v.customer_name,
-                                    name: `${v.customer_name} (${v.purpose})`,
-                                    onDelete: async () => {
-                                      if (v.id) await deleteFieldVisit(v.id, currentUser?.name);
-                                      setDbVisits((prev) => prev.filter((x) => x.id !== v.id));
-                                    },
-                                  });
-                                }}
-                              >
-                                <Trash2 className="size-3.5 mr-1" />
-                                Delete
-                              </Button>
-                            )}
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs font-semibold cursor-pointer"
-                              onClick={() => {
-                                navigateToCreateOrder({
-                                  customerName: v.customer_name,
-                                  companyId: v.company_id,
-                                  notes:
-                                    v.outcome_notes || `Converted from field visit (${v.purpose})`,
-                                });
-                              }}
-                            >
-                              Create order
-                            </Button>
-                          </div>
+                          <span
+                            className={`status ${v.status === "Completed" ? "success" : "brand"}`}
+                          >
+                            {v.status}
+                          </span>
                         </div>
-                      </article>
+                        <div className="min-w-0 text-left">
+                          <h4 className="text-sm font-extrabold text-foreground tracking-tight truncate">
+                            {v.customer_name}
+                          </h4>
+                          <p className="mt-0.5 text-[11px] text-muted-foreground font-mono">
+                            {v.scheduled_date} · {v.scheduled_time}
+                          </p>
+                        </div>
+                        <span className="inline-flex self-start text-[11px] font-semibold px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
+                          {v.purpose}
+                        </span>
+                        <p className="text-xs text-muted-foreground line-clamp-2 text-left min-h-[2.5rem]">
+                          {v.outcome_notes || "No outcome notes yet."}
+                        </p>
+                        <div className="flex flex-row flex-wrap items-center gap-1.5">
+                          {v.gps_latitude ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
+                              <MapPin className="size-3" />
+                              GPS
+                            </span>
+                          ) : null}
+                          {v.voice_recording_path ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-purple-700 dark:text-purple-300 bg-purple-500/10 px-2 py-0.5 rounded-md border border-purple-500/20">
+                              <Volume2 className="size-3" />
+                              Voice
+                            </span>
+                          ) : null}
+                          {v.photos && v.photos.length > 0 ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-sky-700 dark:text-sky-300 bg-sky-500/10 px-2 py-0.5 rounded-md border border-sky-500/20">
+                              <Camera className="size-3" />
+                              {v.photos.length}
+                            </span>
+                          ) : null}
+                        </div>
+                        <div className="mt-auto flex flex-row items-center justify-between gap-2 pt-2 border-t border-border/70 text-[11px]">
+                          <span className="text-muted-foreground truncate">
+                            {v.assigned_to_name || v.creator_name || "—"}
+                          </span>
+                          <span className="font-semibold text-primary shrink-0">Open →</span>
+                        </div>
+                      </button>
                     ))}
                 </div>
 
@@ -6419,7 +6263,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                         ? "No field visits logged yet."
                         : "You haven't logged any field visits yet."}
                     </p>
-                    {hasPermission("field_visits.conduct") && (
+                    {canLogFieldVisit && (
                       <Button size="sm" onClick={() => setTab("Log a visit")}>
                         <Plus className="size-3.5 mr-1" />
                         Log Your First Field Visit
@@ -6437,7 +6281,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
             <div>
               <h2 className="panel-title">Procurement overview</h2>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                Purchase orders inbound to inventory
+                Accounts uploads the supplier invoice PDF for each item · logistics can open it
               </p>
             </div>
             {hasPermission("purchases.create") && (
@@ -6447,79 +6291,113 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 onClick={() => setPoModal(true)}
               >
                 <Plus className="size-3.5" />
-                Create Purchase Order
+                Add item + supplier invoice
               </Button>
             )}
           </div>
-          {dbPOs.map((p) => (
-            <div
-              className="flex flex-wrap items-center justify-between gap-4 border-t border-border px-6 py-5"
-              key={p.id}
-            >
-              <div className="flex items-center gap-4">
-                <Package className="text-primary" size={20} />
-                <div>
-                  <p className="text-xs font-bold">{p.product_name}</p>
-                  <p className="mt-1 text-[10px] text-muted-foreground">
-                    #{p.id} · {p.quantity} {p.unit} ·{" "}
-                    {companies.find((c) => c.id === p.company_id)?.short} · Supplier:{" "}
-                    {p.supplier_name}
-                  </p>
+          {dbPOs.map((p) => {
+            const uploaded = getPurchaseOrderDocument(p.id);
+            const meta = parsePoNotes(p.notes);
+            return (
+              <div
+                className="flex flex-wrap items-center justify-between gap-4 border-t border-border px-6 py-5"
+                key={`${p.id}-${poDocTick}`}
+              >
+                <div className="flex items-center gap-4 min-w-0">
+                  <Package className="text-primary shrink-0" size={20} />
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold">{p.product_name}</p>
+                    <p className="mt-1 text-[10px] text-muted-foreground">
+                      #{p.id} · {p.quantity} {p.unit} ·{" "}
+                      {companies.find((c) => c.id === p.company_id)?.short} · Supplier:{" "}
+                      {p.supplier_name}
+                    </p>
+                    {(uploaded || meta.documentName) && (
+                      <p className="mt-1 text-[10px] font-semibold text-primary">
+                        Supplier invoice for this item: {uploaded?.name || meta.documentName}
+                      </p>
+                    )}
+                  </div>
                 </div>
-              </div>
-              <div className="flex items-center gap-3">
-                <span className={`status ${p.status === "Received" ? "success" : "brand"}`}>
-                  {p.status}
-                </span>
-                {p.status !== "Received" && hasPermission("purchases.receive") && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`status ${p.status === "Received" ? "success" : "brand"}`}>
+                    {p.status}
+                  </span>
                   <Button
                     size="sm"
                     variant="outline"
-                    className="h-7 text-xs"
-                    onClick={() => handleReceiveGoods(p)}
+                    className="h-7 text-xs font-semibold gap-1.5"
+                    onClick={() => handleViewPurchaseOrder(p)}
                   >
-                    Receive Goods
+                    <Eye className="size-3.5" />
+                    {uploaded ? "Open item invoice" : "View PO"}
                   </Button>
-                )}
-                {(isSuperAdmin || isSupervisor) && (
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="size-7 text-muted-foreground hover:text-primary hover:bg-primary/10 cursor-pointer"
-                    title="Edit Purchase Order (Super Admin & Supervisor)"
-                    onClick={() => openEditPo(p)}
-                  >
-                    <Pencil className="size-3.5" />
-                  </Button>
-                )}
-                {(isSuperAdmin || isSupervisor) && (
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="size-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
-                    title="Delete Purchase Order (Super Admin & Supervisor)"
-                    onClick={() => {
-                      setDeleteTarget({
-                        type: "Purchase Order",
-                        id: p.id,
-                        name: `#${p.id} · ${p.product_name} (${p.supplier_name})`,
-                        onDelete: async () => {
-                          await deletePurchaseOrder(p.id, currentUser?.name);
-                          setDbPOs((prev) => prev.filter((x) => x.id !== p.id));
-                        },
-                      });
-                    }}
-                  >
-                    <Trash2 className="size-3.5" />
-                  </Button>
-                )}
+                  {hasPermission("purchases.create") && (
+                    <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2 text-xs font-semibold cursor-pointer hover:bg-muted/50">
+                      <FileText className="size-3.5" />
+                      {uploaded ? "Replace item PDF" : "Upload item PDF"}
+                      <input
+                        type="file"
+                        accept="application/pdf,.pdf"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0] || null;
+                          void handleUploadPoPdf(p, file);
+                          e.currentTarget.value = "";
+                        }}
+                      />
+                    </label>
+                  )}
+                  {p.status !== "Received" && hasPermission("purchases.receive") && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs"
+                      onClick={() => handleReceiveGoods(p)}
+                    >
+                      Receive Goods
+                    </Button>
+                  )}
+                  {(isSuperAdmin || isSupervisor) && (
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-7 text-muted-foreground hover:text-primary hover:bg-primary/10 cursor-pointer"
+                      title="Edit Purchase Order (Super Admin & Supervisor)"
+                      onClick={() => openEditPo(p)}
+                    >
+                      <Pencil className="size-3.5" />
+                    </Button>
+                  )}
+                  {(isSuperAdmin || isSupervisor) && (
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                      title="Delete Purchase Order (Super Admin & Supervisor)"
+                      onClick={() => {
+                        setDeleteTarget({
+                          type: "Purchase Order",
+                          id: p.id,
+                          name: `#${p.id} · ${p.product_name} (${p.supplier_name})`,
+                          onDelete: async () => {
+                            await deletePurchaseOrder(p.id, currentUser?.name);
+                            setDbPOs((prev) => prev.filter((x) => x.id !== p.id));
+                          },
+                        });
+                      }}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
           {dbPOs.length === 0 && (
             <p className="p-8 text-center text-muted-foreground">
-              No purchase orders found. Create a purchase order to record inbound supplier
-              procurement.
+              No purchased items yet. Accounts can add an item and upload its supplier invoice PDF
+              (e.g. Ambuja tax invoice for Maize Starch) for logistics to open.
             </p>
           )}
         </section>
@@ -8024,10 +7902,14 @@ export function ModuleWorkspace({ module }: { module: string }) {
                           });
                           knownKeys.add("product interest");
                         }
-                        if (dossierLead.estimated_value && !knownKeys.has("estimated value")) {
+                        if (
+                          canViewAmounts &&
+                          dossierLead.estimated_value &&
+                          !knownKeys.has("estimated value")
+                        ) {
                           commercialItems.push({
                             label: "Estimated Value",
-                            value: `₹${Number(dossierLead.estimated_value).toLocaleString("en-IN")}`,
+                            value: money(Number(dossierLead.estimated_value)),
                           });
                           knownKeys.add("estimated value");
                         }
@@ -8301,35 +8183,253 @@ export function ModuleWorkspace({ module }: { module: string }) {
                   }
                   )
                 </h4>
-                <div className="space-y-2">
+                <div className="field-visit-rail flex flex-row flex-nowrap items-stretch gap-3 overflow-x-auto overflow-y-hidden">
                   {visibleFieldVisits
                     .filter((v) => v.customer_name === selectedCustomerDetails.name)
                     .map((v) => (
-                      <div
+                      <button
+                        type="button"
                         key={v.id || v.customer_name}
-                        className="p-3 rounded-xl border border-border/80 bg-background space-y-1 text-xs hover:border-primary/40 transition-colors"
+                        className="field-visit-rail-card shrink-0"
+                        onClick={() => {
+                          setSelectedCustomerDetails(null);
+                          setSelectedVisitDetail(v);
+                        }}
+                        title="Open full visit details"
                       >
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-foreground">{v.purpose}</span>
-                          <span className="text-[11px] text-muted-foreground">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-bold text-foreground text-xs">{v.purpose}</span>
+                          <span className="text-[11px] text-muted-foreground shrink-0">
                             {v.scheduled_date}
                           </span>
                         </div>
-                        {v.outcome_notes && (
-                          <p className="text-[11px] text-muted-foreground line-clamp-2">
-                            {v.outcome_notes}
-                          </p>
-                        )}
-                      </div>
+                        <p className="text-[11px] text-muted-foreground line-clamp-2 text-left min-h-[2rem]">
+                          {v.outcome_notes || "No outcome notes yet."}
+                        </p>
+                        <span className="mt-auto text-[11px] font-semibold text-primary self-end">
+                          Open →
+                        </span>
+                      </button>
                     ))}
-                  {visibleFieldVisits.filter(
-                    (v) => v.customer_name === selectedCustomerDetails.name,
-                  ).length === 0 && (
-                    <p className="text-xs text-muted-foreground py-3 text-center bg-muted/20 rounded-xl">
-                      No field visits on record.
-                    </p>
-                  )}
                 </div>
+                {visibleFieldVisits.filter(
+                  (v) => v.customer_name === selectedCustomerDetails.name,
+                ).length === 0 && (
+                  <p className="text-xs text-muted-foreground py-3 text-center bg-muted/20 rounded-xl">
+                    No field visits on record.
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
+
+      {/* FIELD VISIT FULL DETAIL */}
+      <Sheet
+        open={!!selectedVisitDetail}
+        onOpenChange={(open) => {
+          if (!open) setSelectedVisitDetail(null);
+        }}
+      >
+        <SheetContent className="w-full sm:max-w-md overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>{selectedVisitDetail?.customer_name || "Field visit"}</SheetTitle>
+            <SheetDescription>
+              Full visit record
+              {selectedVisitDetail
+                ? ` · ${selectedVisitDetail.scheduled_date} · ${selectedVisitDetail.scheduled_time}`
+                : ""}
+            </SheetDescription>
+          </SheetHeader>
+          {selectedVisitDetail && (
+            <div className="mt-6 space-y-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider bg-muted/60 px-2 py-0.5 rounded-md text-muted-foreground">
+                  <Building2 className="size-3 text-primary" />
+                  {companies.find((c) => c.id === selectedVisitDetail.company_id)?.short || "Firm"}
+                </span>
+                <span
+                  className={`status ${
+                    selectedVisitDetail.status === "Completed" ? "success" : "brand"
+                  }`}
+                >
+                  {selectedVisitDetail.status}
+                </span>
+                <span className="text-xs font-semibold px-2 py-0.5 rounded bg-primary/10 text-primary border border-primary/20">
+                  {selectedVisitDetail.purpose}
+                </span>
+              </div>
+
+              <div className="rounded-xl border border-border bg-card p-4 space-y-2 text-xs">
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">Assigned</span>
+                  <strong className="text-foreground text-right">
+                    {selectedVisitDetail.assigned_to_name || "—"}
+                  </strong>
+                </div>
+                {selectedVisitDetail.creator_name && (
+                  <div className="flex justify-between gap-3">
+                    <span className="text-muted-foreground">Logged by</span>
+                    <strong className="text-foreground text-right">
+                      {selectedVisitDetail.creator_name}
+                    </strong>
+                  </div>
+                )}
+                <div className="flex justify-between gap-3">
+                  <span className="text-muted-foreground">When</span>
+                  <strong className="text-foreground text-right font-mono">
+                    {selectedVisitDetail.scheduled_date} · {selectedVisitDetail.scheduled_time}
+                  </strong>
+                </div>
+              </div>
+
+              {selectedVisitDetail.outcome_notes && (
+                <div className="rounded-xl border border-border bg-muted/30 p-4">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1.5">
+                    Outcome notes
+                  </p>
+                  <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap">
+                    {selectedVisitDetail.outcome_notes}
+                  </p>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                {selectedVisitDetail.gps_latitude ? (
+                  <a
+                    href={`https://maps.google.com/?q=${selectedVisitDetail.gps_latitude},${selectedVisitDetail.gps_longitude || 77.5946}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1.5 rounded-lg border border-emerald-500/20"
+                  >
+                    <MapPin className="size-3.5" />
+                    GPS {selectedVisitDetail.gps_latitude.toFixed(4)},{" "}
+                    {selectedVisitDetail.gps_longitude?.toFixed(4)} ↗
+                  </a>
+                ) : null}
+                {selectedVisitDetail.voice_recording_path ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-8 text-xs"
+                    onClick={() => playAudioMemo(selectedVisitDetail)}
+                  >
+                    <Play className="size-3 mr-1" />
+                    Play voice memo
+                  </Button>
+                ) : null}
+              </div>
+
+              {selectedVisitDetail.photos && selectedVisitDetail.photos.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                    Photos ({selectedVisitDetail.photos.length})
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedVisitDetail.photos.map((photoUrl, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => setSelectedVisitPhoto(photoUrl)}
+                        className="size-16 rounded-xl overflow-hidden border border-border hover:border-primary cursor-pointer"
+                      >
+                        <img
+                          src={photoUrl}
+                          alt={`Proof ${idx + 1}`}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            if (e.currentTarget.src !== FALLBACK_PROOF_IMAGE) {
+                              e.currentTarget.src = FALLBACK_PROOF_IMAGE;
+                            }
+                          }}
+                        />
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2 pt-2 border-t border-border">
+                {(() => {
+                  const v = selectedVisitDetail;
+                  const isEdited =
+                    v.outcome_notes?.includes("[Edited once") ||
+                    v.outcome_notes?.includes("[Edited on");
+                  const isSalesUser = currentUser?.role === "sales";
+                  if (isSalesUser && !isEdited) {
+                    return (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        onClick={() => {
+                          openEditVisit(v);
+                          setSelectedVisitDetail(null);
+                        }}
+                      >
+                        <Pencil className="size-3 mr-1" />
+                        Edit Log (1 time)
+                      </Button>
+                    );
+                  }
+                  if (isSuperAdmin || isSupervisor) {
+                    return (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-8 text-xs"
+                        onClick={() => {
+                          openEditVisit(v);
+                          setSelectedVisitDetail(null);
+                        }}
+                      >
+                        <Pencil className="size-3 mr-1" />
+                        Edit Visit
+                      </Button>
+                    );
+                  }
+                  return null;
+                })()}
+                {isSuperAdmin && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-8 text-xs text-destructive hover:bg-destructive/10"
+                    onClick={() => {
+                      const v = selectedVisitDetail;
+                      setDeleteTarget({
+                        type: "Field Visit",
+                        id: v.id || v.customer_name,
+                        name: `${v.customer_name} (${v.purpose})`,
+                        onDelete: async () => {
+                          if (v.id) await deleteFieldVisit(v.id, currentUser?.name);
+                          setDbVisits((prev) => prev.filter((x) => x.id !== v.id));
+                          setSelectedVisitDetail(null);
+                        },
+                      });
+                    }}
+                  >
+                    <Trash2 className="size-3.5 mr-1" />
+                    Delete
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-8 text-xs"
+                  onClick={() => {
+                    const v = selectedVisitDetail;
+                    navigateToCreateOrder({
+                      customerName: v.customer_name,
+                      companyId: v.company_id,
+                      notes: v.outcome_notes || `Converted from field visit (${v.purpose})`,
+                    });
+                    setSelectedVisitDetail(null);
+                  }}
+                >
+                  Create order
+                </Button>
               </div>
             </div>
           )}
@@ -8503,14 +8603,16 @@ export function ModuleWorkspace({ module }: { module: string }) {
       <Sheet open={poModal} onOpenChange={setPoModal}>
         <SheetContent className="overflow-y-auto max-h-[100dvh] w-full sm:max-w-lg pb-16">
           <SheetHeader>
-            <SheetTitle>Create Purchase Order</SheetTitle>
-            <SheetDescription>Inbound procurement from supplier</SheetDescription>
+            <SheetTitle>Add purchased item + supplier invoice</SheetTitle>
+            <SheetDescription>
+              Accounts uploads the supplier tax invoice PDF for that particular item. Logistics can
+              open the same file.
+            </SheetDescription>
           </SheetHeader>
           <form onSubmit={handleCreatePO} className="mt-6 space-y-4 pb-12">
             <label className="drawer-field">
-              Company
+              Company (Invoice To)
               <select value={poCompany} onChange={(e) => setPoCompany(e.target.value)}>
-                <option value="all">All Companies</option>
                 {companies.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
@@ -8519,21 +8621,21 @@ export function ModuleWorkspace({ module }: { module: string }) {
               </select>
             </label>
             <label className="drawer-field">
-              Supplier Name
+              Supplier (Bill from)
               <input
                 required
                 value={poSupplier}
                 onChange={(e) => setPoSupplier(e.target.value)}
-                placeholder="e.g. Apex Dairy Suppliers Ltd"
+                placeholder="e.g. Gujarat Ambuja Exports Ltd"
               />
             </label>
             <label className="drawer-field">
-              Product Name
+              Product / Description of Goods
               <input
                 required
                 value={poProduct}
                 onChange={(e) => setPoProduct(e.target.value)}
-                placeholder="Product name"
+                placeholder="e.g. Malto Dextrin Powder"
               />
             </label>
             <div className="grid grid-cols-3 gap-3">
@@ -8595,7 +8697,7 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 )}
               </label>
               <label className="drawer-field">
-                Unit Price
+                Rate / Unit Price
                 <input
                   type="number"
                   required
@@ -8604,8 +8706,33 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 />
               </label>
             </div>
+            <label className="drawer-field">
+              Remarks
+              <input
+                value={poRemark}
+                onChange={(e) => setPoRemark(e.target.value)}
+                placeholder="GST Extra"
+              />
+            </label>
+            <label className="drawer-field">
+              Supplier invoice PDF for this item
+              <input
+                type="file"
+                accept="application/pdf,.pdf"
+                onChange={(e) => setPoPdfFile(e.target.files?.[0] || null)}
+              />
+              <span className="mt-1 block text-[11px] text-muted-foreground">
+                Upload the supplier tax invoice for this product (e.g. Gujarat Ambuja invoice for
+                Maize Starch). Logistics will open this file for this item.
+              </span>
+              {poPdfFile && (
+                <span className="mt-1 block text-[11px] font-semibold text-primary">
+                  Selected for {poProduct || "this item"}: {poPdfFile.name}
+                </span>
+              )}
+            </label>
             <Button type="submit" className="w-full mt-6">
-              Submit Purchase Order
+              Save item document for Logistics
             </Button>
           </form>
         </SheetContent>
@@ -9068,127 +9195,106 @@ export function ModuleWorkspace({ module }: { module: string }) {
         </SheetContent>
       </Sheet>
 
-      {/* COMMERCIAL INVOICE VIEWER SHEET (For Driver & Order Desk) */}
+      {/* Sales invoice viewer — accounts-created copy shown on driver orders */}
       <Sheet open={invoiceViewModal} onOpenChange={setInvoiceViewModal}>
         <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
           <SheetHeader>
             <SheetTitle className="flex items-center gap-2">
               <FileCheck2 className="size-5 text-primary" />
-              Commercial Tax Invoice #
-              {viewingInvoice?.id ||
-                (viewingOrder ? `INV-${viewingOrder.id.replace("ORD-", "")}` : "")}
+              Sales Invoice {viewingInvoice?.id || ""}
             </SheetTitle>
             <SheetDescription>
-              Accounts Verified Invoice · Order #{viewingOrder?.id}
+              Raised by Accounts · travels with Order #{viewingOrder?.id} for the logistics driver
             </SheetDescription>
           </SheetHeader>
 
           <div className="mt-6 space-y-5">
-            <div className="rounded-xl border border-border bg-card p-4 space-y-3">
-              <div className="flex justify-between items-start pb-3 border-b border-border">
-                <div>
-                  <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block">
-                    Billed To Customer
-                  </span>
-                  <h4 className="text-base font-extrabold text-foreground mt-0.5">
-                    {viewingInvoice?.customer_name || viewingOrder?.customer_name}
-                  </h4>
-                  <p className="text-xs text-muted-foreground mt-1 max-w-xs">
-                    {viewingOrder?.delivery_address || "Standard Client Warehouse Destination"}
-                  </p>
-                </div>
-                <span className="status success">{viewingInvoice?.status || "Generated"}</span>
+            {!viewingInvoice ? (
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-xs text-amber-800 dark:text-amber-200">
+                No sales invoice yet. Accounts must raise the tax invoice before the driver copy
+                is available on this order.
               </div>
+            ) : (
+              <>
+                <div className="rounded-xl border border-border bg-card p-4 space-y-3">
+                  <div className="flex justify-between items-start pb-3 border-b border-border">
+                    <div>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block">
+                        Buyer (Bill to)
+                      </span>
+                      <h4 className="text-base font-extrabold text-foreground mt-0.5">
+                        {viewingInvoice.customer_name}
+                      </h4>
+                      <p className="text-xs text-muted-foreground mt-1 max-w-xs">
+                        {viewingOrder?.delivery_address || "Destination as per order"}
+                      </p>
+                    </div>
+                    <span className="status success">{viewingInvoice.status}</span>
+                  </div>
 
-              <div className="grid grid-cols-2 gap-3 text-xs pt-1">
-                <div>
-                  <span className="text-muted-foreground block">Invoice Issue Date:</span>
-                  <span className="font-semibold text-foreground mt-0.5 block">
-                    {viewingInvoice?.created_at?.split("T")[0] ||
-                      new Date().toISOString().split("T")[0]}
-                  </span>
+                  <div className="grid grid-cols-2 gap-3 text-xs pt-1">
+                    <div>
+                      <span className="text-muted-foreground block">Invoice No.</span>
+                      <span className="font-mono font-bold text-foreground mt-0.5 block">
+                        {viewingInvoice.id}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground block">Company</span>
+                      <span className="font-semibold text-foreground mt-0.5 block">
+                        {companies.find((c) => c.id === viewingInvoice.company_id)?.short || "—"}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground block">Issue Date</span>
+                      <span className="font-semibold text-foreground mt-0.5 block">
+                        {viewingInvoice.created_at?.split("T")[0] || "—"}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground block">Payment Terms / Due</span>
+                      <span className="font-semibold text-foreground mt-0.5 block">
+                        {viewingInvoice.due_date || "—"}
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <span className="text-muted-foreground block">Payment Due Date:</span>
-                  <span className="font-semibold text-foreground mt-0.5 block">
-                    {viewingInvoice?.due_date || "Within 15 Days"}
-                  </span>
-                </div>
-              </div>
-            </div>
 
-            {/* Line Items Details */}
-            <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-3">
-              <span className="text-xs font-bold text-foreground block">
-                Deliverable Commercial Line Items
-              </span>
-              <div className="rounded-lg border border-border bg-card p-3 text-xs space-y-2">
-                <div className="flex justify-between items-center">
-                  <span className="font-semibold text-foreground">
-                    {viewingOrder?.items_summary || "B2B Goods Items"}
+                <div className="rounded-xl border border-border bg-muted/20 p-4 space-y-3">
+                  <span className="text-xs font-bold text-foreground block">
+                    Goods on this sales invoice
                   </span>
-                  <span className="font-bold text-foreground">
-                    {viewingOrder?.total_amount
-                      ? money(viewingOrder.total_amount)
-                      : money(viewingInvoice?.amount || 0)}
-                  </span>
+                  <div className="rounded-lg border border-border bg-card p-3 text-xs space-y-2">
+                    <div className="flex justify-between items-center gap-3">
+                      <span className="font-semibold text-foreground">
+                        {viewingOrder?.items_summary || "Order goods"}
+                      </span>
+                      <span className="font-bold text-foreground shrink-0">
+                        {money(viewingInvoice.amount)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-[11px] text-muted-foreground pt-2 border-t border-border/50">
+                      <span>Sales tax invoice · CGST / SGST</span>
+                      <span>Driver delivery copy</span>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex justify-between text-[11px] text-muted-foreground pt-2 border-t border-border/50">
-                  <span>Authorized by Accounts: Suresh Rao</span>
-                  <span>GST Compliant</span>
-                </div>
-              </div>
 
-              <div className="pt-2 border-t border-border space-y-1.5 text-xs">
-                <div className="flex justify-between text-muted-foreground">
-                  <span>Subtotal Amount:</span>
-                  <span>{money(viewingOrder?.subtotal || viewingInvoice?.amount || 0)}</span>
-                </div>
-                <div className="flex justify-between text-muted-foreground">
-                  <span>Discount & Deductions:</span>
-                  <span>{money(viewingOrder?.discount || 0)}</span>
-                </div>
-                <div className="flex justify-between text-sm font-extrabold text-foreground pt-1.5 border-t border-border">
-                  <span>Total Payable:</span>
-                  <span className="text-emerald-600 dark:text-emerald-400">
-                    {money(viewingInvoice?.amount || viewingOrder?.total_amount || 0)}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <Button
-              className="w-full text-xs font-bold flex items-center justify-center gap-2 bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer"
-              onClick={() => {
-                if (viewingInvoice) {
-                  handleDownloadInvoice(viewingInvoice, viewingOrder);
-                } else if (viewingOrder) {
-                  const synthInv: DBInvoice = {
-                    id: `INV-${viewingOrder.id.replace("ORD-", "")}`,
-                    order_id: viewingOrder.id,
-                    company_id: viewingOrder.company_id,
-                    customer_name: viewingOrder.customer_name,
-                    amount: viewingOrder.total_amount,
-                    paid_amount: 0,
-                    remaining_amount: viewingOrder.total_amount,
-                    status: "Generated",
-                    due_date:
-                      new Date(Date.now() + 15 * 86400000).toISOString().split("T")[0] || "",
-                    created_at: viewingOrder.created_at || new Date().toISOString(),
-                  };
-                  handleDownloadInvoice(synthInv, viewingOrder);
-                }
-              }}
-            >
-              <Download className="size-4" />
-              Download Tax Invoice (PDF / Print)
-            </Button>
+                <Button
+                  className="w-full text-xs font-bold flex items-center justify-center gap-2 bg-primary text-primary-foreground hover:bg-primary/90 cursor-pointer"
+                  onClick={() => handleDownloadInvoice(viewingInvoice, viewingOrder)}
+                >
+                  <Download className="size-4" />
+                  Open Sales Invoice (Print / PDF)
+                </Button>
+              </>
+            )}
             <Button
               variant="outline"
               className="w-full text-xs font-bold cursor-pointer"
               onClick={() => setInvoiceViewModal(false)}
             >
-              Close Invoice Viewer
+              Close
             </Button>
           </div>
         </SheetContent>
@@ -9236,12 +9342,12 @@ export function ModuleWorkspace({ module }: { module: string }) {
             </div>
 
             <label className="drawer-field">
-              Invoice Number
+              Sales Invoice Number
               <input
                 required
                 value={customInvoiceNumber}
                 onChange={(e) => setCustomInvoiceNumber(e.target.value)}
-                placeholder="e.g. INV-1001"
+                placeholder="e.g. GI/S235/26-27"
               />
             </label>
 
@@ -9273,10 +9379,11 @@ export function ModuleWorkspace({ module }: { module: string }) {
                 className="w-full font-bold gap-2 cursor-pointer bg-primary text-primary-foreground hover:bg-primary/90"
               >
                 <FileCheck2 className="size-4" />
-                {raisingInvoice ? "Raising Invoice..." : "Confirm & Raise Invoice"}
+                {raisingInvoice ? "Raising sales invoice..." : "Confirm & Raise Sales Invoice"}
               </Button>
               <p className="text-[11px] text-muted-foreground text-center">
-                After raising the invoice, book the driver on Order desk.
+                This sales invoice is attached to the order and shown to the logistics driver after
+                Order Desk assigns the trip.
               </p>
             </div>
           </form>

@@ -3,10 +3,13 @@ import { rolesCreatorCanAssign } from "@/lib/auth-service";
 import { scopeForDriver } from "@/lib/driver-scope";
 
 describe("driver logins", () => {
-  it("lets a supervisor create only sales and logistics logins", () => {
-    expect(rolesCreatorCanAssign("supervisor").sort()).toEqual(["logistics", "sales"]);
+  it("lets only the owner create accounts", () => {
+    expect(rolesCreatorCanAssign("supervisor")).toEqual([]);
     expect(rolesCreatorCanAssign("accounts")).toEqual([]);
     expect(rolesCreatorCanAssign("super_admin")).toContain("supervisor");
+    expect(rolesCreatorCanAssign("super_admin")).toEqual(
+      expect.arrayContaining(["sales", "logistics", "accounts"]),
+    );
   });
 
   it("hides another driver's orders and collected revenue", () => {
@@ -15,7 +18,12 @@ describe("driver logins", () => {
       {
         orders: [
           { id: "ORD-1", customer_name: "Nandini", assigned_driver: "Mahesh Patel" },
-          { id: "ORD-2", customer_name: "Lakeside", assigned_driver: null },
+          {
+            id: "ORD-2",
+            customer_name: "Lakeside",
+            assigned_driver: null,
+            items_summary: "Malto Dextrin Powder · 50 kg · PO Ref: GI/PO/55/26-27",
+          },
         ],
         deliveries: [
           { order_id: "ORD-2", driver_name: "Suresh Driver", vehicle_number: "KA-02-GH-4455" },
@@ -28,11 +36,21 @@ describe("driver logins", () => {
           { invoice_id: "INV-1" },
           { invoice_id: "INV-2" },
         ],
+        products: [
+          { id: "P-1", name: "Malto Dextrin Powder", code: "MDP" },
+          { id: "P-2", name: "Unrelated Starch", code: "ST" },
+        ],
+        purchaseOrders: [{ id: "GI/PO/55/26-27", product_name: "Malto Dextrin Powder" }],
       },
     );
 
     expect(scoped.orders?.map((order) => order.id)).toEqual(["ORD-2"]);
     expect(scoped.invoices?.map((invoice) => invoice.id)).toEqual(["INV-2"]);
     expect(scoped.payments?.map((payment) => payment.invoice_id)).toEqual(["INV-2"]);
+    expect(scoped.products?.map((p) => p.id)).toEqual(["P-1"]);
+    expect(scoped.purchaseOrders).toEqual([
+      { id: "GI/PO/55/26-27", product_name: "Malto Dextrin Powder" },
+    ]);
   });
 });
+

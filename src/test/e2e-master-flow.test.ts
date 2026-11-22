@@ -257,6 +257,7 @@ describe("Avighna One — Comprehensive Master Flow Automation", () => {
         quantity: 40,
         unit: "kg",
         unitPrice: 320,
+        purchaseReference: "GI/PO/TEST/26-27",
         deliveryAddress: "12 Industrial Layout, Bangalore",
         creatorName: "Ravi Kumar",
       });
@@ -461,6 +462,7 @@ describe("Avighna One — Comprehensive Master Flow Automation", () => {
         quantity: 10,
         unit: "kg",
         unitPrice: 349, // < 350 -> Requires Super Admin Approval
+        purchaseReference: "GI/PO/TEST/26-27",
         catalogPrice: 350,
         wholesalePrice: 300,
         creatorName: "Ravi Kumar (Sales)",

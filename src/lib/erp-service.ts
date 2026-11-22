@@ -329,6 +329,8 @@ export async function createOrder(payload: {
   quantity: number;
   unit?: string | undefined;
   unitPrice: number;
+  /** Purchase reference number required for every product line (e.g. GI/PO/55/26-27). */
+  purchaseReference: string;
   catalogPrice?: number | undefined;
   wholesalePrice?: number | undefined;
   discount?: number | undefined;
@@ -352,7 +354,17 @@ export async function createOrder(payload: {
   error?: string;
 }> {
   try {
-    await requirePermission("orders.create");
+    const purchaseRef = payload.purchaseReference?.trim();
+    if (!purchaseRef) {
+      return {
+        success: false,
+        error: "Purchase reference number is required for every product in the order.",
+      };
+    }
+
+    const actor = await requirePermission("orders.create");
+    const creatorIsSuperAdmin =
+      actor.role === "super_admin" || actor.permissions.includes("*");
     const subtotal = payload.quantity * payload.unitPrice;
     const discount = payload.discount || 0;
     const tax = payload.tax || 0;
@@ -442,7 +454,10 @@ export async function createOrder(payload: {
 
     let finalNotes = payload.notes || "";
     if (isPriceOverride) {
-      const overrideTag = `[PRICE OVERRIDE: Entered ₹${payload.unitPrice} < Selling Price ₹${catalogSellingPrice} · Super Admin Approval Required]`;
+      // Super Admin authorizing at create time — no second approval step.
+      const overrideTag = creatorIsSuperAdmin
+        ? `[PRICE OVERRIDE: Entered ₹${payload.unitPrice} < Selling Price ₹${catalogSellingPrice} · Authorized by Super Admin on create]`
+        : `[PRICE OVERRIDE: Entered ₹${payload.unitPrice} < Selling Price ₹${catalogSellingPrice} · Super Admin Approval Required]`;
       finalNotes = finalNotes ? `${overrideTag} ${finalNotes}` : overrideTag;
     }
 
@@ -460,10 +475,25 @@ export async function createOrder(payload: {
       customerId = found?.[0]?.id;
     }
 
-    const initialStatus = shortage ? "Procuring" : "Pending approval";
+    // Super Admin creates → skip Pending approval (they are the approver).
+    const initialStatus = shortage
+      ? "Procuring"
+      : creatorIsSuperAdmin
+        ? "Approved"
+        : "Pending approval";
     const finalUnit = payload.unit || "Bags";
+    const itemsSummary = formatOrderItemsSummary(
+      payload.productName,
+      payload.quantity,
+      finalUnit,
+      purchaseRef,
+    );
+    const managedByTag = `[Managed by: ${payload.creatorName}]`;
     const transportTag = `[Transport: ${transportMode}${assignedVehicle ? ` · Vehicle: ${assignedVehicle}` : ""}${assignedDriver ? ` · Driver: ${assignedDriver}` : ""}${assignedPhone ? ` · Phone: ${assignedPhone}` : ""}]`;
-    const notesWithTransport = finalNotes ? `${finalNotes} ${transportTag}`.trim() : transportTag;
+    const notesWithTransport = [managedByTag, finalNotes, transportTag]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
 
     let { error: orderError } = await supabase.from("orders").insert({
       id: orderId,
@@ -476,7 +506,7 @@ export async function createOrder(payload: {
       discount,
       tax,
       total_amount: total,
-      items_summary: `${payload.productName} · ${payload.quantity} ${finalUnit}`,
+      items_summary: itemsSummary,
       delivery_address: payload.deliveryAddress,
       expected_delivery: payload.expectedDelivery,
       notes: notesWithTransport,
@@ -499,7 +529,7 @@ export async function createOrder(payload: {
         discount,
         tax,
         total_amount: total,
-        items_summary: `${payload.productName} · ${payload.quantity} ${finalUnit}`,
+        items_summary: itemsSummary,
         delivery_address: payload.deliveryAddress,
         expected_delivery: payload.expectedDelivery,
         notes: notesWithTransport,
@@ -510,9 +540,9 @@ export async function createOrder(payload: {
 
     if (orderError) throw orderError;
 
-    // Insert line item
+    // Insert line item (purchase_reference column may not exist yet — retry without it)
     try {
-      await supabase.from("order_items").insert({
+      const lineItem = {
         order_id: orderId,
         product_id: payload.productId,
         product_name: payload.productName,
@@ -524,7 +554,16 @@ export async function createOrder(payload: {
         tax,
         total_price: total,
         shortage_quantity: shortageQty,
-      });
+        purchase_reference: purchaseRef,
+      };
+      const { error: itemError } = await supabase.from("order_items").insert(lineItem);
+      if (itemError && (itemError.code === "PGRST204" || itemError.message?.includes("column"))) {
+        const { purchase_reference: _omit, ...withoutRef } = lineItem;
+        void _omit;
+        await supabase.from("order_items").insert(withoutRef);
+      } else if (itemError) {
+        console.warn("Order item insert notice:", itemError);
+      }
     } catch (e) {
       console.warn("Order item insert notice:", e);
     }
@@ -540,7 +579,7 @@ export async function createOrder(payload: {
       discount,
       tax,
       total_amount: total,
-      items_summary: `${payload.productName} · ${payload.quantity} ${payload.unit}`,
+      items_summary: itemsSummary,
       delivery_address: payload.deliveryAddress,
       expected_delivery: payload.expectedDelivery,
       notes: finalNotes,
@@ -552,7 +591,7 @@ export async function createOrder(payload: {
       created_at: new Date().toISOString(),
     };
 
-    if (isPriceOverride) {
+    if (isPriceOverride && !creatorIsSuperAdmin) {
       // Super Admin Approval Required Notification
       createNotification({
         title: "Super Admin Approval Required: Price Override",
@@ -570,6 +609,15 @@ export async function createOrder(payload: {
         action: "order_price_override",
         recordId: orderId,
         description: `${payload.creatorName} submitted Order #${orderId} with discounted unit price (Entered ₹${payload.unitPrice} < Catalog Selling Price ₹${catalogSellingPrice}) requiring Super Admin authorization.`,
+      });
+    } else if (isPriceOverride && creatorIsSuperAdmin) {
+      await logAudit({
+        userName: payload.creatorName,
+        companyId: payload.companyId,
+        module: "orders",
+        action: "order_price_override_authorized",
+        recordId: orderId,
+        description: `${payload.creatorName} created Order #${orderId} with discounted unit price (Entered ₹${payload.unitPrice} < Catalog Selling Price ₹${catalogSellingPrice}) and auto-approved as Super Admin.`,
       });
     } else if (shortage) {
       createNotification({
@@ -730,17 +778,41 @@ export function orderCountsTowardOutbound(status: string): boolean {
   return !OUTBOUND_RELEASED_STATUSES.has(String(status || "").trim().toLowerCase());
 }
 
-/** Parse `Product Name · 50 kg` style summaries written on createOrder. */
+/** Build `Product · 50 kg · PO Ref: GI/PO/55/26-27` style line summaries. */
+export function formatOrderItemsSummary(
+  productName: string,
+  quantity: number,
+  unit: string,
+  purchaseReference?: string | null,
+): string {
+  const base = `${productName} · ${quantity} ${unit}`;
+  const ref = purchaseReference?.trim();
+  return ref ? `${base} · PO Ref: ${ref}` : base;
+}
+
+/** Parse `Product Name · 50 kg · PO Ref: …` style summaries written on createOrder. */
 export function parseOrderItemsSummary(itemsSummary?: string | null): {
   productName: string;
   quantity: number;
+  purchaseReference?: string;
 } | null {
   if (!itemsSummary?.trim()) return null;
   const match = itemsSummary.trim().match(/^(.+?)\s*·\s*([\d.]+)\b/);
   if (!match?.[1] || match[2] === undefined) return null;
   const quantity = Number(match[2]);
   if (!Number.isFinite(quantity) || quantity <= 0) return null;
-  return { productName: match[1].trim(), quantity };
+  const poMatch = itemsSummary.match(/PO Ref:\s*([^·\n]+)/i);
+  const purchaseReference = poMatch?.[1]?.trim();
+  return {
+    productName: match[1].trim(),
+    quantity,
+    ...(purchaseReference ? { purchaseReference } : {}),
+  };
+}
+
+/** Extract purchase reference from an order items summary, if present. */
+export function parsePurchaseReference(itemsSummary?: string | null): string {
+  return parseOrderItemsSummary(itemsSummary)?.purchaseReference || "";
 }
 
 /** Aggregate ordered qty for a product across active/valid orders. */
@@ -1810,9 +1882,10 @@ export async function createPurchaseOrder(payload: {
   unit: string;
   unitPrice: number;
   notes?: string;
+  poId?: string;
   creatorName: string;
 }): Promise<DBPurchaseOrder> {
-  const poId = `PO-${Date.now().toString().slice(-4)}`;
+  const poId = payload.poId?.trim() || `PO-${Date.now().toString().slice(-4)}`;
   const totalAmount = payload.quantity * payload.unitPrice;
   const { data, error } = await supabase
     .from("purchase_orders")

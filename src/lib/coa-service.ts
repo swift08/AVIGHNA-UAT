@@ -713,13 +713,21 @@ export const getBatchCoaAccess = createServerFn({ method: "POST" })
       return { ok: false as const, error: "No COA document is attached to this batch." };
     }
 
-    const { data: signed, error: signErr } = await admin.storage
-      .from(COA_BUCKET)
-      .createSignedUrl(batch.coa_storage_path, 60 * 30, {
-        download: batch.coa_file_name || `COA-${batch.batch_number}`,
-      });
-    if (signErr || !signed?.signedUrl) {
-      return { ok: false as const, error: signErr?.message || "Could not create download link." };
+    const fileName = batch.coa_file_name || `COA-${batch.batch_number}`;
+    const [{ data: signedView, error: viewErr }, { data: signedDl, error: dlErr }] =
+      await Promise.all([
+        admin.storage.from(COA_BUCKET).createSignedUrl(batch.coa_storage_path, 60 * 30),
+        admin.storage.from(COA_BUCKET).createSignedUrl(batch.coa_storage_path, 60 * 30, {
+          download: fileName,
+        }),
+      ]);
+    const viewUrl = signedView?.signedUrl;
+    const downloadUrl = signedDl?.signedUrl || viewUrl;
+    if ((!viewUrl && !downloadUrl) || (viewErr && dlErr)) {
+      return {
+        ok: false as const,
+        error: viewErr?.message || dlErr?.message || "Could not create download link.",
+      };
     }
 
     const { data: quality } = await admin
@@ -755,15 +763,16 @@ export const getBatchCoaAccess = createServerFn({ method: "POST" })
       batch.notes ? `Remarks: ${batch.notes}` : null,
       qualityLines ? `Quality:\n${qualityLines}` : null,
       `COA file: ${batch.coa_file_name || "attached"}`,
-      `Download (valid 30 min): ${signed.signedUrl}`,
+      `View / download (valid 30 min): ${viewUrl || downloadUrl}`,
     ]
       .filter(Boolean)
       .join("\n");
 
     return {
       ok: true as const,
-      downloadUrl: signed.signedUrl,
-      fileName: batch.coa_file_name || `COA-${batch.batch_number}`,
+      viewUrl: viewUrl || downloadUrl!,
+      downloadUrl: downloadUrl || viewUrl!,
+      fileName,
       mimeType: batch.coa_mime_type || "application/octet-stream",
       shareText,
       batchNumber: batch.batch_number,

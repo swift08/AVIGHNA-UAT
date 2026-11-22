@@ -31,6 +31,14 @@ describe("inventory outbound from orders", () => {
     });
   });
 
+  it("parses purchase reference from items_summary", () => {
+    expect(parseOrderItemsSummary("Zinc Oxide · 50 kg · PO Ref: GI/PO/55/26-27")).toEqual({
+      productName: "Zinc Oxide",
+      quantity: 50,
+      purchaseReference: "GI/PO/55/26-27",
+    });
+  });
+
   it("releases outbound for cancelled, rejected, and delivered", () => {
     expect(orderCountsTowardOutbound("Pending approval")).toBe(true);
     expect(orderCountsTowardOutbound("Approved")).toBe(true);

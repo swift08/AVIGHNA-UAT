@@ -5,7 +5,13 @@ export const companies = [
     short: "Asian Apex",
     logo: "/logos/logos/asian-apex.jpg",
     gstin: "29AAAAA0001A1Z1",
-    invPrefix: "Inv AA-...",
+    invPrefix: "AA/S",
+    pan: "AAAAA0001A",
+    phone: "+91-9845000001",
+    email: "billing@asianapex.com",
+    address: "Plot 12, Peenya Industrial Area, Bengaluru-560058",
+    state: "Karnataka",
+    stateCode: "29",
     revenue: 0,
     growth: 0,
   },
@@ -15,7 +21,13 @@ export const companies = [
     short: "Avighna",
     logo: "/logos/logos/avighna.png",
     gstin: "29AAAAA0002A1Z2",
-    invPrefix: "Inv AV-...",
+    invPrefix: "AV/S",
+    pan: "AAAAA0002A",
+    phone: "+91-9845000002",
+    email: "billing@avighna.com",
+    address: "No. 42, Industrial Growth Centre, Bengaluru-560100",
+    state: "Karnataka",
+    stateCode: "29",
     revenue: 0,
     growth: 0,
   },
@@ -24,8 +36,15 @@ export const companies = [
     name: "Ganesh Inc",
     short: "Ganesh Inc",
     logo: "/logos/logos/ganesh-inc.jpg",
-    gstin: "29AAAAA0003A1Z3",
-    invPrefix: "Inv GI-...",
+    gstin: "29ACNPY2585M2ZE",
+    invPrefix: "GI/S",
+    pan: "ACNPY2585M",
+    phone: "+91-7019477940",
+    email: "ashita@ganeshinc.org",
+    address:
+      "No.1963, Sri Ganapa, Shani Mahatma Temple Street, BCCHS Layout, Raghuvanahalli, Thalagattapura, Bangalore-560109",
+    state: "Karnataka",
+    stateCode: "29",
     revenue: 0,
     growth: 0,
   },
@@ -35,7 +54,13 @@ export const companies = [
     short: "Atharva Associates",
     logo: "/logos/logos/atharva-associates.png",
     gstin: "29AAAAA0004A1Z4",
-    invPrefix: "Inv AT-...",
+    invPrefix: "AT/S",
+    pan: "AAAAA0004A",
+    phone: "+91-9845000004",
+    email: "billing@atharva.com",
+    address: "Warehouse 7, Bommasandra Industrial Area, Bengaluru-560099",
+    state: "Karnataka",
+    stateCode: "29",
     revenue: 0,
     growth: 0,
   },
@@ -79,6 +104,10 @@ export function companyRevenue(id: CompanyId) {
 }
 
 export const money = (value: number) => "₹" + Math.round(value).toLocaleString("en-IN");
+
+/** Mask financial amounts when the viewer lacks finance.view_amounts. */
+export const displayMoney = (value: number, canView: boolean) =>
+  canView ? money(value) : "—";
 
 export interface TaskItem {
   id: number | string;

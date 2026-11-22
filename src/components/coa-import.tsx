@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Download, FileUp, Loader2, Share2, ZoomIn, ZoomOut, RotateCcw } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Download, Eye, FileUp, Loader2, Share2, ZoomIn, ZoomOut, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -57,14 +57,20 @@ type ProductBatchRow = {
 export function ProductBatchesPanel({
   productId,
   productName,
+  tone = "inventory",
+  defaultOpen = false,
 }: {
   productId: string;
   productName?: string;
+  /** Delivery trips use clearer “analysis report” copy for logistics drivers. */
+  tone?: "inventory" | "delivery";
+  defaultOpen?: boolean;
 }) {
   const [batches, setBatches] = useState<ProductBatchRow[]>([]);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const isDelivery = tone === "delivery";
 
   const load = async () => {
     setLoading(true);
@@ -77,7 +83,12 @@ export function ProductBatchesPanel({
     }
   };
 
-  const openCoaAccess = async (batchId: string, mode: "download" | "share") => {
+  useEffect(() => {
+    if (defaultOpen) void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once when delivery panel mounts open
+  }, [defaultOpen, productId]);
+
+  const openCoaAccess = async (batchId: string, mode: "view" | "download" | "share") => {
     setBusyId(batchId);
     try {
       const res = await getBatchCoaAccess({
@@ -85,6 +96,12 @@ export function ProductBatchesPanel({
       });
       if (!res.ok) {
         toast.error(res.error);
+        return;
+      }
+
+      if (mode === "view") {
+        window.open(res.viewUrl || res.downloadUrl, "_blank", "noopener,noreferrer");
+        toast.success("Analysis report opened.");
         return;
       }
 
@@ -106,7 +123,7 @@ export function ProductBatchesPanel({
           await navigator.share({
             title: `COA — ${productName || "Product"} / ${res.batchNumber}`,
             text: res.shareText,
-            url: res.downloadUrl,
+            url: res.viewUrl || res.downloadUrl,
           });
           return;
         } catch (err) {
@@ -124,7 +141,7 @@ export function ProductBatchesPanel({
   };
 
   return (
-    <div className="mt-3 border-t border-border/70 pt-3">
+    <div className={isDelivery ? "mt-2" : "mt-3 border-t border-border/70 pt-3"}>
       <button
         type="button"
         className="text-[11px] font-semibold text-primary hover:underline cursor-pointer"
@@ -134,13 +151,23 @@ export function ProductBatchesPanel({
           if (next) void load();
         }}
       >
-        {open ? "Hide batches / COA" : "View batches / COA"}
+        {isDelivery
+          ? open
+            ? "Hide analysis report"
+            : "View analysis report"
+          : open
+            ? "Hide batches / COA"
+            : "View batches / COA"}
       </button>
       {open && (
         <div className="mt-2 space-y-2">
-          {loading && <p className="text-[11px] text-muted-foreground">Loading batches…</p>}
+          {loading && <p className="text-[11px] text-muted-foreground">Loading analysis report…</p>}
           {!loading && batches.length === 0 && (
-            <p className="text-[11px] text-muted-foreground">No batches recorded yet.</p>
+            <p className="text-[11px] text-muted-foreground">
+              {isDelivery
+                ? "No analysis report / batch COA found for this delivery item yet."
+                : "No batches recorded yet."}
+            </p>
           )}
           {batches.map((batch) => (
             <div
@@ -168,7 +195,7 @@ export function ProductBatchesPanel({
                 </div>
                 {batch.has_coa ? (
                   <span className="inline-flex shrink-0 items-center rounded-full border border-emerald-500/40 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-400">
-                    COA attached
+                    Analysis report
                   </span>
                 ) : (
                   <span className="inline-flex shrink-0 items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
@@ -177,8 +204,48 @@ export function ProductBatchesPanel({
                 )}
               </div>
 
+              {batch.quality && batch.quality.length > 0 && (
+                <div className="mt-2 rounded border border-border/60 bg-background/60 px-2 py-1.5 space-y-1">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                    Quality results
+                  </p>
+                  {batch.quality.slice(0, isDelivery ? 8 : 4).map((q) => (
+                    <div
+                      key={`${batch.id}-${q.parameter_name}`}
+                      className="flex items-start justify-between gap-2 text-[10px]"
+                    >
+                      <span className="text-muted-foreground">{q.parameter_name}</span>
+                      <span className="font-semibold text-foreground text-right">
+                        {q.result_value || "—"}
+                        {q.specification ? (
+                          <span className="font-normal text-muted-foreground">
+                            {" "}
+                            / {q.specification}
+                          </span>
+                        ) : null}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {batch.has_coa && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant={isDelivery ? "default" : "outline"}
+                    className="h-7 gap-1 px-2 text-[10px]"
+                    disabled={busyId === batch.id}
+                    onClick={() => void openCoaAccess(batch.id, "view")}
+                  >
+                    {busyId === batch.id ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <Eye className="size-3" />
+                    )}
+                    {isDelivery ? "Open analysis report" : "View COA"}
+                  </Button>
                   <Button
                     type="button"
                     size="sm"
@@ -187,12 +254,8 @@ export function ProductBatchesPanel({
                     disabled={busyId === batch.id}
                     onClick={() => void openCoaAccess(batch.id, "download")}
                   >
-                    {busyId === batch.id ? (
-                      <Loader2 className="size-3 animate-spin" />
-                    ) : (
-                      <Download className="size-3" />
-                    )}
-                    Download COA
+                    <Download className="size-3" />
+                    Download
                   </Button>
                   <Button
                     type="button"
@@ -203,7 +266,7 @@ export function ProductBatchesPanel({
                     onClick={() => void openCoaAccess(batch.id, "share")}
                   >
                     <Share2 className="size-3" />
-                    Share details
+                    Share
                   </Button>
                   {batch.coa_file_name && (
                     <span className="self-center text-[10px] text-muted-foreground truncate max-w-[160px]">

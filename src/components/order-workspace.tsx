@@ -20,7 +20,8 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-import { companies, money, type Order } from "@/lib/workspace-data";
+import { companies, money as moneyFormat, type Order } from "@/lib/workspace-data";
+import { ROLE_NAMES, SYSTEM_USERS, type UserProfile } from "@/lib/auth-service";
 import { useWorkspace } from "./workspace-provider";
 import { PRESET_UNITS } from "./module-workspace";
 import {
@@ -30,28 +31,67 @@ import {
   generateInvoice,
   fetchProducts,
   fetchCustomers,
+  fetchPurchaseOrders,
   fetchVehicles,
   assignOrderVehicle,
   deleteOrder,
+  parsePurchaseReference,
   type DBOrder,
   type DBProduct,
   type DBCustomer,
+  type DBPurchaseOrder,
   type DBVehicle,
 } from "@/lib/erp-service";
+
+/** Resolve who owns/created an order from notes, owner, or assigned_to. */
+export function getOrderManager(order: Order | DBOrder | null | undefined): string {
+  if (!order) return "—";
+  if ("owner" in order && typeof order.owner === "string" && order.owner.trim()) {
+    return order.owner.trim();
+  }
+  const notes = "notes" in order && typeof order.notes === "string" ? order.notes : "";
+  const tagged = notes.match(/\[Managed by:\s*([^\]]+)\]/i);
+  if (tagged?.[1]?.trim()) return tagged[1].trim();
+  const assigned =
+    "assigned_to" in order && typeof order.assigned_to === "string" ? order.assigned_to.trim() : "";
+  // Ignore UUID-looking assigned_to values — UI expects a display name.
+  if (assigned && !/^[0-9a-f-]{36}$/i.test(assigned)) return assigned;
+  return "Ravi Kumar";
+}
+
+function findStaffProfile(name: string): UserProfile | null {
+  const needle = name.trim().toLowerCase();
+  if (!needle) return null;
+  return (
+    SYSTEM_USERS.find(
+      (u) =>
+        u.name.toLowerCase() === needle ||
+        u.name.toLowerCase().includes(needle) ||
+        needle.includes(u.name.toLowerCase().split(" (")[0] || ""),
+    ) || null
+  );
+}
 
 export function OrderDetail({
   order,
   onClose,
   onUpdate,
+  allOrders = [],
+  onOpenOrder,
 }: {
   order: Order | DBOrder | null;
   onClose: () => void;
   onUpdate?: () => void;
+  allOrders?: (Order | DBOrder)[];
+  onOpenOrder?: (next: Order | DBOrder) => void;
 }) {
   const { hasPermission, currentUser } = useWorkspace();
+  const canViewAmounts = hasPermission("finance.view_amounts");
+  const money = (value: number) => (canViewAmounts ? moneyFormat(value) : "—");
   const [rejectMode, setRejectMode] = useState(false);
   const [rejectReason, setRejectReason] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
+  const [managerOpen, setManagerOpen] = useState(false);
 
   // Transport and Vehicle Assignment state
   const [assignVehicleMode, setAssignVehicleMode] = useState(false);
@@ -67,6 +107,7 @@ export function OrderDetail({
 
   useEffect(() => {
     if (order) {
+      setManagerOpen(false);
       const mode =
         "transport_mode" in order && order.transport_mode === "Manufacturer Vehicle"
           ? "Manufacturer Vehicle"
@@ -108,7 +149,14 @@ export function OrderDetail({
   const orderAmount = "amount" in order ? order.amount : order.total_amount;
   const orderCustomer = "customer" in order ? order.customer : order.customer_name;
   const orderItems = "items" in order ? order.items : order.items_summary;
-  const orderOwner = "owner" in order ? order.owner : order.assigned_to || "Ravi Kumar";
+  const purchaseReference = parsePurchaseReference(
+    typeof orderItems === "string" ? orderItems : undefined,
+  );
+  const orderOwner = getOrderManager(order);
+  const managerProfile = findStaffProfile(orderOwner);
+  const managerOrders = allOrders.filter(
+    (o) => getOrderManager(o).toLowerCase() === orderOwner.toLowerCase(),
+  );
   const orderInitials =
     "initials" in order
       ? order.initials
@@ -536,10 +584,30 @@ export function OrderDetail({
               <p className="eyebrow">Line items</p>
               <div className="mt-4 flex items-center gap-3">
                 <Package size={20} className="text-primary" />
-                <span className="text-sm">{orderItems}</span>
+                <div className="min-w-0">
+                  <span className="text-sm">{orderItems}</span>
+                  {purchaseReference ? (
+                    <p className="mt-1 text-xs font-semibold text-foreground">
+                      Purchase Ref:{" "}
+                      <span className="font-mono text-primary">{purchaseReference}</span>
+                    </p>
+                  ) : (
+                    <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                      No purchase reference on this product line
+                    </p>
+                  )}
+                </div>
               </div>
               <p className="mt-6 text-xs text-muted-foreground">
-                Managed by <span className="font-semibold text-foreground">{orderOwner}</span>
+                Managed by{" "}
+                <button
+                  type="button"
+                  onClick={() => setManagerOpen(true)}
+                  className="inline-flex items-center gap-1 rounded-md bg-primary/10 px-1.5 py-0.5 font-semibold text-primary underline-offset-2 hover:bg-primary/15 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 cursor-pointer"
+                  title={`View ${orderOwner}'s orders and details`}
+                >
+                  {orderOwner}
+                </button>
               </p>
               {currentUser?.role === "super_admin" && (
                 <div className="border-t border-border pt-4 mt-6">
@@ -564,6 +632,115 @@ export function OrderDetail({
                   </Button>
                 </div>
               )}
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      {/* MANAGER / CREATOR PROFILE + ORDERS */}
+      <Sheet open={managerOpen} onOpenChange={setManagerOpen}>
+        <SheetContent className="w-full sm:max-w-md overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2">
+              <span className="flex size-8 items-center justify-center rounded-full bg-primary/15 text-xs font-bold text-primary">
+                {(managerProfile?.initials ||
+                  orderOwner
+                    .split(" ")
+                    .map((w) => w[0])
+                    .slice(0, 2)
+                    .join("")
+                    .toUpperCase())}
+              </span>
+              {orderOwner}
+            </SheetTitle>
+            <SheetDescription>
+              Orders and profile for this sales owner.
+            </SheetDescription>
+          </SheetHeader>
+
+          <div className="mt-6 space-y-5">
+            <div className="rounded-xl border border-border bg-card p-4 space-y-2">
+              <p className="eyebrow !text-[9px]">Profile</p>
+              <p className="text-sm font-semibold text-foreground">{orderOwner}</p>
+              <p className="text-xs text-muted-foreground">
+                {managerProfile?.roleName ||
+                  ROLE_NAMES[managerProfile?.role || "sales"] ||
+                  "Sales"}
+              </p>
+              {managerProfile?.email && (
+                <p className="text-xs text-muted-foreground">{managerProfile.email}</p>
+              )}
+              {managerProfile?.phone && (
+                <p className="text-xs text-muted-foreground">{managerProfile.phone}</p>
+              )}
+              {managerProfile?.company && (
+                <p className="text-xs text-muted-foreground">
+                  Company scope:{" "}
+                  {managerProfile.company === "all"
+                    ? "All companies"
+                    : companies.find((c) => c.id === managerProfile.company)?.short ||
+                      managerProfile.company}
+                </p>
+              )}
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <p className="eyebrow !text-[9px]">Orders created / managed</p>
+                <span className="text-[11px] font-semibold text-muted-foreground">
+                  {managerOrders.length} order{managerOrders.length === 1 ? "" : "s"}
+                </span>
+              </div>
+              <div className="space-y-2">
+                {managerOrders.length === 0 && (
+                  <p className="text-xs text-muted-foreground rounded-lg border border-dashed border-border px-3 py-4 text-center">
+                    No other orders found for {orderOwner} in this view.
+                  </p>
+                )}
+                {managerOrders.map((o) => {
+                  const cust = "customer" in o ? o.customer : o.customer_name;
+                  const amt = "amount" in o ? o.amount : o.total_amount;
+                  const comp = "company" in o ? o.company : o.company_id;
+                  const dateStr = "date" in o ? o.date : o.created_at?.split("T")[0];
+                  const isCurrent = o.id === order.id;
+                  return (
+                    <button
+                      key={o.id}
+                      type="button"
+                      disabled={isCurrent || !onOpenOrder}
+                      onClick={() => {
+                        if (!onOpenOrder || isCurrent) return;
+                        setManagerOpen(false);
+                        onOpenOrder(o);
+                      }}
+                      className={`w-full text-left rounded-xl border px-3 py-2.5 transition-colors ${
+                        isCurrent
+                          ? "border-primary/40 bg-primary/5"
+                          : "border-border bg-card hover:border-primary/30 hover:bg-muted/40 cursor-pointer"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground">{cust}</p>
+                          <p className="mt-0.5 text-[11px] text-muted-foreground">
+                            #{o.id} · {dateStr || "—"} ·{" "}
+                            {companies.find((c) => c.id === comp)?.short || comp}
+                          </p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="text-xs font-bold">{money(Number(amt) || 0)}</p>
+                          <p className="mt-0.5 text-[10px] text-muted-foreground">{o.status}</p>
+                        </div>
+                      </div>
+                      {isCurrent && (
+                        <p className="mt-1.5 text-[10px] font-semibold text-primary">
+                          Currently open
+                        </p>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </SheetContent>
@@ -777,6 +954,8 @@ export function OrderTable({
   openCreateOnMount?: boolean | undefined;
 }) {
   const { hasPermission, currentUser } = useWorkspace();
+  const canViewAmounts = hasPermission("finance.view_amounts");
+  const money = (value: number) => (canViewAmounts ? moneyFormat(value) : "—");
   const [selected, setSelected] = useState<Order | DBOrder | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -796,6 +975,9 @@ export function OrderTable({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [productsList, setProductsList] = useState<DBProduct[]>([]);
   const [customersList, setCustomersList] = useState<DBCustomer[]>([]);
+  const [purchaseOrdersList, setPurchaseOrdersList] = useState<DBPurchaseOrder[]>([]);
+  const [purchaseReference, setPurchaseReference] = useState("");
+  const [purchaseRefMode, setPurchaseRefMode] = useState<"select" | "manual">("select");
 
   // Transport and vehicle state for creation
   const [createTransportMode, setCreateTransportMode] = useState<
@@ -876,6 +1058,9 @@ export function OrderTable({
         },
       );
       fetchVehicles().then(setVehiclesList);
+      fetchPurchaseOrders(companyId as "asian" | "avighna" | "ganesh" | "atharva" | "all").then(
+        setPurchaseOrdersList,
+      );
     }
   }, [createOpen, companyId, customerName, deliveryAddress]);
 
@@ -886,6 +1071,18 @@ export function OrderTable({
       product.company_id === companyId ||
       product.company_id === "all",
   );
+
+  const matchingPurchaseOrders = useMemo(() => {
+    const productKey = (selectedProduct?.name || productName).trim().toLowerCase();
+    if (!productKey) return purchaseOrdersList;
+    const matched = purchaseOrdersList.filter(
+      (po) =>
+        po.product_name.trim().toLowerCase() === productKey ||
+        po.product_name.toLowerCase().includes(productKey) ||
+        (selectedProduct?.id && po.product_id === selectedProduct.id),
+    );
+    return matched.length > 0 ? matched : purchaseOrdersList;
+  }, [purchaseOrdersList, productName, selectedProduct]);
 
   const availableStock = useMemo(() => {
     if (!selectedProduct) return null;
@@ -899,6 +1096,14 @@ export function OrderTable({
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedProduct) return;
+
+    const purchaseRef = purchaseReference.trim();
+    if (!purchaseRef) {
+      toast.error("Purchase reference required", {
+        description: "Every product in the order must have a purchase reference number.",
+      });
+      return;
+    }
 
     const qty = parseFloat(quantity) || 1;
     const finalUnit = isCustomUnit ? customUnit.trim() || "units" : unit;
@@ -929,6 +1134,7 @@ export function OrderTable({
       quantity: number;
       unit: string;
       unitPrice: number;
+      purchaseReference: string;
       catalogPrice?: number;
       wholesalePrice?: number;
       deliveryAddress?: string;
@@ -945,6 +1151,7 @@ export function OrderTable({
       quantity: qty,
       unit: finalUnit,
       unitPrice: price,
+      purchaseReference: purchaseRef,
       creatorName: currentUser?.name || "Ravi Kumar",
       transportMode: createTransportMode,
     };
@@ -974,8 +1181,12 @@ export function OrderTable({
       return;
     }
 
-    toast.success("Order submitted", {
-      description: `Order #${res.orderId} created for ${customerName}.`,
+    const autoApproved =
+      currentUser?.role === "super_admin" || currentUser?.permissions?.includes("*");
+    toast.success(autoApproved ? "Order created & approved" : "Order submitted", {
+      description: autoApproved
+        ? `Order #${res.orderId} for ${customerName} is approved — no further approval needed.`
+        : `Order #${res.orderId} created for ${customerName}.`,
     });
     if (onRefresh) onRefresh();
     setCreateOpen(false);
@@ -984,6 +1195,8 @@ export function OrderTable({
     setIsCustomUnit(false);
     setCustomUnit("");
     setShortageNotice(null);
+    setPurchaseReference("");
+    setPurchaseRefMode("select");
     setCreateTransportMode("Logistics / Assigned Vehicle");
     setCreateVehiclePlate("");
     setCreateDriverName("");
@@ -1128,7 +1341,9 @@ export function OrderTable({
 
       <OrderDetail
         order={selected}
+        allOrders={rows}
         onClose={() => setSelected(null)}
+        onOpenOrder={(next) => setSelected(next)}
         onUpdate={() => {
           if (onRefresh) onRefresh();
         }}
@@ -1161,6 +1376,7 @@ export function OrderTable({
                   setCompanyId(e.target.value);
                   setSelectedProduct(null);
                   setProductName("");
+                  setPurchaseReference("");
                 }}
               >
                 {companies.map((c) => (
@@ -1212,6 +1428,8 @@ export function OrderTable({
                   const product = inventoryItems.find((item) => item.id === e.target.value);
                   setSelectedProduct(product || null);
                   setProductName(product?.name || "");
+                  setPurchaseReference("");
+                  setPurchaseRefMode("select");
                   if (product) {
                     setIsCustomUnit(false);
                     setUnit(product.unit);
@@ -1228,13 +1446,13 @@ export function OrderTable({
                   const available = Number(product.on_hand) - Number(product.reserved);
                   return (
                     <option key={product.id || product.code} value={product.id}>
-                      {product.name} ({product.code}) — {available} {product.unit} available · ₹
-                      {product.unit_price}
+                      {product.name} ({product.code}) — {available} {product.unit} available
+                      {canViewAmounts ? ` · ₹${product.unit_price}` : ""}
                     </option>
                   );
                 })}
               </select>
-              {selectedProduct && (
+              {selectedProduct && canViewAmounts && (
                 <div className="mt-1 flex items-center justify-between rounded border border-border bg-muted/40 px-2.5 py-1.5 text-[11px]">
                   <div>
                     <span className="text-muted-foreground font-medium">Selling Price: </span>
@@ -1251,6 +1469,61 @@ export function OrderTable({
                 </div>
               )}
             </label>
+            <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
+              <label className="drawer-field">
+                Purchase Reference Number
+                <span className="ml-1 text-[10px] font-medium text-muted-foreground">
+                  (required for every product)
+                </span>
+                {purchaseRefMode === "select" ? (
+                  <select
+                    required
+                    value={purchaseReference}
+                    onChange={(e) => {
+                      if (e.target.value === "__manual__") {
+                        setPurchaseRefMode("manual");
+                        setPurchaseReference("");
+                        return;
+                      }
+                      setPurchaseReference(e.target.value);
+                    }}
+                  >
+                    <option value="">Select purchase reference…</option>
+                    {matchingPurchaseOrders.map((po) => (
+                      <option key={po.id} value={po.id}>
+                        {po.id} · {po.product_name} · {po.supplier_name}
+                      </option>
+                    ))}
+                    <option value="__manual__">Enter reference manually…</option>
+                  </select>
+                ) : (
+                  <div className="space-y-1.5">
+                    <input
+                      required
+                      value={purchaseReference}
+                      onChange={(e) => setPurchaseReference(e.target.value)}
+                      placeholder="e.g. GI/PO/55/26-27"
+                      className="font-mono"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPurchaseRefMode("select");
+                        setPurchaseReference("");
+                      }}
+                      className="text-[10px] font-bold text-muted-foreground hover:text-foreground underline-offset-2 hover:underline cursor-pointer"
+                    >
+                      Choose from purchase orders
+                    </button>
+                  </div>
+                )}
+              </label>
+              {!purchaseReference.trim() && (
+                <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                  Link this product line to a purchase reference (PO number) before submitting.
+                </p>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <label className="drawer-field">
                 Quantity
@@ -1321,27 +1594,34 @@ export function OrderTable({
                 )}
               </label>
             </div>
-            <label className="drawer-field">
-              Selling Price per Unit (₹)
-              <input
-                type="number"
-                required
-                step="any"
-                value={unitPrice}
-                onChange={(e) => setUnitPrice(e.target.value)}
-              />
-              {selectedProduct && parseFloat(unitPrice) < Number(selectedProduct.unit_price) && (
-                <div className="mt-1.5 flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-800 dark:text-amber-300">
-                  <AlertTriangle className="size-3.5 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
-                  <div>
-                    <span className="font-bold">Super Admin approval required:</span> Entered
-                    selling price (₹{unitPrice}) is below catalog Selling Price (₹
-                    {selectedProduct.unit_price}). This order requires Super Admin authorization
-                    before moving to Accounts.
+            {canViewAmounts ? (
+              <label className="drawer-field">
+                Selling Price per Unit (₹)
+                <input
+                  type="number"
+                  required
+                  step="any"
+                  value={unitPrice}
+                  onChange={(e) => setUnitPrice(e.target.value)}
+                />
+                {selectedProduct && parseFloat(unitPrice) < Number(selectedProduct.unit_price) && (
+                  <div className="mt-1.5 flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-800 dark:text-amber-300">
+                    <AlertTriangle className="size-3.5 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                    <div>
+                      <span className="font-bold">Super Admin approval required:</span> Entered
+                      selling price (₹{unitPrice}) is below catalog Selling Price (₹
+                      {selectedProduct.unit_price}). This order requires Super Admin authorization
+                      before moving to Accounts.
+                    </div>
                   </div>
-                </div>
-              )}
-            </label>
+                )}
+              </label>
+            ) : (
+              <p className="text-[11px] text-muted-foreground rounded-md border border-border bg-muted/30 px-2.5 py-2">
+                Order will use the catalog selling price. Revenue amounts are visible only to
+                Accounts and Super Admin.
+              </p>
+            )}
             <label className="drawer-field">
               Delivery Address
               <input

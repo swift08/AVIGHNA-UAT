@@ -34,6 +34,9 @@ export const createStaffLogin = createServerFn({ method: "POST" })
     }) => input,
   )
   .handler(async ({ data }) => {
+    if (!canManageStaff(data.creatorRole)) {
+      return { ok: false as const, error: "Only the owner can create accounts." };
+    }
     const allowed = new Set(featuresCreatorCanAssign(data.creatorRole));
     const features = parseFeatureIds(data.features);
     if (!features.length || features.some((feature) => !allowed.has(feature))) {

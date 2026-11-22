@@ -102,13 +102,26 @@ export const ACCESS_FEATURES: AccessFeature[] = [
     id: "invoices",
     name: "Invoices",
     description: "Invoices and payment collection",
-    permissions: ["invoices.view", "invoices.generate", "payments.record", "orders.view", "customers.view"],
+    permissions: [
+      "invoices.view",
+      "invoices.generate",
+      "payments.record",
+      "orders.view",
+      "customers.view",
+      "finance.view_amounts",
+    ],
+  },
+  {
+    id: "collections",
+    name: "Payment collections",
+    description: "View payments due and record field collections",
+    permissions: ["invoices.view", "payments.record", "customers.view", "orders.view"],
   },
   {
     id: "analytics",
     name: "Analytics",
     description: "Revenue and performance charts",
-    permissions: ["analytics.view"],
+    permissions: ["analytics.view", "finance.view_amounts"],
   },
   {
     id: "credit",
@@ -158,9 +171,6 @@ export function roleForFeatures(featureIds: string[]): RoleType {
 
 export function featuresCreatorCanAssign(role: RoleType | undefined): string[] {
   if (role === "super_admin") return ACCESS_FEATURES.map((feature) => feature.id);
-  if (role === "supervisor") {
-    return ["tasks", "leads", "customers", "field_visits", "orders", "logistics"];
-  }
   return [];
 }
 
@@ -168,7 +178,6 @@ export function rolesCreatorCanAssign(role: RoleType | undefined): RoleType[] {
   if (role === "super_admin") {
     return ["super_admin", "sales", "supervisor", "accounts", "logistics"];
   }
-  if (role === "supervisor") return ["sales", "logistics"];
   return [];
 }
 
@@ -223,6 +232,8 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "tasks.view",
     "tasks.manage",
     "inventory.view",
+    "invoices.view",
+    "payments.record",
   ],
   supervisor: [
     "orders.view",
@@ -235,15 +246,11 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "inventory.view",
     "inventory.adjust",
     "inventory.shortage_approve",
-    "purchases.view",
-    "purchases.create",
-    "purchases.receive",
     "logistics.view",
     "tasks.view",
     "tasks.manage",
     "field_visits.view",
     "customers.view",
-    "analytics.view",
   ],
   accounts: [
     "invoices.view",
@@ -253,6 +260,9 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "tasks.view",
     "customers.view",
     "analytics.view",
+    "finance.view_amounts",
+    "purchases.view",
+    "purchases.create",
   ],
   logistics: [
     "logistics.view",
@@ -261,6 +271,7 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "orders.view",
     "tasks.view",
     "customers.view",
+    "purchases.view",
   ],
   custom: [],
 };
@@ -280,6 +291,7 @@ export const PERMISSION_LABELS: Record<string, { name: string; module: string }>
   "invoices.view": { name: "View Invoices", module: "Finance" },
   "invoices.generate": { name: "Generate Invoices", module: "Finance" },
   "payments.record": { name: "Record Payments", module: "Finance" },
+  "finance.view_amounts": { name: "View Revenue & Amounts", module: "Finance" },
   "logistics.view": { name: "View Deliveries", module: "Logistics" },
   "logistics.dispatch": { name: "Assign & Dispatch Vehicles", module: "Logistics" },
   "logistics.deliver": { name: "Complete & Confirm Deliveries", module: "Logistics" },
@@ -467,6 +479,11 @@ const PERMISSION_ALIASES: Record<string, string[]> = {
   "leads.manage": ["leads.create", "leads.edit"],
   "customers.manage": ["customers.create", "customers.edit"],
 };
+
+/** Revenue, invoice totals, catalog prices, and other ₹ amounts — accounts + super admin only. */
+export function canViewAmounts(user: UserProfile | null): boolean {
+  return hasUserPermission(user, "finance.view_amounts");
+}
 
 export function hasUserPermission(user: UserProfile | null, permission: string): boolean {
   if (!user) return false;

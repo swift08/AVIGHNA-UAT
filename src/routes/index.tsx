@@ -108,14 +108,8 @@ function Overview() {
   ).length;
   const lowStockCount = dbProducts.filter((p) => p.on_hand - p.reserved < p.reorder_level).length;
 
-  const hideRevenue =
-    currentUser?.role === "sales" ||
-    currentUser?.role === "logistics" ||
-    (!hasPermission("analytics.view") &&
-      !hasPermission("invoices.generate") &&
-      currentUser?.role !== "super_admin" &&
-      currentUser?.role !== "supervisor" &&
-      currentUser?.role !== "accounts");
+  // Only Accounts + Super Admin see revenue / outstanding amounts.
+  const hideRevenue = !hasPermission("finance.view_amounts");
 
   const kpis = [
     ...(!hideRevenue

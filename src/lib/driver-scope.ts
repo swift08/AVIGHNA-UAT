@@ -13,6 +13,7 @@ type OrderRow = {
   assigned_driver?: string | null | undefined;
   customer_id?: string | null | undefined;
   customer_name: string;
+  items_summary?: string | null | undefined;
 };
 type DeliveryRow = {
   order_id: string;
@@ -24,6 +25,17 @@ type PaymentRow = { invoice_id: string };
 type CustomerRow = { id?: string | null | undefined; name: string };
 type TaskRow = { assigned_to_name?: string | null | undefined };
 type VehicleRow = { id: string; plate_number: string; driver_name?: string | null | undefined };
+type ProductRow = {
+  id?: string | null | undefined;
+  name: string;
+  code?: string | null | undefined;
+};
+
+/** Product name from `Name · qty unit · PO Ref: …` order line summaries. */
+function productNameFromItemsSummary(summary?: string | null) {
+  if (!summary?.trim()) return "";
+  return summary.trim().split("·")[0]?.trim().toLowerCase() || "";
+}
 
 export type DriverScope = {
   orders?: OrderRow[];
@@ -33,7 +45,7 @@ export type DriverScope = {
   customers?: CustomerRow[];
   tasks?: TaskRow[];
   vehicles?: VehicleRow[];
-  products?: unknown[];
+  products?: ProductRow[];
   leads?: unknown[];
   visits?: unknown[];
   purchaseOrders?: unknown[];
@@ -68,6 +80,20 @@ export function scopeForDriver<T extends DriverScope>(user: Viewer, data: T): T 
       }),
   );
 
+  // Keep products on the driver's assigned orders so they can open analysis/COA reports.
+  const deliveryProductNames = new Set(
+    orders.map((o) => productNameFromItemsSummary(o.items_summary)).filter(Boolean),
+  );
+  const products = (data.products ?? []).filter((p) => {
+    const name = p.name.trim().toLowerCase();
+    const code = (p.code || "").trim().toLowerCase();
+    if (!name && !code) return false;
+    for (const key of deliveryProductNames) {
+      if (name === key || code === key || name.includes(key) || key.includes(name)) return true;
+    }
+    return false;
+  });
+
   return {
     ...data,
     ...(data.orders ? { orders } : {}),
@@ -77,10 +103,11 @@ export function scopeForDriver<T extends DriverScope>(user: Viewer, data: T): T 
     ...(data.customers ? { customers } : {}),
     ...(data.tasks ? { tasks } : {}),
     ...(data.vehicles ? { vehicles } : {}),
-    ...(data.products ? { products: [] } : {}),
+    ...(data.products ? { products } : {}),
     ...(data.leads ? { leads: [] } : {}),
     ...(data.visits ? { visits: [] } : {}),
-    ...(data.purchaseOrders ? { purchaseOrders: [] } : {}),
+    // Accounts-uploaded purchase orders stay visible to logistics.
+    ...(data.purchaseOrders ? { purchaseOrders: data.purchaseOrders } : {}),
     ...(data.creditNotes ? { creditNotes: [] } : {}),
   } as T;
 }

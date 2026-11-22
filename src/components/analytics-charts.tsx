@@ -12,7 +12,7 @@ import {
   Tooltip,
   Legend,
 } from "recharts";
-import { companies, money } from "@/lib/workspace-data";
+import { companies, money as moneyFormat } from "@/lib/workspace-data";
 import type {
   DBOrder,
   DBCustomer,
@@ -21,6 +21,13 @@ import type {
   DBFieldVisit,
   DBProduct,
 } from "@/lib/erp-service";
+import { useWorkspace } from "./workspace-provider";
+
+function useMoney() {
+  const { hasPermission } = useWorkspace();
+  const canView = hasPermission("finance.view_amounts");
+  return (value: number) => (canView ? moneyFormat(value) : "—");
+}
 
 const COMPANY_COLORS: Record<string, string> = {
   asian: "#0ea5e9", // Sky Blue
@@ -45,6 +52,7 @@ export function CompanyRevenuePieChart({
   orders: DBOrder[];
   invoices: DBInvoice[];
 }) {
+  const money = useMoney();
   const [metric, setMetric] = useState<"revenue" | "orders">("revenue");
 
   const data = companies.map((c) => {
@@ -297,6 +305,7 @@ export function CompanyComparisonBarChart({
   invoices: DBInvoice[];
   customers: DBCustomer[];
 }) {
+  const money = useMoney();
   const [viewMode, setViewMode] = useState<"finance" | "volume">("finance");
 
   const rawData = companies.map((c) => {
@@ -669,6 +678,7 @@ export function ConversionFunnelBarChart({
 }
 
 export function ProductCategoryCharts({ products }: { products: DBProduct[] }) {
+  const money = useMoney();
   const [metric, setMetric] = useState<"value" | "units">("value");
 
   const categoryMap: Record<string, { count: number; units: number; value: number }> = {};

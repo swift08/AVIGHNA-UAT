@@ -71,6 +71,7 @@ import {
 } from "@/lib/notification-service";
 import { LoginPage } from "./login-page";
 import { isDemoAuthEnabled } from "@/lib/security";
+import { SuperAdminUserActivityButton } from "./super-admin-user-activity";
 
 export const navigation = [
   {
@@ -86,6 +87,13 @@ export const navigation = [
       { name: "Leads", url: "/leads", icon: Users, perm: "leads.view" },
       { name: "Customers", url: "/customers", icon: Building2, perm: "customers.view" },
       { name: "Field visits", url: "/field-visits", icon: MapPin, perm: "field_visits.view" },
+      {
+        name: "Payments due",
+        url: "/accounts",
+        icon: CreditCard,
+        perm: "payments.record",
+        salesOnly: true,
+      },
     ],
   },
   {
@@ -102,9 +110,14 @@ export const navigation = [
     items: [
       { name: "Invoices", url: "/accounts", icon: CreditCard, perm: "invoices.view" },
       { name: "Credit control", url: "/credit", icon: Scale, perm: "credit.view" },
-      { name: "Analytics", url: "/analytics", icon: ArrowUpRight, perm: "analytics.view" },
+      {
+        name: "Analytics",
+        url: "/analytics",
+        icon: ArrowUpRight,
+        perm: "analytics.view",
+        accountsOrSuperAdminOnly: true,
+      },
       { name: "Administration", url: "/administration", icon: Settings2, perm: "admin.manage" },
-      { name: "Team logins", url: "/administration", icon: Users, supervisorOnly: true },
     ],
   },
 ];
@@ -114,8 +127,16 @@ function navVisible(
   role: string | undefined,
   hasPermission: (permission: string) => boolean,
 ) {
-  if ("supervisorOnly" in item && item.supervisorOnly) return role === "supervisor";
   if ("superAdminOnly" in item && item.superAdminOnly) return role === "super_admin";
+  if ("salesOnly" in item && item.salesOnly) return role === "sales" && hasPermission(item.perm!);
+  if ("accountsOrSuperAdminOnly" in item && item.accountsOrSuperAdminOnly) {
+    return (
+      (role === "accounts" || role === "super_admin") &&
+      (!item.perm || hasPermission(item.perm))
+    );
+  }
+  // Sales uses "Payments due" instead of the Finance Invoices link.
+  if (item.name === "Invoices" && role === "sales") return false;
   return !item.perm || hasPermission(item.perm);
 }
 
@@ -491,6 +512,9 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                 ))}
               </DropdownMenuContent>
             </DropdownMenu>
+            {(currentUser?.role === "super_admin" || hasPermission("*")) && (
+              <SuperAdminUserActivityButton />
+            )}
             <Button
               variant="ghost"
               size="icon"
@@ -587,6 +611,15 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
             >
               <Building2 className="size-4" />
               <span>Customers</span>
+            </Link>
+          )}
+          {currentUser.role === "sales" && hasPermission("payments.record") && (
+            <Link
+              to="/accounts"
+              className={`mobile-bottom-nav-item ${path === "/accounts" ? "active" : ""}`}
+            >
+              <CreditCard className="size-4" />
+              <span>Payments</span>
             </Link>
           )}
         </nav>

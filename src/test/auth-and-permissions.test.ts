@@ -47,7 +47,7 @@ describe("Avighna One — Authentication, Security & Granular Permissions Audit"
       expect(hasUserPermission(owner, "non_existent_perm")).toBe(true);
     });
 
-    it("sales role can create orders, manage leads, customers, and field visits, but cannot approve orders or generate invoices", () => {
+    it("sales role can create orders, manage leads, customers, field visits, and collect payments, but cannot approve orders or generate invoices", () => {
       const sales = SYSTEM_USERS.find((u) => u.role === "sales")!;
       expect(hasUserPermission(sales, "orders.create")).toBe(true);
       expect(hasUserPermission(sales, "leads.manage")).toBe(true);
@@ -55,28 +55,33 @@ describe("Avighna One — Authentication, Security & Granular Permissions Audit"
       expect(hasUserPermission(sales, "customers.manage")).toBe(true);
       expect(hasUserPermission(sales, "field_visits.conduct")).toBe(true);
       expect(hasUserPermission(sales, "tasks.manage")).toBe(true);
+      expect(hasUserPermission(sales, "invoices.view")).toBe(true);
+      expect(hasUserPermission(sales, "payments.record")).toBe(true);
 
-      // Must NOT have supervisor or accounts or admin permissions
+      // Must NOT have supervisor or full accounts/admin permissions
       expect(hasUserPermission(sales, "orders.approve")).toBe(false);
       expect(hasUserPermission(sales, "invoices.generate")).toBe(false);
-      expect(hasUserPermission(sales, "payments.record")).toBe(false);
+      expect(hasUserPermission(sales, "finance.view_amounts")).toBe(false);
       expect(hasUserPermission(sales, "logistics.dispatch")).toBe(false);
       expect(hasUserPermission(sales, "admin.manage")).toBe(false);
     });
 
-    it("supervisor role can approve orders, adjust inventory, and manage purchases, but cannot generate invoices or dispatch", () => {
+    it("supervisor role can approve orders and adjust inventory, but cannot use purchases, generate invoices, or dispatch", () => {
       const supervisor = SYSTEM_USERS.find((u) => u.role === "supervisor")!;
       expect(hasUserPermission(supervisor, "orders.approve")).toBe(true);
       expect(hasUserPermission(supervisor, "inventory.adjust")).toBe(true);
       expect(hasUserPermission(supervisor, "inventory.shortage_approve")).toBe(true);
-      expect(hasUserPermission(supervisor, "purchases.create")).toBe(true);
-      expect(hasUserPermission(supervisor, "purchases.receive")).toBe(true);
 
-      // Must NOT have accounts or logistics permissions
+      // Must NOT have purchases, accounts, analytics, amounts, or logistics dispatch
+      expect(hasUserPermission(supervisor, "purchases.view")).toBe(false);
+      expect(hasUserPermission(supervisor, "purchases.create")).toBe(false);
+      expect(hasUserPermission(supervisor, "purchases.receive")).toBe(false);
       expect(hasUserPermission(supervisor, "invoices.generate")).toBe(false);
       expect(hasUserPermission(supervisor, "payments.record")).toBe(false);
       expect(hasUserPermission(supervisor, "logistics.dispatch")).toBe(false);
       expect(hasUserPermission(supervisor, "admin.manage")).toBe(false);
+      expect(hasUserPermission(supervisor, "analytics.view")).toBe(false);
+      expect(hasUserPermission(supervisor, "finance.view_amounts")).toBe(false);
     });
 
     it("accounts role can view & generate invoices and record payments, but cannot approve orders or dispatch logistics", () => {
@@ -84,12 +89,29 @@ describe("Avighna One — Authentication, Security & Granular Permissions Audit"
       expect(hasUserPermission(accounts, "invoices.view")).toBe(true);
       expect(hasUserPermission(accounts, "invoices.generate")).toBe(true);
       expect(hasUserPermission(accounts, "payments.record")).toBe(true);
+      expect(hasUserPermission(accounts, "finance.view_amounts")).toBe(true);
+      expect(hasUserPermission(accounts, "purchases.view")).toBe(true);
+      expect(hasUserPermission(accounts, "purchases.create")).toBe(true);
 
       // Must NOT have operations actions
       expect(hasUserPermission(accounts, "orders.approve")).toBe(false);
       expect(hasUserPermission(accounts, "inventory.adjust")).toBe(false);
       expect(hasUserPermission(accounts, "purchases.receive")).toBe(false);
       expect(hasUserPermission(accounts, "logistics.dispatch")).toBe(false);
+    });
+
+    it("only accounts and super admin can view revenue amounts", () => {
+      const owner = SYSTEM_USERS.find((u) => u.role === "super_admin")!;
+      const accounts = SYSTEM_USERS.find((u) => u.role === "accounts")!;
+      const sales = SYSTEM_USERS.find((u) => u.role === "sales")!;
+      const supervisor = SYSTEM_USERS.find((u) => u.role === "supervisor")!;
+      const logistics = SYSTEM_USERS.find((u) => u.role === "logistics")!;
+
+      expect(hasUserPermission(owner, "finance.view_amounts")).toBe(true);
+      expect(hasUserPermission(accounts, "finance.view_amounts")).toBe(true);
+      expect(hasUserPermission(sales, "finance.view_amounts")).toBe(false);
+      expect(hasUserPermission(supervisor, "finance.view_amounts")).toBe(false);
+      expect(hasUserPermission(logistics, "finance.view_amounts")).toBe(false);
     });
 
     it("logistics role can view deliveries, dispatch vehicles, and deliver goods, but cannot alter financials or approve stock", () => {
@@ -209,7 +231,7 @@ describe("Avighna One — Authentication, Security & Granular Permissions Audit"
       expect(permissionsForFeatures(["leads"])).not.toContain("invoices.generate");
       expect(roleForFeatures(["logistics"])).toBe("logistics");
       expect(roleForFeatures(["leads", "orders"])).toBe("custom");
-      expect(featuresCreatorCanAssign("supervisor")).not.toContain("administration");
+      expect(featuresCreatorCanAssign("supervisor")).toEqual([]);
       expect(featuresCreatorCanAssign("super_admin")).toContain("administration");
 
       const profile = profileFromAuth({
