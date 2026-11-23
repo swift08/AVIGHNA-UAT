@@ -4421,3 +4421,69 @@ html.driver-mobile .leads-directory-head,
 .login-screen-field .login-brand {
   font-size: 32px;
 }
+
+/* Field app OTA update prompt */
+.field-update-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10050;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  padding-top: calc(24px + env(safe-area-inset-top, 0px));
+  background: rgba(15, 23, 42, 0.55);
+}
+.field-update-card {
+  width: min(100%, 360px);
+  background: #fff;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 16px;
+  padding: 22px 20px 18px;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.22);
+}
+.field-update-card h2 {
+  margin: 0 0 8px;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+.field-update-card p {
+  margin: 0;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  color: #475569;
+}
+.field-update-error {
+  margin-top: 10px !important;
+  color: #b91c1c !important;
+}
+.field-update-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 18px;
+}
+.field-update-later,
+.field-update-download {
+  flex: 1;
+  min-height: 44px;
+  border-radius: 10px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.field-update-later {
+  border: 1px solid #cbd5e1;
+  background: #fff;
+  color: #334155;
+}
+.field-update-download {
+  border: 0;
+  background: var(--primary, #0f766e);
+  color: #fff;
+}
+.field-update-later:disabled,
+.field-update-download:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+

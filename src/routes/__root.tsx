@@ -12,6 +12,7 @@ import {
 import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
+import { FieldAppUpdateDialog } from "@/components/field-app-update-dialog";
 import { WorkspaceProvider } from "@/components/workspace-provider";
 import { WorkspaceShell } from "@/components/workspace-shell";
 import { Toaster } from "@/components/ui/sonner";
@@ -145,6 +146,7 @@ function RootComponent() {
         <WorkspaceShell>
           <Outlet />
         </WorkspaceShell>
+        <FieldAppUpdateDialog />
         <Toaster richColors position="top-right" />
       </WorkspaceProvider>
     </QueryClientProvider>
