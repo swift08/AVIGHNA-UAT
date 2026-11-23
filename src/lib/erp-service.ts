@@ -88,6 +88,22 @@ export interface DBCustomer {
   created_at?: string | undefined;
 }
 
+export interface DBSupplier {
+  id?: string | undefined;
+  company_id: string;
+  name: string;
+  initials: string;
+  contact_person?: string | undefined;
+  phone?: string | undefined;
+  email?: string | undefined;
+  address?: string | undefined;
+  gstin?: string | undefined;
+  payment_terms_days?: number | undefined;
+  status: "Active" | "Inactive";
+  notes?: string | undefined;
+  created_at?: string | undefined;
+}
+
 export interface DBCreditNote {
   id: string;
   company_id: string;
@@ -2140,6 +2156,150 @@ export async function updateCustomer(payload: {
   });
 
   return data as DBCustomer;
+}
+
+// ----------------------------------------------------------------------------
+// SUPPLIERS SERVICE (accounts-owned vendor master)
+// ----------------------------------------------------------------------------
+export async function fetchSuppliers(companyId: CompanyId): Promise<DBSupplier[]> {
+  try {
+    let query = supabase.from("suppliers").select("*").order("name");
+    if (companyId !== "all") {
+      query = query.eq("company_id", companyId);
+    }
+    const { data, error } = await query;
+    if (error || !data) throw error;
+    return data as DBSupplier[];
+  } catch {
+    return [];
+  }
+}
+
+export async function createSupplier(payload: {
+  companyId: string;
+  name: string;
+  tradeName?: string;
+  contactPerson?: string;
+  phone?: string;
+  email?: string;
+  gstin?: string;
+  address?: string;
+  supplierType?: string;
+  paymentTermsDays?: number;
+  notes?: string;
+  creatorName: string;
+}): Promise<DBSupplier> {
+  const initials = payload.name
+    .split(" ")
+    .map((w) => w[0])
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+
+  const combinedNotes =
+    payload.notes ||
+    [
+      payload.tradeName ? `Trade Name: ${payload.tradeName}` : "",
+      payload.supplierType ? `Type: ${payload.supplierType}` : "",
+      payload.gstin ? `GSTIN: ${payload.gstin}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+
+  const row = {
+    company_id: payload.companyId,
+    name: payload.name,
+    initials,
+    contact_person: payload.contactPerson,
+    phone: payload.phone,
+    email: payload.email,
+    address: payload.address || "Address not specified",
+    gstin: payload.gstin || null,
+    payment_terms_days: payload.paymentTermsDays ?? 30,
+    notes: combinedNotes,
+    status: "Active" as const,
+  };
+
+  const { data, error } = await supabase.from("suppliers").insert(row).select().single();
+  if (error || !data) throw error;
+
+  await logAudit({
+    userName: payload.creatorName,
+    companyId: payload.companyId,
+    module: "procurement",
+    action: "supplier_created",
+    recordId: data.id,
+    description: `${payload.creatorName} created Supplier: ${payload.name}`,
+  });
+
+  return data as DBSupplier;
+}
+
+export async function updateSupplier(payload: {
+  id: string;
+  name?: string;
+  contactPerson?: string;
+  phone?: string;
+  email?: string;
+  address?: string;
+  gstin?: string;
+  notes?: string;
+  status?: "Active" | "Inactive";
+  paymentTermsDays?: number;
+  companyId?: string;
+  userName?: string;
+}): Promise<DBSupplier> {
+  const updateFields: Partial<DBSupplier> & { updated_at: string } = {
+    updated_at: new Date().toISOString(),
+  };
+  if (payload.name !== undefined) updateFields.name = payload.name;
+  if (payload.contactPerson !== undefined) updateFields.contact_person = payload.contactPerson;
+  if (payload.phone !== undefined) updateFields.phone = payload.phone;
+  if (payload.email !== undefined) updateFields.email = payload.email;
+  if (payload.address !== undefined) updateFields.address = payload.address;
+  if (payload.gstin !== undefined) updateFields.gstin = payload.gstin;
+  if (payload.notes !== undefined) updateFields.notes = payload.notes;
+  if (payload.status !== undefined) updateFields.status = payload.status;
+  if (payload.paymentTermsDays !== undefined)
+    updateFields.payment_terms_days = payload.paymentTermsDays;
+
+  const { data, error } = await supabase
+    .from("suppliers")
+    .update(updateFields)
+    .eq("id", payload.id)
+    .select()
+    .single();
+
+  if (error || !data) throw error;
+
+  await logAudit({
+    userName: payload.userName || "Accounts",
+    companyId: payload.companyId || data.company_id || "asian",
+    module: "procurement",
+    action: "supplier_updated",
+    recordId: payload.id,
+    description: `${payload.userName || "Accounts"} updated Supplier profile for ${data.name}`,
+  });
+
+  return data as DBSupplier;
+}
+
+export async function deleteSupplier(supplierId: string, adminName: string = "Super Admin") {
+  const actor = await requireSuperAdmin();
+  adminName = actor.name || adminName;
+
+  const { error } = await supabase.from("suppliers").delete().eq("id", supplierId);
+  if (error) throw error;
+
+  await logAudit({
+    userName: adminName,
+    companyId: "asian",
+    module: "procurement",
+    action: "supplier_deleted",
+    recordId: supplierId,
+    description: `${adminName} permanently deleted Supplier #${supplierId}`,
+  });
+  return { success: true };
 }
 
 // ----------------------------------------------------------------------------

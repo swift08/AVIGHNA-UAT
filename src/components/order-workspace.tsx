@@ -133,15 +133,33 @@ export function OrderDetail({
     }
   }, [order]);
 
+  // Supervisor: open assign sheet when sales left the vehicle empty.
+  useEffect(() => {
+    if (!order) {
+      setAssignVehicleMode(false);
+      return;
+    }
+    const supervisor =
+      currentUser?.role === "supervisor" ||
+      Boolean(currentUser?.roleName?.toLowerCase().includes("supervisor"));
+    if (!supervisor) return;
+    const manufacturer =
+      ("transport_mode" in order && order.transport_mode === "Manufacturer Vehicle") ||
+      ("assigned_vehicle" in order && order.assigned_vehicle === "Manufacturer Arranged");
+    const fleet =
+      "assigned_vehicle" in order &&
+      order.assigned_vehicle &&
+      order.assigned_vehicle !== "Manufacturer Arranged";
+    if (!manufacturer && !fleet) {
+      setAssignVehicleMode(true);
+    }
+  }, [order, currentUser?.role, currentUser?.roleName]);
+
   const isSuperAdmin = currentUser?.role === "super_admin" || hasPermission("*");
   const isSupervisor =
     currentUser?.role === "supervisor" ||
     Boolean(currentUser?.roleName?.toLowerCase().includes("supervisor"));
-  // Super Admin logistics is view-only; sales / supervisor allot vehicles on the order desk.
-  const canAssignVehicle =
-    !isSuperAdmin &&
-    (currentUser?.role === "sales" || isSupervisor) &&
-    (hasPermission("orders.create") || hasPermission("orders.approve"));
+  const isSales = currentUser?.role === "sales";
   const orderNotes =
     order && "notes" in order && typeof order.notes === "string" ? order.notes : "";
   const isPriceOverride = Boolean(
@@ -151,6 +169,23 @@ export function OrderDetail({
   const canInvoice = hasPermission("invoices.generate");
 
   if (!order) return null;
+
+  const isManufacturerTransport =
+    ("transport_mode" in order && order.transport_mode === "Manufacturer Vehicle") ||
+    ("assigned_vehicle" in order && order.assigned_vehicle === "Manufacturer Arranged");
+  const hasFleetVehicle = Boolean(
+    "assigned_vehicle" in order &&
+      order.assigned_vehicle &&
+      order.assigned_vehicle !== "Manufacturer Arranged",
+  );
+  // Supervisor fills the gap when sales skipped vehicle; sales can assign anytime.
+  const needsVehicleAssignment = !isManufacturerTransport && !hasFleetVehicle;
+  const canAssignVehicle =
+    !isSuperAdmin &&
+    ((isSales && hasPermission("orders.create")) ||
+      (isSupervisor &&
+        needsVehicleAssignment &&
+        (hasPermission("orders.approve") || hasPermission("orders.edit") || hasPermission("orders.create"))));
 
   const orderCompany = "company" in order ? order.company : order.company_id;
   const orderAmount = "amount" in order ? order.amount : order.total_amount;
@@ -498,16 +533,18 @@ export function OrderDetail({
                       <span className="status success">Vehicle Assigned</span>
                     </div>
                   ) : (
-                    <div className="flex justify-between items-center">
+                    <div className="flex justify-between items-center gap-2">
                       <div>
                         <p className="font-semibold text-amber-600 dark:text-amber-400">
                           No Vehicle Assigned
                         </p>
                         <p className="text-[11px] text-muted-foreground">
-                          Sales can assign now, or Supervisor / Super Admin can assign later.
+                          {isSupervisor
+                            ? "Sales left this empty — assign a company vehicle and driver."
+                            : "Assign now, or leave for Supervisor to assign later."}
                         </p>
                       </div>
-                      <span className="status warning">Pending Vehicle</span>
+                      <span className="status warning shrink-0">Pending Vehicle</span>
                     </div>
                   )}
                 </div>
@@ -516,7 +553,7 @@ export function OrderDetail({
               {canAssignVehicle && (
                 <Button
                   size="sm"
-                  variant="outline"
+                  variant={isSupervisor && needsVehicleAssignment ? "default" : "outline"}
                   className="w-full text-xs font-semibold gap-1.5 cursor-pointer"
                   onClick={() => {
                     setAssignVehicleMode(true);
@@ -540,11 +577,11 @@ export function OrderDetail({
                   }}
                 >
                   <Truck className="size-3.5" />
-                  {"assigned_vehicle" in order &&
-                  order.assigned_vehicle &&
-                  order.assigned_vehicle !== "Manufacturer Arranged"
-                    ? "Reassign Vehicle / Transport"
-                    : "Assign Vehicle / Transport"}
+                  {isSupervisor && needsVehicleAssignment
+                    ? "Assign Vehicle (sales did not)"
+                    : hasFleetVehicle
+                      ? "Reassign Vehicle / Transport"
+                      : "Assign Vehicle / Transport"}
                 </Button>
               )}
             </div>
@@ -1301,10 +1338,62 @@ export function OrderTable({
                           Super Admin Approval
                         </span>
                       )}
+                      {(() => {
+                        const manufacturer =
+                          ("transport_mode" in o && o.transport_mode === "Manufacturer Vehicle") ||
+                          ("assigned_vehicle" in o &&
+                            o.assigned_vehicle === "Manufacturer Arranged");
+                        const fleet =
+                          "assigned_vehicle" in o &&
+                          o.assigned_vehicle &&
+                          o.assigned_vehicle !== "Manufacturer Arranged";
+                        if (manufacturer || fleet) return null;
+                        if (
+                          currentUser?.role !== "supervisor" &&
+                          !currentUser?.roleName?.toLowerCase().includes("supervisor") &&
+                          currentUser?.role !== "sales"
+                        ) {
+                          return null;
+                        }
+                        return (
+                          <span className="inline-flex items-center gap-1 rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-bold text-amber-700 dark:text-amber-400">
+                            Needs vehicle
+                          </span>
+                        );
+                      })()}
                     </div>
                   </td>
                   <td>
                     <div className="flex items-center gap-3 justify-end">
+                      {(currentUser?.role === "supervisor" ||
+                        currentUser?.roleName?.toLowerCase().includes("supervisor")) &&
+                        (() => {
+                          const manufacturer =
+                            ("transport_mode" in o &&
+                              o.transport_mode === "Manufacturer Vehicle") ||
+                            ("assigned_vehicle" in o &&
+                              o.assigned_vehicle === "Manufacturer Arranged");
+                          const fleet =
+                            "assigned_vehicle" in o &&
+                            o.assigned_vehicle &&
+                            o.assigned_vehicle !== "Manufacturer Arranged";
+                          if (manufacturer || fleet) return null;
+                          return (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 gap-1 px-2 text-[10px] font-semibold"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelected(o);
+                              }}
+                              title="Assign vehicle — sales did not assign"
+                            >
+                              <Truck className="size-3" />
+                              Assign vehicle
+                            </Button>
+                          );
+                        })()}
                       {currentUser?.role === "super_admin" && (
                         <Button
                           variant="ghost"

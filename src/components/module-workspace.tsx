@@ -63,6 +63,7 @@ import { useWorkspace } from "./workspace-provider";
 import { CompanyLogo } from "./workspace-shell";
 import { OrderTable, getOrderManager } from "./order-workspace";
 import { TaskWorkspace } from "./task-workspace";
+import { SuppliersWorkspace } from "./suppliers-workspace";
 import { RevenueChart } from "./revenue-chart";
 import {
   CompanyRevenuePieChart,
@@ -115,6 +116,7 @@ import {
   fetchCustomers,
   createCustomer,
   updateCustomer,
+  fetchSuppliers,
   createProduct,
   inboundStock,
   updateProductStock,
@@ -152,6 +154,7 @@ import {
   type DBPurchaseOrder,
   type DBInvoice,
   type DBCustomer,
+  type DBSupplier,
   type DBDelivery,
   type DBPayment,
   type DBCreditNote,
@@ -228,9 +231,11 @@ async function processImageFile(file: File): Promise<string> {
 export function ModuleWorkspace({
   module,
   customerId,
+  supplierId,
 }: {
   module: string;
   customerId?: string;
+  supplierId?: string;
 }) {
   const navigate = useNavigate();
   const routerSearch = useRouterState({
@@ -253,6 +258,7 @@ export function ModuleWorkspace({
   const isSupervisor =
     currentUser?.role === "supervisor" ||
     Boolean(currentUser?.roleName?.toLowerCase().includes("supervisor"));
+  const isAccounts = currentUser?.role === "accounts";
   const canViewAllFieldVisits = isSuperAdmin || isSupervisor;
 
   const [deleteTarget, setDeleteTarget] = useState<{
@@ -308,6 +314,7 @@ export function ModuleWorkspace({
   const [dbPOs, setDbPOs] = useState<DBPurchaseOrder[]>([]);
   const [dbInvoices, setDbInvoices] = useState<DBInvoice[]>([]);
   const [dbCustomers, setDbCustomers] = useState<DBCustomer[]>([]);
+  const [dbSuppliers, setDbSuppliers] = useState<DBSupplier[]>([]);
   const [dbDeliveries, setDbDeliveries] = useState<DBDelivery[]>([]);
   const [dbPayments, setDbPayments] = useState<DBPayment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -442,6 +449,9 @@ export function ModuleWorkspace({
     setTimeout(() => setCopiedField(null), 2000);
   };
 
+  // Inventory list search
+  const [inventorySearch, setInventorySearch] = useState("");
+
   // Product modal state
   const [prodModal, setProdModal] = useState(false);
   const [prodCode, setProdCode] = useState("");
@@ -554,6 +564,11 @@ export function ModuleWorkspace({
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
   const [audioTimer, setAudioTimer] = useState(0);
   const [visitSalesFilter, setVisitSalesFilter] = useState("All");
+  const [visitDateRange, setVisitDateRange] = useState<
+    "all" | "today" | "5days" | "1month" | "custom"
+  >("all");
+  const [visitCustomFrom, setVisitCustomFrom] = useState("");
+  const [visitCustomTo, setVisitCustomTo] = useState("");
   // Only sales logs visits in the field. Supervisors / SA only review what sales logged.
   const canLogFieldVisit =
     currentUser?.role === "sales" && hasPermission("field_visits.conduct");
@@ -671,6 +686,7 @@ export function ModuleWorkspace({
       fetchInvoices(company),
       fetchPayments(company),
       fetchCustomers(company),
+      fetchSuppliers(company),
       fetchDeliveries(company),
       fetchCreditNotes(company),
       fetchVehicles(),
@@ -685,6 +701,7 @@ export function ModuleWorkspace({
           invoices,
           payments,
           customers,
+          suppliers,
           deliveries,
           creditNotes,
           vehicles,
@@ -710,6 +727,7 @@ export function ModuleWorkspace({
           setDbInvoices(scoped.invoices ?? []);
           setDbPayments(scoped.payments ?? []);
           setDbCustomers(scoped.customers ?? []);
+          setDbSuppliers(suppliers);
           setDbDeliveries(scoped.deliveries ?? []);
           setDbCreditNotes(scoped.creditNotes ?? []);
           setDbVehicles(scoped.vehicles ?? []);
@@ -759,13 +777,18 @@ export function ModuleWorkspace({
     tasks: "My work",
     leads: "Lead pipeline",
     customers: selectedCustomerDetails?.name || (customerId ? "Customer profile" : "Customers"),
+    suppliers: supplierId ? "Supplier profile" : "Suppliers",
     inventory: "Inventory intelligence",
     purchases: "Purchases",
     logistics:
       isSuperAdmin || isSupervisor ? "Out for delivery" : "Dispatch control",
     accounts: isSalesCollector ? "Payments due" : "Invoices",
     credit: "Credit control",
-    analytics: isSupervisor ? "Floor analytics" : "Revenue intelligence",
+    analytics: isSupervisor
+      ? "Floor analytics"
+      : isAccounts
+        ? "Receivables & payables"
+        : "Revenue intelligence",
     administration: isSupervisor ? "Team logins" : "Administration",
     "field-visits": "Field visits",
   };
@@ -779,6 +802,9 @@ export function ModuleWorkspace({
       : customerId
         ? "Loading customer profile…"
         : "Your relationships, at a glance.",
+    suppliers: supplierId
+      ? "Vendor profile for accounts and purchase orders."
+      : "Vendor profiles for purchase orders — owned by accounts.",
     inventory: "Know what’s on hand. Stay ahead of what’s next.",
     purchases: "From supplier to stock, without the guesswork.",
     logistics:
@@ -792,7 +818,9 @@ export function ModuleWorkspace({
       "Limits, days and credit/debit notes. Accounts adjusts receivables — warehouse handles stock.",
     analytics: isSupervisor
       ? "Detailed KPIs for orders, inventory, and logistics — no finance figures."
-      : "The numbers behind your next decision.",
+      : isAccounts
+        ? "Money desk: receivables, payables, and collections — no total revenue roll-up."
+        : "The numbers behind your next decision.",
     administration: isSupervisor
       ? "Propose team logins and feature access — Super Admin must approve before they can sign in."
       : "Your organization, thoughtfully managed.",
@@ -2510,7 +2538,50 @@ export function ModuleWorkspace({
       ];
     }
 
-    // Revenue Trends / Overview / Company Comparison
+    // Accounts: money desk KPIs only (receivables / payables) — no total revenue.
+    if (isAccounts) {
+      const receivables = dbInvoices.reduce(
+        (s, i) => s + (Number(i.remaining_amount) || 0),
+        0,
+      );
+      const overdueReceivables = dbInvoices
+        .filter((i) => {
+          const today = new Date().toISOString().split("T")[0] || "";
+          return Number(i.remaining_amount) > 0 && Boolean(i.due_date && i.due_date < today);
+        })
+        .reduce((s, i) => s + (Number(i.remaining_amount) || 0), 0);
+      const payables = dbPOs
+        .filter((p) => !["Rejected", "Received"].includes(p.status))
+        .reduce((s, p) => s + (Number(p.total_amount) || 0), 0);
+      const awaitingPayment = dbInvoices.filter(
+        (i) => i.status !== "Paid" && (Number(i.remaining_amount) || 0) > 0,
+      ).length;
+
+      return [
+        {
+          n: "Receivables",
+          v: money(receivables),
+          sub: `${awaitingPayment} open invoices`,
+        },
+        {
+          n: "Overdue receivables",
+          v: money(overdueReceivables),
+          sub: "Past due date",
+        },
+        {
+          n: "Payables",
+          v: money(payables),
+          sub: `${dbPOs.filter((p) => !["Rejected", "Received"].includes(p.status)).length} open POs`,
+        },
+        {
+          n: "Collected",
+          v: money(totalCollectedRevenue),
+          sub: `${dbPayments.length} receipts`,
+        },
+      ];
+    }
+
+    // Revenue Trends / Overview / Company Comparison (super admin)
     return [
       {
         n: "Total ERP Gross",
@@ -2541,12 +2612,15 @@ export function ModuleWorkspace({
     dbCustomers,
     dbInvoices,
     dbDeliveries,
+    dbPOs,
+    dbPayments,
     visibleFieldVisits,
     totalCollectedRevenue,
     nearExpiryBatchCount,
     nearExpiryProductName,
     currentUser?.role,
     isSupervisor,
+    isAccounts,
     money,
   ]);
 
@@ -2554,6 +2628,7 @@ export function ModuleWorkspace({
     tasks: "tasks.view",
     leads: "leads.view",
     customers: "customers.view",
+    suppliers: "suppliers.view",
     "field-visits": "field_visits.view",
     orders: "orders.view",
     inventory: "inventory.view",
@@ -2920,6 +2995,7 @@ export function ModuleWorkspace({
       return;
     }
     if (isSuperAdmin) return;
+    const accountsHome = isAccounts ? "Receivables & payables" : "Revenue Trends";
     if (
       tab === "Company Comparison" ||
       tab === "Product Performance" ||
@@ -2927,11 +3003,14 @@ export function ModuleWorkspace({
       tab === "Floor overview" ||
       tab === "Orders" ||
       tab === "Inventory" ||
-      tab === "Logistics"
+      tab === "Logistics" ||
+      tab === "Overview" ||
+      (isAccounts && tab === "Revenue Trends") ||
+      (!isAccounts && tab === "Receivables & payables")
     ) {
-      setTab("Revenue Trends");
+      setTab(accountsHome);
     }
-  }, [module, isSuperAdmin, isSupervisor, tab]);
+  }, [module, isSuperAdmin, isSupervisor, isAccounts, tab]);
 
   useEffect(() => {
     if (module !== "field-visits") return;
@@ -2942,6 +3021,17 @@ export function ModuleWorkspace({
   useEffect(() => {
     if (module === "leads") setTab("Pipeline");
   }, [module]);
+
+  // Prefill purchase order from supplier profile deep link.
+  useEffect(() => {
+    if (module !== "purchases") return;
+    const prefillSupplier = routerSearch?.["supplier"];
+    const prefillCompany = routerSearch?.["company"];
+    const shouldOpen = routerSearch?.["openCreate"] === "true";
+    if (prefillCompany) setPoCompany(prefillCompany);
+    if (prefillSupplier) setPoSupplier(prefillSupplier);
+    if (shouldOpen) setPoModal(true);
+  }, [module, routerSearch]);
 
   // Prefill field-visit log from customer profile deep link.
   useEffect(() => {
@@ -3029,7 +3119,13 @@ export function ModuleWorkspace({
   }
 
   return (
-    <main className={`content${module === "customers" && customerId ? " customer-dossier-content" : ""}`}>
+    <main
+      className={`content${
+        (module === "customers" && customerId) || (module === "suppliers" && supplierId)
+          ? " customer-dossier-content"
+          : ""
+      }`}
+    >
       <p className="eyebrow mb-2">
         {company === "all"
           ? "Organization workspace"
@@ -3052,18 +3148,17 @@ export function ModuleWorkspace({
       <h1 className="page-heading">{titles[module]}</h1>
       <p className="mt-2 text-xs text-muted-foreground">{subtitle[module]}</p>
 
-      {module !== "credit" && module !== "customers" ? (
+      {module !== "credit" &&
+      module !== "customers" &&
+      module !== "suppliers" &&
+      module !== "field-visits" ? (
         <div className="flex items-center justify-between gap-4 flex-wrap my-6 pb-3 border-b border-border/60">
           <div className="flex items-center gap-3 flex-wrap">
             {(module === "administration"
               ? isSuperAdmin
                 ? ["Companies", "Users", "Fleet", "Roles", "Audit"]
                 : ["Team logins"]
-              : module === "field-visits"
-                ? canLogFieldVisit
-                  ? ["Visit history", "Log a visit"]
-                  : ["Visit history"]
-                : module === "accounts"
+              : module === "accounts"
                   ? isSalesCollector
                     ? ["Payments due", "Payment Collections"]
                     : [
@@ -3083,7 +3178,9 @@ export function ModuleWorkspace({
                             "Product Performance",
                             "Conversion Funnel",
                           ]
-                        : ["Revenue Trends"]
+                        : isAccounts
+                          ? ["Receivables & payables"]
+                          : ["Revenue Trends"]
                     : module === "leads"
                       ? []
                       : ["Overview"]
@@ -3093,7 +3190,6 @@ export function ModuleWorkspace({
                 (module === "administration" &&
                   tab === "Overview" &&
                   t === (isSuperAdmin ? "Companies" : "Team logins")) ||
-                (module === "field-visits" && tab === "Overview" && t === "Visit history") ||
                 (module === "accounts" &&
                   (tab === "Overview" ||
                     tab === "Receivables" ||
@@ -3101,7 +3197,12 @@ export function ModuleWorkspace({
                   t === (isSalesCollector ? "Payments due" : "All sections")) ||
                 (module === "analytics" &&
                   tab === "Overview" &&
-                  t === (isSupervisor ? "Floor overview" : "Revenue Trends"));
+                  t ===
+                    (isSupervisor
+                      ? "Floor overview"
+                      : isAccounts
+                        ? "Receivables & payables"
+                        : "Revenue Trends"));
 
               const getIcon = (label: string) => {
                 switch (label) {
@@ -3123,10 +3224,6 @@ export function ModuleWorkspace({
                     return <ShieldCheck className="size-3.5" />;
                   case "Audit":
                     return <FileText className="size-3.5" />;
-                  case "Visit history":
-                    return <History className="size-3.5" />;
-                  case "Log a visit":
-                    return <Plus className="size-3.5" />;
                   case "Invoices & Receivables":
                     return <FileCheck2 className="size-3.5" />;
                   case "Payment Collections":
@@ -3136,6 +3233,7 @@ export function ModuleWorkspace({
                   case "Awaiting Invoicing":
                     return <Clock className="size-3.5" />;
                   case "Revenue Trends":
+                  case "Receivables & payables":
                   case "Floor overview":
                     return <TrendingUp className="size-3.5" />;
                   case "Company Comparison":
@@ -3184,20 +3282,8 @@ export function ModuleWorkspace({
               Add Lead
             </Button>
           )}
-          {module === "field-visits" &&
-            tab !== "Log a visit" &&
-            canLogFieldVisit && (
-              <Button
-                size="sm"
-                onClick={() => setTab("Log a visit")}
-                className="h-9 gap-2 px-4 text-xs font-bold shrink-0 shadow-xs cursor-pointer"
-              >
-                <Plus className="size-3.5" />
-                Log Field Visit
-              </Button>
-            )}
         </div>
-      ) : module === "customers" ? (
+      ) : module === "customers" || module === "suppliers" || module === "field-visits" ? (
         <div className="mt-4" />
       ) : (
         <div className="mt-6" />
@@ -3242,6 +3328,8 @@ export function ModuleWorkspace({
             />
           </section>
         </>
+      ) : module === "suppliers" ? (
+        <SuppliersWorkspace supplierId={supplierId} />
       ) : module === "customers" ? (
         customerId ? (
           loading && !selectedCustomerDetails ? (
@@ -3458,176 +3546,299 @@ export function ModuleWorkspace({
         </div>
         )
       ) : module === "inventory" ? (
-        <div className="inventory-page">
+        <div className={`inventory-page ${isSuperAdmin ? "inventory-sa-view" : ""}`}>
+          {(() => {
+            const inventoryQuery = inventorySearch.trim().toLowerCase();
+            const filteredInventoryProducts =
+              inventoryQuery === ""
+                ? dbProducts
+                : dbProducts.filter((p) =>
+                    `${p.name} ${p.code} ${p.category || ""}`
+                      .toLowerCase()
+                      .includes(inventoryQuery),
+                  );
+
+            return (
+              <>
           <div className="inventory-toolbar mb-5 flex flex-wrap items-center justify-between gap-3">
             <span className="inventory-toolbar-count text-xs text-muted-foreground">
-              {dbProducts.length} inventory products tracked
+              {inventoryQuery
+                ? `${filteredInventoryProducts.length} of ${dbProducts.length} products`
+                : `${dbProducts.length} inventory products tracked`}
+              {isSuperAdmin ? " · view only" : ""}
             </span>
             <div className="inventory-toolbar-actions flex flex-wrap items-center gap-2 sm:gap-3">
-              {hasPermission("inventory.adjust") && (
+              <div className="inventory-search relative w-full min-w-0 sm:w-64">
+                <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  type="search"
+                  aria-label="Search inventory items"
+                  placeholder="Search items by name, code…"
+                  value={inventorySearch}
+                  onChange={(e) => setInventorySearch(e.target.value)}
+                  className="inventory-search-input h-8 w-full rounded-md border border-border bg-background pl-9 pr-8 text-xs font-medium focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                />
+                {inventorySearch && (
+                  <button
+                    type="button"
+                    aria-label="Clear inventory search"
+                    onClick={() => setInventorySearch("")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                )}
+              </div>
+              {!isSuperAdmin && hasPermission("inventory.adjust") && (
                 <>
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    className="inventory-toolbar-btn h-8 gap-1.5 text-xs font-semibold"
-                    onClick={() => {
-                      if (dbProducts.length > 0 && dbProducts[0]) {
-                        setInboundProductId(dbProducts[0].id || "");
-                        setInboundReorder(String(dbProducts[0].reorder_level || 20));
-                      }
-                      setInboundModal(true);
-                    }}
-                  >
-                    <Plus className="size-3.5" />
-                    <span className="inventory-btn-full">Inbound Stock</span>
-                    <span className="inventory-btn-short">Inbound</span>
-                  </Button>
-                  <CoaImportButton
-                    actorRole={currentUser?.role}
-                    actorName={currentUser?.name || "User"}
-                    defaultCompanyId={company}
-                    onImported={reloadData}
-                  />
-                  <Button
-                    size="sm"
-                    className="inventory-toolbar-btn h-8 gap-1.5 text-xs font-semibold"
-                    onClick={() => setProdModal(true)}
-                  >
-                    <Plus className="size-3.5" />
-                    <span className="inventory-btn-full">Add Product</span>
-                    <span className="inventory-btn-short">Add</span>
-                  </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="inventory-toolbar-btn h-8 gap-1.5 text-xs font-semibold"
+                  onClick={() => {
+                    if (dbProducts.length > 0 && dbProducts[0]) {
+                      setInboundProductId(dbProducts[0].id || "");
+                      setInboundReorder(String(dbProducts[0].reorder_level || 20));
+                    }
+                    setInboundModal(true);
+                  }}
+                >
+                  <Plus className="size-3.5" />
+                  <span className="inventory-btn-full">Inbound Stock</span>
+                  <span className="inventory-btn-short">Inbound</span>
+                </Button>
+                <CoaImportButton
+                  actorRole={currentUser?.role}
+                  actorName={currentUser?.name || "User"}
+                  defaultCompanyId={company}
+                  onImported={reloadData}
+                />
+                <Button
+                  size="sm"
+                  className="inventory-toolbar-btn h-8 gap-1.5 text-xs font-semibold"
+                  onClick={() => setProdModal(true)}
+                >
+                  <Plus className="size-3.5" />
+                  <span className="inventory-btn-full">Add Product</span>
+                  <span className="inventory-btn-short">Add</span>
+                </Button>
                 </>
               )}
             </div>
           </div>
-          <div className="module-grid inventory-grid">
-            {dbProducts.map((p) => {
-              const totalStock = p.on_hand;
-              const outbound = outboundOrderedQuantity(dbOrders, p);
-              const available = availableFromStock(totalStock, outbound);
+          {isSuperAdmin ? (
+            (() => {
+              const cleanType = (raw: string | undefined) =>
+                String(raw || "")
+                  .replace(/\s*#ws:.*$/i, "")
+                  .trim() || "Uncategorized";
+              const byType = filteredInventoryProducts.reduce<Record<string, DBProduct[]>>((acc, p) => {
+                const key = cleanType(p.category);
+                if (!acc[key]) acc[key] = [];
+                acc[key].push(p);
+                return acc;
+              }, {});
+              const typeNames = Object.keys(byType).sort((a, b) => a.localeCompare(b));
+
               return (
-                <article className="module-item inventory-card" key={p.code}>
-                  <div className="inventory-card-head flex items-start justify-between gap-2">
-                    <span className="inventory-card-icon flex size-10 shrink-0 items-center justify-center rounded-md bg-accent text-primary">
-                      <Package size={20} />
-                    </span>
-                    <div className="inventory-card-actions flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:gap-2">
-                      <span
-                        className={`status shrink-0 ${available < p.reorder_level ? "warning" : "success"}`}
-                      >
-                        {available < p.reorder_level ? "Low stock" : "Healthy"}
+                <div className="inventory-type-list">
+                  {typeNames.map((typeName) => (
+                    <section key={typeName} className="inventory-type-group">
+                      <div className="inventory-type-head">
+                        <h3 className="inventory-type-title">{typeName}</h3>
+                        <span className="inventory-type-count">
+                          {(byType[typeName] || []).length}{" "}
+                          {(byType[typeName] || []).length === 1 ? "item" : "items"}
+                        </span>
+                      </div>
+                      <div className="inventory-list">
+                        {(byType[typeName] || []).map((p) => {
+                          const totalStock = p.on_hand;
+                          const outbound = outboundOrderedQuantity(dbOrders, p);
+                          const available = availableFromStock(totalStock, outbound);
+                          const low = available < p.reorder_level;
+                          return (
+                            <article className="inventory-row" key={p.id || p.code}>
+                              <div className="inventory-row-main">
+                                <div className="inventory-row-identity min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span
+                                      className={`status shrink-0 ${low ? "warning" : "success"}`}
+                                    >
+                                      {low ? "Low stock" : "Healthy"}
+                                    </span>
+                                    <h2 className="inventory-row-name text-sm font-bold text-foreground truncate">
+                                      {p.name}
+                                    </h2>
+                                    <span className="text-[10px] font-mono text-muted-foreground">
+                                      {p.code}
+                                    </span>
+                                  </div>
+                                  {canViewAmounts && (
+                                    <p className="mt-1 text-[11px] text-muted-foreground">
+                                      Selling ₹{p.unit_price}/{p.unit}
+                                      <span className="mx-1.5 text-muted-foreground/50">·</span>
+                                      Wholesale ₹{p.wholesale_price || p.unit_price}/{p.unit}
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="inventory-row-metrics">
+                                  <div className="inventory-row-metric">
+                                    <span className="inventory-row-metric-label">Total</span>
+                                    <span className="inventory-row-metric-value">
+                                      {totalStock}
+                                      <span className="unit">{p.unit}</span>
+                                    </span>
+                                  </div>
+                                  <div className="inventory-row-metric">
+                                    <span className="inventory-row-metric-label">Outbound</span>
+                                    <span className="inventory-row-metric-value">
+                                      {outbound}
+                                      <span className="unit">{p.unit}</span>
+                                    </span>
+                                  </div>
+                                  <div className="inventory-row-metric">
+                                    <span className="inventory-row-metric-label">Available</span>
+                                    <span
+                                      className={`inventory-row-metric-value ${low ? "text-amber-600 dark:text-amber-400" : ""}`}
+                                    >
+                                      {available}
+                                      <span className="unit">{p.unit}</span>
+                                    </span>
+                                  </div>
+                                  <div className="inventory-row-metric">
+                                    <span className="inventory-row-metric-label">Min reorder</span>
+                                    <span className="inventory-row-metric-value">
+                                      {p.reorder_level}
+                                      <span className="unit">{p.unit}</span>
+                                    </span>
+                                  </div>
+                                </div>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    </section>
+                  ))}
+                </div>
+              );
+            })()
+          ) : (
+            <div className="module-grid inventory-grid">
+              {filteredInventoryProducts.map((p) => {
+                const totalStock = p.on_hand;
+                const outbound = outboundOrderedQuantity(dbOrders, p);
+                const available = availableFromStock(totalStock, outbound);
+                return (
+                  <article className="module-item inventory-card" key={p.code}>
+                    <div className="inventory-card-head flex items-start justify-between gap-2">
+                      <span className="inventory-card-icon flex size-10 shrink-0 items-center justify-center rounded-md bg-accent text-primary">
+                        <Package size={20} />
+                      </span>
+                      <div className="inventory-card-actions flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:gap-2">
+                        <span
+                          className={`status shrink-0 ${available < p.reorder_level ? "warning" : "success"}`}
+                        >
+                          {available < p.reorder_level ? "Low stock" : "Healthy"}
+                        </span>
+                        {hasPermission("inventory.adjust") && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="inventory-edit-btn h-7 px-2 text-xs font-semibold hover:border-primary/60 cursor-pointer"
+                            title="Edit on-hand stock and reorder level"
+                            onClick={() => openEditStock(p)}
+                          >
+                            <Pencil className="size-3 sm:mr-1" />
+                            <span className="inventory-edit-label">Edit Stock</span>
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    <p className="inventory-card-meta eyebrow mt-4 sm:mt-5 !text-[8px]">
+                      {p.category} · {p.code}
+                    </p>
+                    <h2 className="inventory-card-name mt-1.5 sm:mt-2 text-sm font-bold break-words">
+                      {p.name}
+                    </h2>
+                    {canViewAmounts && (
+                      <div className="inventory-card-prices mt-1.5 flex items-center gap-2 flex-wrap text-[11px]">
+                        <span className="font-semibold text-foreground">
+                          Selling: ₹{p.unit_price}/{p.unit}
+                        </span>
+                        <span className="text-muted-foreground/60">·</span>
+                        <span className="text-muted-foreground">
+                          Wholesale: ₹{p.wholesale_price || p.unit_price}/{p.unit}
+                        </span>
+                      </div>
+                    )}
+                    <div className="inventory-stock-grid mt-5 sm:mt-6 grid grid-cols-3 gap-2 border-t border-border pt-3 sm:pt-4">
+                      {[
+                        { n: "Total", full: "Total Stock", v: totalStock },
+                        { n: "Outbound", full: "Outbound / Ordered", v: outbound },
+                        { n: "Available", full: "Available Stock", v: available },
+                      ].map((x) => (
+                        <div key={x.full} className="inventory-stock-cell min-w-0">
+                          <p className="inventory-stock-label text-xs font-semibold text-muted-foreground">
+                            <span className="inventory-stock-label-full">{x.full}</span>
+                            <span className="inventory-stock-label-short">{x.n}</span>
+                          </p>
+                          <p className="inventory-stock-value mt-1 text-lg font-bold">
+                            {x.v}
+                            <span className="ml-1 text-xs font-normal text-muted-foreground">
+                              {p.unit}
+                            </span>
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                    <progress
+                      className="stock-track mt-3 sm:mt-4 w-full"
+                      max={Math.max(totalStock, 1)}
+                      value={Math.max(available, 0)}
+                      aria-label={`${p.name} available stock`}
+                    />
+                    <div className="inventory-card-footer mt-3 sm:mt-4 pt-3 border-t border-border/70 flex items-center justify-between gap-2 text-xs">
+                      <span className="text-muted-foreground text-[11px] min-w-0">
+                        Min Reorder:{" "}
+                        <strong className="text-foreground">
+                          {p.reorder_level} {p.unit}
+                        </strong>
                       </span>
                       {hasPermission("inventory.adjust") && (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="inventory-edit-btn h-7 px-2 text-xs font-semibold hover:border-primary/60 cursor-pointer"
-                          title="Edit on-hand stock and reorder level"
+                        <button
+                          type="button"
                           onClick={() => openEditStock(p)}
+                          className="inventory-footer-edit shrink-0 text-[11px] font-semibold text-primary hover:underline flex items-center gap-1 cursor-pointer"
+                          title={`Directly edit stock on hand for ${p.name}`}
                         >
-                          <Pencil className="size-3 sm:mr-1" />
-                          <span className="inventory-edit-label">Edit Stock</span>
-                        </Button>
-                      )}
-                      {isSuperAdmin && (
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="size-7 shrink-0 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
-                          title="Delete Product (Super Admin)"
-                          onClick={() => {
-                            setDeleteTarget({
-                              type: "Product",
-                              id: p.id || p.code,
-                              name: `${p.name} (${p.code})`,
-                              onDelete: async () => {
-                                await deleteProduct(p.id || p.code, currentUser?.name);
-                                setDbProducts((prev) =>
-                                  prev.filter((x) => (x.id || x.code) !== (p.id || p.code)),
-                                );
-                              },
-                            });
-                          }}
-                        >
-                          <Trash2 className="size-3.5" />
-                        </Button>
+                          <Pencil className="size-2.5" />
+                          <span className="inventory-footer-edit-full">Edit Stock Count</span>
+                          <span className="inventory-footer-edit-short">Edit</span>
+                        </button>
                       )}
                     </div>
-                  </div>
-                  <p className="inventory-card-meta eyebrow mt-4 sm:mt-5 !text-[8px]">
-                    {p.category} · {p.code}
-                  </p>
-                  <h2 className="inventory-card-name mt-1.5 sm:mt-2 text-sm font-bold break-words">
-                    {p.name}
-                  </h2>
-                  {canViewAmounts && (
-                    <div className="inventory-card-prices mt-1.5 flex items-center gap-2 flex-wrap text-[11px]">
-                      <span className="font-semibold text-foreground">
-                        Selling: ₹{p.unit_price}/{p.unit}
-                      </span>
-                      <span className="text-muted-foreground/60">·</span>
-                      <span className="text-muted-foreground">
-                        Wholesale: ₹{p.wholesale_price || p.unit_price}/{p.unit}
-                      </span>
-                    </div>
-                  )}
-                  <div className="inventory-stock-grid mt-5 sm:mt-6 grid grid-cols-3 gap-2 border-t border-border pt-3 sm:pt-4">
-                    {[
-                      { n: "Total", full: "Total Stock", v: totalStock },
-                      { n: "Outbound", full: "Outbound / Ordered", v: outbound },
-                      { n: "Available", full: "Available Stock", v: available },
-                    ].map((x) => (
-                      <div key={x.full} className="inventory-stock-cell min-w-0">
-                        <p className="inventory-stock-label text-xs font-semibold text-muted-foreground">
-                          <span className="inventory-stock-label-full">{x.full}</span>
-                          <span className="inventory-stock-label-short">{x.n}</span>
-                        </p>
-                        <p className="inventory-stock-value mt-1 text-lg font-bold">
-                          {x.v}
-                          <span className="ml-1 text-xs font-normal text-muted-foreground">
-                            {p.unit}
-                          </span>
-                        </p>
-                      </div>
-                    ))}
-                  </div>
-                  <progress
-                    className="stock-track mt-3 sm:mt-4 w-full"
-                    max={Math.max(totalStock, 1)}
-                    value={Math.max(available, 0)}
-                    aria-label={`${p.name} available stock`}
-                  />
-                  <div className="inventory-card-footer mt-3 sm:mt-4 pt-3 border-t border-border/70 flex items-center justify-between gap-2 text-xs">
-                    <span className="text-muted-foreground text-[11px] min-w-0">
-                      Min Reorder:{" "}
-                      <strong className="text-foreground">
-                        {p.reorder_level} {p.unit}
-                      </strong>
-                    </span>
-                    {hasPermission("inventory.adjust") && (
-                      <button
-                        type="button"
-                        onClick={() => openEditStock(p)}
-                        className="inventory-footer-edit shrink-0 text-[11px] font-semibold text-primary hover:underline flex items-center gap-1 cursor-pointer"
-                        title={`Directly edit stock on hand for ${p.name}`}
-                      >
-                        <Pencil className="size-2.5" />
-                        <span className="inventory-footer-edit-full">Edit Stock Count</span>
-                        <span className="inventory-footer-edit-short">Edit</span>
-                      </button>
-                    )}
-                  </div>
-                  {p.id && <ProductBatchesPanel productId={p.id} productName={p.name} />}
-                </article>
-              );
-            })}
-          </div>
-          {dbProducts.length === 0 && (
-            <p className="inventory-empty p-8 text-center text-muted-foreground text-sm">
-              No products in inventory. Add a product to configure the catalog.
-            </p>
+                    {p.id && <ProductBatchesPanel productId={p.id} productName={p.name} />}
+                  </article>
+                );
+              })}
+            </div>
           )}
+          {dbProducts.length === 0 ? (
+            <p className="inventory-empty p-8 text-center text-muted-foreground text-sm">
+              {isSuperAdmin
+                ? "No products in inventory yet."
+                : "No products in inventory. Add a product to configure the catalog."}
+            </p>
+          ) : filteredInventoryProducts.length === 0 ? (
+            <p className="inventory-empty p-8 text-center text-muted-foreground text-sm">
+              No products match “{inventorySearch.trim()}”.
+            </p>
+          ) : null}
+              </>
+            );
+          })()}
         </div>
       ) : module === "accounts" ? (
         <>
@@ -4797,7 +5008,75 @@ export function ModuleWorkspace({
             ))}
           </div>
 
-          {tab === "Revenue Trends" || tab === "Overview" ? (
+          {tab === "Receivables & payables" ||
+          (isAccounts && (tab === "Overview" || tab === "Revenue Trends")) ? (
+            <div className="space-y-6">
+              <section className="panel">
+                <div className="panel-head">
+                  <div>
+                    <h2 className="panel-title">Money desk</h2>
+                    <span className="text-xs text-muted-foreground">
+                      Receivables and payables — no total revenue roll-up
+                    </span>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 px-4 sm:px-[23px] pb-5">
+                  <div className="rounded-xl border border-border bg-muted/20 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Receivables
+                    </p>
+                    <p className="mt-1 text-2xl font-semibold tabular-nums">
+                      {money(totalOutstanding)}
+                    </p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {
+                        dbInvoices.filter(
+                          (i) => i.status !== "Paid" && (Number(i.remaining_amount) || 0) > 0,
+                        ).length
+                      }{" "}
+                      open invoices
+                    </p>
+                  </div>
+                  <div className="rounded-xl border border-border bg-muted/20 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                      Payables
+                    </p>
+                    <p className="mt-1 text-2xl font-semibold tabular-nums">
+                      {money(
+                        dbPOs
+                          .filter((p) => !["Rejected", "Received"].includes(p.status))
+                          .reduce((s, p) => s + (Number(p.total_amount) || 0), 0),
+                      )}
+                    </p>
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      {
+                        dbPOs.filter((p) => !["Rejected", "Received"].includes(p.status)).length
+                      }{" "}
+                      open purchase orders
+                    </p>
+                  </div>
+                </div>
+              </section>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs font-semibold"
+                  onClick={() => navigate({ to: "/accounts" })}
+                >
+                  Open invoices & collections
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs font-semibold"
+                  onClick={() => navigate({ to: "/purchases" })}
+                >
+                  Open purchases / payables
+                </Button>
+              </div>
+            </div>
+          ) : tab === "Revenue Trends" || tab === "Overview" ? (
             <div className="space-y-6">
               <section className="panel">
                 <div className="panel-head flex items-center justify-between">
@@ -6757,7 +7036,44 @@ export function ModuleWorkspace({
             <>
               {(() => {
                 const isSalesVisits = currentUser?.role === "sales";
-                const filteredVisits = visibleFieldVisits.filter((v) => {
+                const toLocalDayKey = (date: Date) => {
+                  const y = date.getFullYear();
+                  const m = String(date.getMonth() + 1).padStart(2, "0");
+                  const d = String(date.getDate()).padStart(2, "0");
+                  return `${y}-${m}-${d}`;
+                };
+                const todayKey = () => toLocalDayKey(new Date());
+                const shiftDayKey = (daysBack: number) => {
+                  const d = new Date();
+                  d.setHours(12, 0, 0, 0);
+                  d.setDate(d.getDate() - daysBack);
+                  return toLocalDayKey(d);
+                };
+                const visitDayKey = (v: (typeof visibleFieldVisits)[number]) => {
+                  const raw = v.scheduled_date || v.created_at || "";
+                  return String(raw).slice(0, 10);
+                };
+                const dateFilteredVisits = !canViewAllFieldVisits
+                  ? visibleFieldVisits
+                  : visibleFieldVisits.filter((v) => {
+                      if (visitDateRange === "all") return true;
+                      const key = visitDayKey(v);
+                      if (!key || key.length < 10) return false;
+                      const end = todayKey();
+                      if (visitDateRange === "today") return key === end;
+                      if (visitDateRange === "5days") {
+                        return key >= shiftDayKey(4) && key <= end;
+                      }
+                      if (visitDateRange === "1month") {
+                        return key >= shiftDayKey(29) && key <= end;
+                      }
+                      // Custom: wait until at least one bound is set
+                      if (!visitCustomFrom && !visitCustomTo) return true;
+                      const from = visitCustomFrom || "0000-01-01";
+                      const to = visitCustomTo || "9999-12-31";
+                      return key >= from && key <= to;
+                    });
+                const filteredVisits = dateFilteredVisits.filter((v) => {
                   if (!canViewAllFieldVisits || visitSalesFilter === "All") return true;
                   const fLower = visitSalesFilter.toLowerCase();
                   return (
@@ -6770,6 +7086,16 @@ export function ModuleWorkspace({
                 ).length;
                 const gpsCount = visibleFieldVisits.filter((v) => v.gps_latitude).length;
                 const voiceCount = visibleFieldVisits.filter((v) => v.voice_recording_path).length;
+                const visitFiltersActive =
+                  visitSalesFilter !== "All" ||
+                  visitDateRange !== "all" ||
+                  Boolean(visitCustomFrom || visitCustomTo);
+                const resetVisitFilters = () => {
+                  setVisitSalesFilter("All");
+                  setVisitDateRange("all");
+                  setVisitCustomFrom("");
+                  setVisitCustomTo("");
+                };
 
                 return (
                   <div className={`space-y-4 ${isSalesVisits ? "sales-visits-compact" : ""}`}>
@@ -6868,80 +7194,133 @@ export function ModuleWorkspace({
                       </div>
 
                       {canViewAllFieldVisits ? (
-                        <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-card border border-border shadow-2xs">
-                          <div className="flex items-center gap-2.5 flex-1 min-w-[240px]">
-                            <UserCheck className="size-4 text-primary shrink-0" />
-                            <span className="text-xs font-semibold text-foreground shrink-0">
-                              Filter by Sales Person:
-                            </span>
-                            <select
-                              aria-label="Filter field visits by sales person"
-                              value={visitSalesFilter}
-                              onChange={(e) => setVisitSalesFilter(e.target.value)}
-                              className="text-xs py-1.5 px-3 rounded-lg border border-border bg-background text-foreground font-medium focus:outline-hidden focus:ring-1 focus:ring-primary cursor-pointer max-w-xs"
-                            >
-                              <option value="All">
-                                All Sales Representatives ({visibleFieldVisits.length})
-                              </option>
-                              {Array.from(
-                                new Set([
-                                  ...visibleFieldVisits
-                                    .map((v) => v.assigned_to_name)
-                                    .filter(Boolean),
-                                  ...visibleFieldVisits.map((v) => v.creator_name).filter(Boolean),
-                                ] as string[]),
-                              )
-                                .filter(Boolean)
-                                .map((officer) => {
-                                  const count = visibleFieldVisits.filter((v) => {
-                                    const oLower = officer.toLowerCase();
-                                    return (
-                                      (v.assigned_to_name &&
-                                        v.assigned_to_name.toLowerCase().includes(oLower)) ||
-                                      (v.creator_name &&
-                                        v.creator_name.toLowerCase().includes(oLower))
-                                    );
-                                  }).length;
-                                  return (
-                                    <option key={officer} value={officer}>
-                                      {officer} ({count} {count === 1 ? "visit" : "visits"})
-                                    </option>
-                                  );
-                                })}
-                            </select>
-
-                            {visitSalesFilter !== "All" && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => setVisitSalesFilter("All")}
-                                className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground cursor-pointer"
+                        <div className="space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-3 p-3 rounded-xl bg-card border border-border shadow-2xs">
+                            <div className="flex flex-wrap items-center gap-2.5 flex-1 min-w-[240px]">
+                              <UserCheck className="size-4 text-primary shrink-0" />
+                              <span className="text-xs font-semibold text-foreground shrink-0">
+                                Filter by Sales Person:
+                              </span>
+                              <select
+                                aria-label="Filter field visits by sales person"
+                                value={visitSalesFilter}
+                                onChange={(e) => setVisitSalesFilter(e.target.value)}
+                                className="text-xs py-1.5 px-3 rounded-lg border border-border bg-background text-foreground font-medium focus:outline-hidden focus:ring-1 focus:ring-primary cursor-pointer max-w-xs"
                               >
-                                <X className="size-3 mr-1" />
-                                Reset
-                              </Button>
-                            )}
+                                <option value="All">
+                                  All Sales Representatives ({dateFilteredVisits.length})
+                                </option>
+                                {Array.from(
+                                  new Set([
+                                    ...dateFilteredVisits
+                                      .map((v) => v.assigned_to_name)
+                                      .filter(Boolean),
+                                    ...dateFilteredVisits
+                                      .map((v) => v.creator_name)
+                                      .filter(Boolean),
+                                  ] as string[]),
+                                )
+                                  .filter(Boolean)
+                                  .map((officer) => {
+                                    const count = dateFilteredVisits.filter((v) => {
+                                      const oLower = officer.toLowerCase();
+                                      return (
+                                        (v.assigned_to_name &&
+                                          v.assigned_to_name.toLowerCase().includes(oLower)) ||
+                                        (v.creator_name &&
+                                          v.creator_name.toLowerCase().includes(oLower))
+                                      );
+                                    }).length;
+                                    return (
+                                      <option key={officer} value={officer}>
+                                        {officer} ({count} {count === 1 ? "visit" : "visits"})
+                                      </option>
+                                    );
+                                  })}
+                              </select>
+
+                              <CalendarDays className="size-4 text-primary shrink-0 ml-1" />
+                              <span className="text-xs font-semibold text-foreground shrink-0">
+                                Filter by Date:
+                              </span>
+                              <select
+                                aria-label="Filter field visits by date"
+                                value={visitDateRange}
+                                onChange={(e) =>
+                                  setVisitDateRange(
+                                    e.target.value as
+                                      | "all"
+                                      | "today"
+                                      | "5days"
+                                      | "1month"
+                                      | "custom",
+                                  )
+                                }
+                                className="text-xs py-1.5 px-3 rounded-lg border border-border bg-background text-foreground font-medium focus:outline-hidden focus:ring-1 focus:ring-primary cursor-pointer"
+                              >
+                                <option value="all">All dates</option>
+                                <option value="today">Today</option>
+                                <option value="5days">Last 5 days</option>
+                                <option value="1month">Last 1 month</option>
+                                <option value="custom">Custom dates</option>
+                              </select>
+
+                              {visitFiltersActive && (
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={resetVisitFilters}
+                                  className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground cursor-pointer"
+                                >
+                                  <X className="size-3 mr-1" />
+                                  Reset
+                                </Button>
+                              )}
+                            </div>
+
+                            <span className="text-xs text-muted-foreground">
+                              Showing{" "}
+                              <strong className="text-foreground">{filteredVisits.length}</strong>{" "}
+                              of {visibleFieldVisits.length} visits
+                            </span>
                           </div>
 
-                          <span className="text-xs text-muted-foreground">
-                            Showing{" "}
-                            <strong className="text-foreground">{filteredVisits.length}</strong> of{" "}
-                            {visibleFieldVisits.length} visits
-                          </span>
+                          {visitDateRange === "custom" && (
+                            <div className="flex flex-wrap items-end gap-3 px-3 py-2 rounded-xl bg-card border border-border shadow-2xs">
+                              <label className="flex flex-col gap-1 min-w-[140px]">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                                  From
+                                </span>
+                                <input
+                                  type="date"
+                                  aria-label="Visit date from"
+                                  value={visitCustomFrom}
+                                  onChange={(e) => setVisitCustomFrom(e.target.value)}
+                                  className="h-8 rounded-lg border border-border bg-background px-2.5 text-xs font-medium text-foreground"
+                                />
+                              </label>
+                              <label className="flex flex-col gap-1 min-w-[140px]">
+                                <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                                  To
+                                </span>
+                                <input
+                                  type="date"
+                                  aria-label="Visit date to"
+                                  value={visitCustomTo}
+                                  onChange={(e) => setVisitCustomTo(e.target.value)}
+                                  className="h-8 rounded-lg border border-border bg-background px-2.5 text-xs font-medium text-foreground"
+                                />
+                              </label>
+                            </div>
+                          )}
                         </div>
                       ) : null}
 
                       {isSalesVisits ? (
                         <div className="rounded-xl border border-border bg-card overflow-hidden">
                           {filteredVisits.length === 0 ? (
-                            <div className="px-4 py-8 text-center text-xs text-muted-foreground space-y-3">
+                            <div className="px-4 py-8 text-center text-xs text-muted-foreground">
                               <p>You haven&apos;t logged any field visits yet.</p>
-                              {canLogFieldVisit && (
-                                <Button size="sm" onClick={() => setTab("Log a visit")}>
-                                  <Plus className="size-3.5 mr-1" />
-                                  Log your first visit
-                                </Button>
-                              )}
                             </div>
                           ) : (
                             <div className="divide-y divide-border">
@@ -6988,11 +7367,11 @@ export function ModuleWorkspace({
                         </div>
                       ) : (
                         <>
-                          <div className="field-visit-rail flex flex-row flex-nowrap items-stretch gap-3 overflow-x-auto overflow-y-hidden">
+                          <div className="field-visit-rail flex flex-col items-stretch gap-2.5">
                             {filteredVisits.map((v) => (
                               <button
                                 type="button"
-                                className="field-visit-rail-card shrink-0"
+                                className="field-visit-rail-card w-full"
                                 key={v.id || v.customer_name}
                                 onClick={() => setSelectedVisitDetail(v)}
                                 title="Open full visit details"
@@ -7057,16 +7436,26 @@ export function ModuleWorkspace({
                           {visibleFieldVisits.length > 0 && filteredVisits.length === 0 && (
                             <div className="p-8 text-center rounded-2xl border border-dashed border-border text-muted-foreground text-xs space-y-3">
                               <p>
-                                No field visits found for{" "}
-                                <strong className="text-foreground">"{visitSalesFilter}"</strong>.
+                                No field visits match the current{" "}
+                                {visitSalesFilter !== "All" ? (
+                                  <>
+                                    sales filter{" "}
+                                    <strong className="text-foreground">
+                                      &quot;{visitSalesFilter}&quot;
+                                    </strong>
+                                  </>
+                                ) : (
+                                  "date filter"
+                                )}
+                                .
                               </p>
                               <Button
                                 size="sm"
                                 variant="outline"
-                                onClick={() => setVisitSalesFilter("All")}
+                                onClick={resetVisitFilters}
                                 className="cursor-pointer"
                               >
-                                Show All Sales Representatives
+                                Clear filters
                               </Button>
                             </div>
                           )}
@@ -8993,14 +9382,14 @@ export function ModuleWorkspace({
                   }
                   )
                 </h4>
-                <div className="field-visit-rail flex flex-row flex-nowrap items-stretch gap-3 overflow-x-auto overflow-y-hidden">
+                <div className="field-visit-rail flex flex-col items-stretch gap-2.5">
                   {visibleFieldVisits
                     .filter((v) => v.customer_name === selectedCustomerDetails.name)
                     .map((v) => (
                       <button
                         type="button"
                         key={v.id || v.customer_name}
-                        className="field-visit-rail-card shrink-0"
+                        className="field-visit-rail-card w-full"
                         onClick={() => setSelectedVisitDetail(v)}
                         title="Open full visit details"
                       >
@@ -9428,12 +9817,58 @@ export function ModuleWorkspace({
             </label>
             <label className="drawer-field">
               Supplier (Bill from) <span className="text-destructive">*</span>
-              <input
-                required
-                value={poSupplier}
-                onChange={(e) => setPoSupplier(e.target.value)}
-                placeholder="e.g. Gujarat Ambuja Exports Ltd"
-              />
+              {dbSuppliers.filter((s) => s.status === "Active").length > 0 ? (
+                <>
+                  <select
+                    value={
+                      dbSuppliers.some((s) => s.name === poSupplier) ? poSupplier : "__custom__"
+                    }
+                    onChange={(e) => {
+                      if (e.target.value === "__custom__") {
+                        setPoSupplier("");
+                        return;
+                      }
+                      setPoSupplier(e.target.value);
+                    }}
+                  >
+                    <option value="">Select supplier profile…</option>
+                    {dbSuppliers
+                      .filter((s) => s.status === "Active")
+                      .filter((s) => poCompany === "all" || s.company_id === poCompany)
+                      .map((s) => (
+                        <option key={s.id || s.name} value={s.name}>
+                          {s.name}
+                        </option>
+                      ))}
+                    <option value="__custom__">Other / type manually…</option>
+                  </select>
+                  {!dbSuppliers.some((s) => s.name === poSupplier) && (
+                    <input
+                      required
+                      className="mt-2"
+                      value={poSupplier}
+                      onChange={(e) => setPoSupplier(e.target.value)}
+                      placeholder="Type supplier name"
+                    />
+                  )}
+                </>
+              ) : (
+                <input
+                  required
+                  value={poSupplier}
+                  onChange={(e) => setPoSupplier(e.target.value)}
+                  placeholder="e.g. Gujarat Ambuja Exports Ltd"
+                />
+              )}
+              {hasPermission("suppliers.manage") && (
+                <button
+                  type="button"
+                  className="mt-1.5 text-[11px] font-semibold text-primary hover:underline text-left"
+                  onClick={() => navigate({ to: "/suppliers" })}
+                >
+                  Manage supplier profiles →
+                </button>
+              )}
             </label>
             <label className="drawer-field">
               Product / Description of Goods <span className="text-destructive">*</span>

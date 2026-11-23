@@ -56,6 +56,12 @@ export const ACCESS_FEATURES: AccessFeature[] = [
     permissions: ["customers.view", "customers.manage"],
   },
   {
+    id: "suppliers",
+    name: "Suppliers",
+    description: "View and edit supplier profiles",
+    permissions: ["suppliers.view", "suppliers.manage"],
+  },
+  {
     id: "field_visits",
     name: "Field visits",
     description: "Schedule visits and log GPS or audio",
@@ -270,6 +276,8 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "finance.view_amounts",
     "purchases.view",
     "purchases.create",
+    "suppliers.view",
+    "suppliers.manage",
   ],
   logistics: [
     "logistics.view",
@@ -307,6 +315,8 @@ export const PERMISSION_LABELS: Record<string, { name: string; module: string }>
   "leads.convert": { name: "Convert Leads to Customers", module: "CRM" },
   "customers.view": { name: "View Customers", module: "CRM" },
   "customers.manage": { name: "Add & Edit Customers", module: "CRM" },
+  "suppliers.view": { name: "View Suppliers", module: "Procurement" },
+  "suppliers.manage": { name: "Add & Edit Suppliers", module: "Procurement" },
   "field_visits.view": { name: "View Field Visits", module: "Field Operations" },
   "field_visits.schedule": { name: "Schedule Field Visits", module: "Field Operations" },
   "field_visits.conduct": { name: "Log Visits & Record Audio/GPS", module: "Field Operations" },
@@ -485,6 +495,7 @@ const PERMISSION_ALIASES: Record<string, string[]> = {
   "inventory.edit": ["inventory.adjust"],
   "leads.manage": ["leads.create", "leads.edit"],
   "customers.manage": ["customers.create", "customers.edit"],
+  "suppliers.manage": ["suppliers.create", "suppliers.edit"],
 };
 
 /** Revenue, invoice totals, catalog prices, and other ₹ amounts — accounts + super admin only. */
@@ -521,6 +532,14 @@ export function hasUserPermission(user: UserProfile | null, permission: string):
       permission === "purchases.create" ||
       permission === "purchases.approve" ||
       permission === "purchases.receive")
+  ) {
+    return false;
+  }
+
+  // 1d. Super admin inventory is view-only — stock add/adjust stays with ops
+  if (
+    user.role === "super_admin" &&
+    (permission === "inventory.adjust" || permission === "inventory.edit")
   ) {
     return false;
   }

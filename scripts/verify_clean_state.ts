@@ -46,30 +46,36 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
 /** FK-safe wipe order (children first). */
 const businessTables = [
   "payments",
-  "invoices",
   "deliveries",
+  "credit_notes",
+  "invoices",
   "order_items",
-  "orders",
   "field_visits",
+  "orders",
   "leads",
-  "customers",
   "tasks",
+  "customers",
   "purchase_orders",
   "inventory_logs",
+  "batch_quality_results",
+  "product_batches",
   "products",
-  "credit_notes",
   "vehicles",
   "audit_logs",
   "notifications",
 ];
 
+function isMissingTable(message: string) {
+  return /Could not find the table|does not exist|schema cache/i.test(message);
+}
+
 async function wipeTable(table: string) {
   // Prefer deleting all rows; fall back to created_at filter if id filter fails.
   let { error } = await supabase.from(table).delete().neq("id", "___never___");
-  if (error) {
+  if (error && !isMissingTable(error.message)) {
     ({ error } = await supabase.from(table).delete().gte("created_at", "1970-01-01"));
   }
-  if (error) {
+  if (error && !isMissingTable(error.message)) {
     // Some tables use UUID ids — delete with a always-true predicate via filter.
     ({ error } = await supabase.from(table).delete().not("id", "is", null));
   }
@@ -85,12 +91,20 @@ async function countTable(table: string) {
 async function resetAndVerify() {
   console.log("=== WIPING DUMMY / BUSINESS DATA ===\n");
 
-  for (const table of businessTables) {
-    const error = await wipeTable(table);
-    if (error) {
-      console.warn(`  ${table}: ${error.message}`);
-    } else {
-      console.log(`  cleared ${table}`);
+  // Two passes in case any FK dependency was missed on the first sweep.
+  for (let pass = 1; pass <= 2; pass++) {
+    if (pass > 1) console.log("\n=== RETRY PASS ===\n");
+    for (const table of businessTables) {
+      const error = await wipeTable(table);
+      if (error) {
+        if (isMissingTable(error.message)) {
+          console.log(`  skip ${table} (not in this DB)`);
+        } else {
+          console.warn(`  ${table}: ${error.message}`);
+        }
+      } else {
+        console.log(`  cleared ${table}`);
+      }
     }
   }
 
@@ -99,8 +113,12 @@ async function resetAndVerify() {
   for (const table of businessTables) {
     const { count, error } = await countTable(table);
     if (error) {
-      console.log(`  ${table}: ERROR ${error}`);
-      allZero = false;
+      if (isMissingTable(error)) {
+        console.log(`  ${table}: (not in this DB)`);
+      } else {
+        console.log(`  ${table}: ERROR ${error}`);
+        allZero = false;
+      }
     } else {
       console.log(`  ${table}: ${count}`);
       if (count !== 0) allZero = false;

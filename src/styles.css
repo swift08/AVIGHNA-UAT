@@ -157,6 +157,24 @@
     outline: 2px solid var(--primary);
     outline-offset: 2px;
   }
+  /* Compact toolbar selects — override global padding so h-8 text is not clipped */
+  select.toolbar-select {
+    box-sizing: border-box;
+    height: 2rem;
+    min-height: 2rem;
+    max-height: 2rem;
+    margin: 0;
+    padding: 0 0.625rem;
+    line-height: 1.9rem; /* ≈ height − border so native select text centers */
+    font-size: 0.75rem;
+    font-weight: 600;
+    vertical-align: middle;
+  }
+  select.toolbar-select:focus {
+    outline: none;
+    outline-offset: 0;
+    box-shadow: 0 0 0 1px var(--primary);
+  }
   h1,
   h2,
   h3,
@@ -719,6 +737,8 @@
 }
 .customers-grid {
   min-width: 0;
+  /* Never crush cards below a readable width (phone shell + narrow panes). */
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
 }
 .customer-dossier-meta {
   overflow-wrap: anywhere;
@@ -755,7 +775,7 @@
 }
 @media (max-width: 1100px) {
   .customers-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
     gap: 14px;
   }
   .customer-card {
@@ -776,7 +796,7 @@
     flex-shrink: 0;
   }
   .customers-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
     gap: 12px;
   }
   .customer-card {
@@ -1863,11 +1883,9 @@
     min-width: 0;
     overflow: hidden;
   }
-  .field-role .module-grid {
-    grid-template-columns: 1fr !important;
-    gap: 12px !important;
-  }
-  .field-role .customers-grid {
+  .field-role .module-grid,
+  .field-role .customers-grid,
+  .field-role .customers-page .customers-grid {
     grid-template-columns: 1fr !important;
     gap: 12px !important;
   }
@@ -2156,6 +2174,37 @@ html.driver-mobile .leads-stage-pills {
   display: flex !important;
 }
 
+/* Phone shell is ~430px; viewport media queries still see desktop width, so force single-column cards. */
+html.driver-mobile .module-grid,
+html.driver-mobile .customers-grid,
+html.driver-mobile .customers-page .customers-grid,
+html.driver-mobile .inventory-page .inventory-grid {
+  grid-template-columns: 1fr !important;
+  gap: 12px !important;
+}
+html.driver-mobile .customer-card {
+  padding: 16px;
+  gap: 12px;
+  width: 100%;
+  max-width: 100%;
+}
+html.driver-mobile .customer-card-row {
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 6px 10px;
+}
+html.driver-mobile .customer-card-footer {
+  flex-wrap: wrap;
+}
+html.driver-mobile .customer-card-cta {
+  white-space: normal;
+}
+html.driver-mobile .customer-card-cta-full {
+  display: none;
+}
+html.driver-mobile .customer-card-cta-short {
+  display: inline;
+}
+
 /* Sales visit history — compact list, no full-width card rail */
 .sales-visits-compact {
   max-width: 720px;
@@ -2164,61 +2213,45 @@ html.driver-mobile .leads-stage-pills {
   max-width: 100%;
 }
 
-/* Field visit history — single horizontal row, scroll sideways */
+/* Field visit history — stacked vertically, one below another */
 .field-visit-rail {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   flex-wrap: nowrap;
   align-items: stretch;
-  gap: 12px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 4px 2px 14px;
-  scroll-snap-type: x mandatory;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
+  gap: 10px;
+  overflow: visible;
+  padding: 2px 0 8px;
 }
 .field-visit-rail-card {
-  flex: 0 0 min(340px, 88vw);
-  width: min(340px, 88vw);
-  max-width: 340px;
-  scroll-snap-align: start;
+  width: 100%;
+  max-width: none;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 16px;
+  gap: 8px;
+  padding: 12px 14px;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--card);
   text-align: left;
   cursor: pointer;
   transition:
     border-color 0.15s ease,
-    box-shadow 0.15s ease,
-    transform 0.15s ease;
+    box-shadow 0.15s ease;
 }
 .field-visit-rail-card:hover {
   border-color: color-mix(in srgb, var(--primary) 45%, var(--border));
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
-  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 html.driver-mobile .field-visit-rail {
   display: flex !important;
-  flex-direction: row !important;
+  flex-direction: column !important;
   flex-wrap: nowrap !important;
   grid-template-columns: none !important;
 }
 html.driver-mobile .field-visit-rail-card {
-  flex: 0 0 min(300px, 86vw);
-  width: min(300px, 86vw);
-  max-width: 300px;
-}
-@media (min-width: 900px) {
-  .field-visit-rail-card {
-    flex-basis: 320px;
-    width: 320px;
-    max-width: 320px;
-  }
+  width: 100%;
+  max-width: none;
 }
 
 /* Prospect Directory: cards on phone shell, table on desktop */
@@ -2610,10 +2643,130 @@ html.driver-mobile .leads-directory-head,
   overflow-wrap: anywhere;
 }
 
+/* Inventory search field */
+.inventory-page .inventory-search {
+  min-width: 12rem;
+}
+.inventory-page .inventory-search-input {
+  min-width: 0;
+}
+
+/* Super admin — view-only long rows stacked by type */
+.inventory-sa-view .inventory-type-list {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+.inventory-sa-view .inventory-type-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.inventory-sa-view .inventory-type-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px;
+}
+.inventory-sa-view .inventory-type-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.inventory-sa-view .inventory-type-count {
+  font-size: 11px;
+  color: var(--muted-foreground);
+}
+.inventory-sa-view .inventory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.inventory-sa-view .inventory-row {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+}
+.inventory-sa-view .inventory-row-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 20px;
+}
+.inventory-sa-view .inventory-row-identity {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.inventory-sa-view .inventory-row-name {
+  max-width: min(100%, 320px);
+}
+.inventory-sa-view .inventory-row-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 8px 4px;
+  flex: 1 1 280px;
+  justify-content: flex-end;
+}
+.inventory-sa-view .inventory-row-metric {
+  min-width: 72px;
+  padding: 2px 10px;
+  border-left: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+}
+.inventory-sa-view .inventory-row-metric:first-child {
+  border-left: none;
+}
+.inventory-sa-view .inventory-row-metric-label {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+.inventory-sa-view .inventory-row-metric-value {
+  display: block;
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--foreground);
+  white-space: nowrap;
+}
+.inventory-sa-view .inventory-row-metric-value .unit {
+  margin-left: 3px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+}
+@media (max-width: 720px) {
+  .inventory-sa-view .inventory-row {
+    padding: 10px 12px;
+  }
+  .inventory-sa-view .inventory-row-metrics {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .inventory-sa-view .inventory-row-metric {
+    border-left: none;
+    padding: 4px 0;
+    min-width: 0;
+    flex: 1 1 22%;
+  }
+}
+
 /* Customers page — keep card scaling ahead of generic .module-grid breakpoints */
 @media (max-width: 1100px) {
   .customers-page .customers-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr));
     gap: 14px;
   }
   .inventory-page .inventory-grid {
@@ -2627,7 +2780,7 @@ html.driver-mobile .leads-directory-head,
     margin-bottom: 14px;
   }
   .customers-page .customers-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
     gap: 12px;
   }
   .customers-page .customer-card {
@@ -2679,8 +2832,11 @@ html.driver-mobile .leads-directory-head,
     gap: 10px;
   }
   .customers-page .customer-card-row {
-    grid-template-columns: 64px minmax(0, 1fr);
-    gap: 4px 8px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .customers-page .customer-card-label {
+    font-size: 10px;
   }
   .customers-page .customer-card-name {
     font-size: 13px;
@@ -2703,6 +2859,11 @@ html.driver-mobile .leads-directory-head,
   .inventory-page .inventory-toolbar-actions {
     width: 100%;
     gap: 8px;
+  }
+  .inventory-page .inventory-search {
+    flex: 1 1 100%;
+    width: 100%;
+    min-width: 0;
   }
   .inventory-page .inventory-toolbar-btn,
   .inventory-page .inventory-toolbar-actions > button {
@@ -2781,6 +2942,11 @@ html.driver-mobile .leads-directory-head,
     grid-template-columns: repeat(3, minmax(0, 1fr));
     width: 100%;
     gap: 6px;
+  }
+  .inventory-page .inventory-search {
+    grid-column: 1 / -1;
+    width: 100%;
+    min-width: 0;
   }
   .inventory-page .inventory-toolbar-btn,
   .inventory-page .inventory-toolbar-actions > button {

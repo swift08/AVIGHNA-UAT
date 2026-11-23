@@ -10,9 +10,7 @@ import {
   Clock,
   CreditCard,
   FileCheck2,
-  MapPin,
   Package,
-  Plus,
   ShoppingBag,
   SlidersHorizontal,
   Truck,
@@ -242,8 +240,14 @@ function Overview() {
     ];
   }, [todaysOrders, hasPermission]);
 
-  // Only Accounts + Super Admin see revenue / outstanding amounts.
+  // Accounts + Super Admin see money amounts (receivables / payables / invoice figures).
   const hideRevenue = !hasPermission("finance.view_amounts");
+  // Accounts keeps money, payables & receivables — but not the Total revenue roll-up.
+  const isAccounts = currentUser?.role === "accounts";
+  const hideTotalRevenue = hideRevenue || isAccounts;
+  const payablesAmount = dbPOs
+    .filter((p) => !["Rejected", "Received"].includes(p.status))
+    .reduce((sum, p) => sum + (Number(p.total_amount) || 0), 0);
 
   const paymentsDueCount = useMemo(
     () => dbInvoices.filter((i) => i.status !== "Paid" && Number(i.remaining_amount) > 0).length,
@@ -302,20 +306,6 @@ function Overview() {
             <p className="mt-2 text-xs text-muted-foreground max-w-xl">
               Your orders and collections — clear status, no clutter.
             </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 shrink-0">
-            <Button asChild size="sm" className="h-9 text-xs font-semibold gap-1.5">
-              <Link to="/orders">
-                <Plus className="size-3.5" />
-                New order
-              </Link>
-            </Button>
-            <Button asChild variant="outline" size="sm" className="h-9 text-xs font-semibold gap-1.5">
-              <Link to="/field-visits" search={{ log: "1" } as never}>
-                <MapPin className="size-3.5" />
-                Log visit
-              </Link>
-            </Button>
           </div>
         </div>
 
@@ -382,7 +372,7 @@ function Overview() {
                 aria-label="Filter recent orders by date"
                 value={salesOrderRange}
                 onChange={(e) => setSalesOrderRange(e.target.value as SalesOrderRange)}
-                className="h-8 rounded-md border border-border bg-background px-2.5 text-xs font-semibold text-foreground"
+                className="toolbar-select rounded-md border border-border bg-background text-foreground"
               >
                 <option value="today">Today</option>
                 <option value="5days">Last 5 days</option>
@@ -764,7 +754,7 @@ function Overview() {
   }
 
   const kpis = [
-    ...(!hideRevenue
+    ...(!hideTotalRevenue
       ? [
           {
             name: "Total revenue",
@@ -774,7 +764,17 @@ function Overview() {
             icon: Wallet,
           },
         ]
-      : []),
+      : isAccounts && !hideRevenue
+        ? [
+            {
+              name: "Payables",
+              value: money(payablesAmount),
+              growth: `${dbPOs.filter((p) => !["Rejected", "Received"].includes(p.status)).length} open POs`,
+              note: "Supplier commitments",
+              icon: Wallet,
+            },
+          ]
+        : []),
     {
       name: "Active orders",
       value: String(activeOrdersCount),
@@ -792,7 +792,7 @@ function Overview() {
     ...(!hideRevenue
       ? [
           {
-            name: "Outstanding",
+            name: "Receivables",
             value: money(outstandingAmount),
             growth: `${dbInvoices.filter((i) => i.status !== "Paid").length} invoices`,
             note: "Awaiting collection",
@@ -855,7 +855,9 @@ function Overview() {
           Executive overview
         </Link>
         {hasPermission("analytics.view") && (
-          <Link to="/analytics">Revenue intelligence</Link>
+          <Link to="/analytics">
+            {isAccounts ? "Receivables & payables" : "Revenue intelligence"}
+          </Link>
         )}
         {hasPermission("logistics.view") && <Link to="/logistics">Operations</Link>}
       </div>
@@ -948,14 +950,12 @@ function Overview() {
 
       <div
         className={
-          hideRevenue
-            ? "grid grid-cols-1"
-            : showAttention
-              ? "middle-grid"
-              : "grid grid-cols-1"
+          (!hideTotalRevenue || (isAccounts && !hideRevenue)) && showAttention
+            ? "middle-grid"
+            : "grid grid-cols-1"
         }
       >
-        {!hideRevenue && (
+        {!hideTotalRevenue && (
           <section className="panel">
             <div className="panel-head">
               <div>
@@ -1016,6 +1016,67 @@ function Overview() {
                 >
                   <Link to="/accounts">
                     Explore report
+                    <ArrowRight className="size-3" />
+                  </Link>
+                </Button>
+              )}
+            </div>
+          </section>
+        )}
+        {isAccounts && !hideRevenue && (
+          <section className="panel">
+            <div className="panel-head">
+              <div>
+                <h2 className="panel-title">Money desk</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Receivables to collect · payables on open purchases
+                </p>
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 px-4 sm:px-[23px] pb-5">
+              <div className="rounded-xl border border-border bg-muted/20 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Receivables
+                </p>
+                <p className="mt-1 text-2xl font-semibold tabular-nums">{money(outstandingAmount)}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  {dbInvoices.filter((i) => i.status !== "Paid").length} open invoices
+                </p>
+              </div>
+              <div className="rounded-xl border border-border bg-muted/20 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  Payables
+                </p>
+                <p className="mt-1 text-2xl font-semibold tabular-nums">{money(payablesAmount)}</p>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  {
+                    dbPOs.filter((p) => !["Rejected", "Received"].includes(p.status)).length
+                  }{" "}
+                  open purchase orders
+                </p>
+              </div>
+            </div>
+            <div className="insight-strip">
+              <div className="flex items-center gap-2">
+                <span className="flex size-5 items-center justify-center rounded-full bg-accent text-primary">
+                  <CreditCard size={12} />
+                </span>
+                <span>
+                  <b className="font-semibold">Collections & commitments.</b>{" "}
+                  <span className="text-muted-foreground">
+                    Invoice dues and supplier POs — no total revenue roll-up.
+                  </span>
+                </span>
+              </div>
+              {hasPermission("invoices.view") && (
+                <Button
+                  asChild
+                  variant="link"
+                  size="sm"
+                  className="h-auto p-0 text-xs font-semibold"
+                >
+                  <Link to="/accounts">
+                    Open invoices
                     <ArrowRight className="size-3" />
                   </Link>
                 </Button>
@@ -1102,7 +1163,7 @@ function Overview() {
           </section>
         )}
       </div>
-      {showCompanies && !hideRevenue && company === "all" && (
+      {showCompanies && !hideTotalRevenue && company === "all" && (
         <section className="panel mt-[22px]">
           <div className="panel-head !pb-3 !pt-4">
             <h2 className="panel-title !text-sm">One group. Four engines of growth.</h2>

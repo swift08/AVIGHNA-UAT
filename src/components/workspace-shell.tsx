@@ -7,6 +7,7 @@ import {
   Check,
   ChevronsUpDown,
   CreditCard,
+  Factory,
   FileText,
   KeyRound,
   LayoutDashboard,
@@ -103,6 +104,7 @@ export const navigation = [
       { name: "Orders", url: "/orders", icon: ShoppingBag, perm: "orders.view" },
       { name: "Inventory", url: "/inventory", icon: Package, perm: "inventory.view" },
       { name: "Purchases", url: "/purchases", icon: FileText, perm: "purchases.view" },
+      { name: "Suppliers", url: "/suppliers", icon: Factory, perm: "suppliers.view" },
       { name: "Logistics", url: "/logistics", icon: Truck, perm: "logistics.view" },
       {
         name: "Floor analytics",
@@ -124,11 +126,26 @@ export const navigation = [
         icon: ArrowUpRight,
         perm: "analytics.view",
         accountsOrSuperAdminOnly: true,
+        accountsLabel: "Receivables & payables",
       },
       { name: "Administration", url: "/administration", icon: Settings2, perm: "admin.manage" },
     ],
   },
 ];
+
+function navLabel(
+  item: (typeof navigation)[number]["items"][number],
+  role: string | undefined,
+) {
+  if (
+    role === "accounts" &&
+    "accountsLabel" in item &&
+    typeof item.accountsLabel === "string"
+  ) {
+    return item.accountsLabel;
+  }
+  return item.name;
+}
 
 function navVisible(
   item: (typeof navigation)[number]["items"][number],
@@ -409,11 +426,11 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                         ? "active"
                         : ""
                     }
-                    title={item.name}
+                    title={navLabel(item, currentUser?.role)}
                   >
                     <Link to={item.url}>
                       <item.icon />
-                      <span className="sidebar-copy">{item.name}</span>
+                      <span className="sidebar-copy">{navLabel(item, currentUser?.role)}</span>
                     </Link>
                   </Button>
                 ))}
@@ -728,7 +745,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                         >
                           <Link to={item.url}>
                             <item.icon className="size-4 shrink-0" />
-                            <span className="truncate">{item.name}</span>
+                            <span className="truncate">{navLabel(item, currentUser?.role)}</span>
                           </Link>
                         </Button>
                       ))}
@@ -792,12 +809,14 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           {navigation
             .flatMap((g) => g.items)
             .filter((i) => navVisible(i, currentUser?.role, hasPermission))
-            .filter((i) => i.name.toLowerCase().includes(query.toLowerCase()))
+            .filter((i) =>
+              navLabel(i, currentUser?.role).toLowerCase().includes(query.toLowerCase()),
+            )
             .map((item) => (
               <Button asChild variant="ghost" key={item.url} className="mb-1 w-full justify-start">
                 <Link to={item.url} onClick={() => setSearchOpen(false)}>
                   <item.icon />
-                  {item.name}
+                  {navLabel(item, currentUser?.role)}
                   <ArrowUpRight className="ml-auto" />
                 </Link>
               </Button>

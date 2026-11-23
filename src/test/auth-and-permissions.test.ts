@@ -96,6 +96,8 @@ describe("Avighna One — Authentication, Security & Granular Permissions Audit"
       expect(hasUserPermission(accounts, "finance.view_amounts")).toBe(true);
       expect(hasUserPermission(accounts, "purchases.view")).toBe(true);
       expect(hasUserPermission(accounts, "purchases.create")).toBe(true);
+      expect(hasUserPermission(accounts, "suppliers.view")).toBe(true);
+      expect(hasUserPermission(accounts, "suppliers.manage")).toBe(true);
 
       // Must NOT have operations actions
       expect(hasUserPermission(accounts, "orders.approve")).toBe(false);

@@ -84,6 +84,8 @@ VALUES
   ('leads.convert', 'CRM', 'Convert leads to customers'),
   ('customers.view', 'CRM', 'View customers'),
   ('customers.manage', 'CRM', 'Create and edit customers'),
+  ('suppliers.view', 'Procurement', 'View supplier profiles'),
+  ('suppliers.manage', 'Procurement', 'Create and edit supplier profiles'),
   ('field_visits.view', 'Operations', 'View field visits'),
   ('field_visits.schedule', 'Operations', 'Schedule field visits'),
   ('field_visits.conduct', 'Operations', 'Check in on-site, capture GPS and photos'),
@@ -117,7 +119,9 @@ INSERT INTO public.role_permissions (role_id, permission_id) VALUES
   ('logistics', 'logistics.view'), ('logistics', 'logistics.dispatch'), ('logistics', 'logistics.deliver'),
   ('logistics', 'orders.view'), ('logistics', 'tasks.view'), ('logistics', 'customers.view'),
   ('accounts', 'invoices.view'), ('accounts', 'invoices.generate'), ('accounts', 'payments.record'),
-  ('accounts', 'orders.view'), ('accounts', 'tasks.view'), ('accounts', 'customers.view')
+  ('accounts', 'orders.view'), ('accounts', 'tasks.view'), ('accounts', 'customers.view'),
+  ('accounts', 'purchases.view'), ('accounts', 'purchases.create'),
+  ('accounts', 'suppliers.view'), ('accounts', 'suppliers.manage')
 ON CONFLICT DO NOTHING;
 
 -- ------------------------------------------------------------------------
@@ -184,6 +188,24 @@ CREATE TABLE IF NOT EXISTS public.customers (
   phone TEXT,
   email TEXT,
   address TEXT,
+  status TEXT NOT NULL DEFAULT 'Active' CHECK (status IN ('Active', 'Inactive')),
+  notes TEXT,
+  created_by UUID REFERENCES public.user_profiles(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.suppliers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id TEXT NOT NULL REFERENCES public.companies(id),
+  name TEXT NOT NULL,
+  initials TEXT NOT NULL,
+  contact_person TEXT,
+  phone TEXT,
+  email TEXT,
+  address TEXT,
+  gstin TEXT,
+  payment_terms_days INTEGER NOT NULL DEFAULT 30,
   status TEXT NOT NULL DEFAULT 'Active' CHECK (status IN ('Active', 'Inactive')),
   notes TEXT,
   created_by UUID REFERENCES public.user_profiles(id),

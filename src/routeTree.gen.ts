@@ -22,9 +22,12 @@ import { Route as LeadsRouteImport } from './routes/leads'
 import { Route as LogisticsRouteImport } from './routes/logistics'
 import { Route as OrdersRouteImport } from './routes/orders'
 import { Route as PurchasesRouteImport } from './routes/purchases'
+import { Route as SuppliersRouteImport } from './routes/suppliers'
 import { Route as TasksRouteImport } from './routes/tasks'
 import { Route as CustomersIndexRouteImport } from './routes/customers.index'
 import { Route as CustomersCustomerIdRouteImport } from './routes/customers.$customerId'
+import { Route as SuppliersIndexRouteImport } from './routes/suppliers.index'
+import { Route as SuppliersSupplierIdRouteImport } from './routes/suppliers.$supplierId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -91,6 +94,11 @@ const PurchasesRoute = PurchasesRouteImport.update({
   path: '/purchases',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SuppliersRoute = SuppliersRouteImport.update({
+  id: '/suppliers',
+  path: '/suppliers',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TasksRoute = TasksRouteImport.update({
   id: '/tasks',
   path: '/tasks',
@@ -105,6 +113,16 @@ const CustomersCustomerIdRoute = CustomersCustomerIdRouteImport.update({
   id: '/$customerId',
   path: '/$customerId',
   getParentRoute: () => CustomersRoute,
+} as any)
+const SuppliersIndexRoute = SuppliersIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => SuppliersRoute,
+} as any)
+const SuppliersSupplierIdRoute = SuppliersSupplierIdRouteImport.update({
+  id: '/$supplierId',
+  path: '/$supplierId',
+  getParentRoute: () => SuppliersRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
@@ -121,9 +139,12 @@ export interface FileRoutesByFullPath {
   '/logistics': typeof LogisticsRoute
   '/orders': typeof OrdersRoute
   '/purchases': typeof PurchasesRoute
+  '/suppliers': typeof SuppliersRouteWithChildren
   '/tasks': typeof TasksRoute
   '/customers/$customerId': typeof CustomersCustomerIdRoute
+  '/suppliers/$supplierId': typeof SuppliersSupplierIdRoute
   '/customers/': typeof CustomersIndexRoute
+  '/suppliers/': typeof SuppliersIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -140,7 +161,9 @@ export interface FileRoutesByTo {
   '/purchases': typeof PurchasesRoute
   '/tasks': typeof TasksRoute
   '/customers/$customerId': typeof CustomersCustomerIdRoute
+  '/suppliers/$supplierId': typeof SuppliersSupplierIdRoute
   '/customers': typeof CustomersIndexRoute
+  '/suppliers': typeof SuppliersIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -157,9 +180,12 @@ export interface FileRoutesById {
   '/logistics': typeof LogisticsRoute
   '/orders': typeof OrdersRoute
   '/purchases': typeof PurchasesRoute
+  '/suppliers': typeof SuppliersRouteWithChildren
   '/tasks': typeof TasksRoute
   '/customers/$customerId': typeof CustomersCustomerIdRoute
+  '/suppliers/$supplierId': typeof SuppliersSupplierIdRoute
   '/customers/': typeof CustomersIndexRoute
+  '/suppliers/': typeof SuppliersIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -177,9 +203,12 @@ export interface FileRouteTypes {
     | '/logistics'
     | '/orders'
     | '/purchases'
+    | '/suppliers'
     | '/tasks'
     | '/customers/$customerId'
+    | '/suppliers/$supplierId'
     | '/customers/'
+    | '/suppliers/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -196,7 +225,9 @@ export interface FileRouteTypes {
     | '/purchases'
     | '/tasks'
     | '/customers/$customerId'
+    | '/suppliers/$supplierId'
     | '/customers'
+    | '/suppliers'
   id:
     | '__root__'
     | '/'
@@ -212,9 +243,12 @@ export interface FileRouteTypes {
     | '/logistics'
     | '/orders'
     | '/purchases'
+    | '/suppliers'
     | '/tasks'
     | '/customers/$customerId'
+    | '/suppliers/$supplierId'
     | '/customers/'
+    | '/suppliers/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -231,6 +265,7 @@ export interface RootRouteChildren {
   LogisticsRoute: typeof LogisticsRoute
   OrdersRoute: typeof OrdersRoute
   PurchasesRoute: typeof PurchasesRoute
+  SuppliersRoute: typeof SuppliersRouteWithChildren
   TasksRoute: typeof TasksRoute
 }
 
@@ -327,6 +362,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PurchasesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/suppliers': {
+      id: '/suppliers'
+      path: '/suppliers'
+      fullPath: '/suppliers'
+      preLoaderRoute: typeof SuppliersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/tasks': {
       id: '/tasks'
       path: '/tasks'
@@ -348,6 +390,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CustomersCustomerIdRouteImport
       parentRoute: typeof CustomersRoute
     }
+    '/suppliers/': {
+      id: '/suppliers/'
+      path: '/'
+      fullPath: '/suppliers/'
+      preLoaderRoute: typeof SuppliersIndexRouteImport
+      parentRoute: typeof SuppliersRoute
+    }
+    '/suppliers/$supplierId': {
+      id: '/suppliers/$supplierId'
+      path: '/$supplierId'
+      fullPath: '/suppliers/$supplierId'
+      preLoaderRoute: typeof SuppliersSupplierIdRouteImport
+      parentRoute: typeof SuppliersRoute
+    }
   }
 }
 
@@ -365,6 +421,20 @@ const CustomersRouteWithChildren = CustomersRoute._addFileChildren(
   CustomersRouteChildren,
 )
 
+interface SuppliersRouteChildren {
+  SuppliersSupplierIdRoute: typeof SuppliersSupplierIdRoute
+  SuppliersIndexRoute: typeof SuppliersIndexRoute
+}
+
+const SuppliersRouteChildren: SuppliersRouteChildren = {
+  SuppliersSupplierIdRoute: SuppliersSupplierIdRoute,
+  SuppliersIndexRoute: SuppliersIndexRoute,
+}
+
+const SuppliersRouteWithChildren = SuppliersRoute._addFileChildren(
+  SuppliersRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AccountsRoute: AccountsRoute,
@@ -379,6 +449,7 @@ const rootRouteChildren: RootRouteChildren = {
   LogisticsRoute: LogisticsRoute,
   OrdersRoute: OrdersRoute,
   PurchasesRoute: PurchasesRoute,
+  SuppliersRoute: SuppliersRouteWithChildren,
   TasksRoute: TasksRoute,
 }
 export const routeTree = rootRouteImport
