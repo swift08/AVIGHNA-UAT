@@ -59,15 +59,18 @@ export function ProductBatchesPanel({
   productName,
   tone = "inventory",
   defaultOpen = false,
+  embedded = false,
 }: {
   productId: string;
   productName?: string;
   /** Delivery trips use clearer “analysis report” copy for logistics drivers. */
   tone?: "inventory" | "delivery";
   defaultOpen?: boolean;
+  /** Always show batch / analysis content (no toggle) — used in product detail drawers. */
+  embedded?: boolean;
 }) {
   const [batches, setBatches] = useState<ProductBatchRow[]>([]);
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(defaultOpen || embedded);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const isDelivery = tone === "delivery";
@@ -84,9 +87,9 @@ export function ProductBatchesPanel({
   };
 
   useEffect(() => {
-    if (defaultOpen) void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once when delivery panel mounts open
-  }, [defaultOpen, productId]);
+    if (defaultOpen || embedded) void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- load once when panel mounts open
+  }, [defaultOpen, embedded, productId]);
 
   const openCoaAccess = async (batchId: string, mode: "view" | "download" | "share") => {
     setBusyId(batchId);
@@ -141,26 +144,36 @@ export function ProductBatchesPanel({
   };
 
   return (
-    <div className={isDelivery ? "mt-2" : "mt-3 border-t border-border/70 pt-3"}>
-      <button
-        type="button"
-        className="text-[11px] font-semibold text-primary hover:underline cursor-pointer"
-        onClick={() => {
-          const next = !open;
-          setOpen(next);
-          if (next) void load();
-        }}
-      >
-        {isDelivery
-          ? open
-            ? "Hide analysis report"
-            : "View analysis report"
-          : open
-            ? "Hide batches / COA"
-            : "View batches / COA"}
-      </button>
-      {open && (
-        <div className="mt-2 space-y-2">
+    <div
+      className={
+        embedded
+          ? "space-y-2"
+          : isDelivery
+            ? "mt-2"
+            : "mt-3 border-t border-border/70 pt-3"
+      }
+    >
+      {!embedded && (
+        <button
+          type="button"
+          className="text-[11px] font-semibold text-primary hover:underline cursor-pointer"
+          onClick={() => {
+            const next = !open;
+            setOpen(next);
+            if (next) void load();
+          }}
+        >
+          {isDelivery
+            ? open
+              ? "Hide analysis report"
+              : "View analysis report"
+            : open
+              ? "Hide batches / COA"
+              : "View batches / COA"}
+        </button>
+      )}
+      {(open || embedded) && (
+        <div className={embedded ? "space-y-2" : "mt-2 space-y-2"}>
           {loading && <p className="text-[11px] text-muted-foreground">Loading analysis report…</p>}
           {!loading && batches.length === 0 && (
             <p className="text-[11px] text-muted-foreground">
@@ -361,11 +374,15 @@ export function CoaImportButton({
   actorName,
   defaultCompanyId,
   onImported,
+  label = "Import Product from COA",
+  shortLabel = "COA Import",
 }: {
   actorRole: RoleType | undefined;
   actorName: string;
   defaultCompanyId: string;
   onImported: () => void;
+  label?: string;
+  shortLabel?: string;
 }) {
   const allowed = actorRole === "super_admin" || actorRole === "supervisor";
   const [open, setOpen] = useState(false);
@@ -601,8 +618,8 @@ export function CoaImportButton({
         }}
       >
         <FileUp className="size-3.5" />
-        <span className="inventory-btn-full">Import Product from COA</span>
-        <span className="inventory-btn-short">COA Import</span>
+        <span className="inventory-btn-full">{label}</span>
+        <span className="inventory-btn-short">{shortLabel}</span>
       </Button>
 
       <Sheet

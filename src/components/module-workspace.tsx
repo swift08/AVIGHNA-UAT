@@ -449,8 +449,12 @@ export function ModuleWorkspace({
     setTimeout(() => setCopiedField(null), 2000);
   };
 
-  // Inventory list search
+  // Inventory list search + product detail drawer
   const [inventorySearch, setInventorySearch] = useState("");
+  const [inventoryStockFilter, setInventoryStockFilter] = useState<
+    "all" | "low" | "reorder" | "out"
+  >("all");
+  const [selectedInventoryProduct, setSelectedInventoryProduct] = useState<DBProduct | null>(null);
 
   // Product modal state
   const [prodModal, setProdModal] = useState(false);
@@ -3145,13 +3149,18 @@ export function ModuleWorkspace({
           </Button>
         </div>
       ) : null}
-      <h1 className="page-heading">{titles[module]}</h1>
-      <p className="mt-2 text-xs text-muted-foreground">{subtitle[module]}</p>
+      {!(module === "inventory" && (isSuperAdmin || isSupervisor)) && (
+        <>
+          <h1 className="page-heading">{titles[module]}</h1>
+          <p className="mt-2 text-xs text-muted-foreground">{subtitle[module]}</p>
+        </>
+      )}
 
       {module !== "credit" &&
       module !== "customers" &&
       module !== "suppliers" &&
-      module !== "field-visits" ? (
+      module !== "field-visits" &&
+      !(module === "inventory" && (isSuperAdmin || isSupervisor)) ? (
         <div className="flex items-center justify-between gap-4 flex-wrap my-6 pb-3 border-b border-border/60">
           <div className="flex items-center gap-3 flex-wrap">
             {(module === "administration"
@@ -3546,300 +3555,529 @@ export function ModuleWorkspace({
         </div>
         )
       ) : module === "inventory" ? (
-        <div className={`inventory-page ${isSuperAdmin ? "inventory-sa-view" : ""}`}>
-          {(() => {
-            const inventoryQuery = inventorySearch.trim().toLowerCase();
-            const filteredInventoryProducts =
-              inventoryQuery === ""
-                ? dbProducts
-                : dbProducts.filter((p) =>
-                    `${p.name} ${p.code} ${p.category || ""}`
-                      .toLowerCase()
-                      .includes(inventoryQuery),
-                  );
+        (() => {
+          const inventoryDashboard = isSuperAdmin || isSupervisor;
+          const cleanInventoryCategory = (raw: string | undefined) =>
+            String(raw || "")
+              .replace(/\s*#ws:.*$/i, "")
+              .trim() || "Uncategorized";
+          const inventoryQuery = inventorySearch.trim().toLowerCase();
+          const productMetrics = dbProducts.map((p) => {
+            const total = p.on_hand;
+            const outbound = outboundOrderedQuantity(dbOrders, p);
+            const available = availableFromStock(total, outbound);
+            const reorder = Number(p.reorder_level) || 0;
+            return {
+              product: p,
+              total,
+              outbound,
+              available,
+              reorder,
+              outOfStock: available <= 0,
+              lowStock: available > 0 && available < reorder,
+              needsReorder: available < reorder,
+              healthy: available >= reorder,
+              category: cleanInventoryCategory(p.category),
+            };
+          });
+          const kpiTotal = productMetrics.length;
+          const kpiLow = productMetrics.filter((m) => m.lowStock).length;
+          const kpiHealthy = productMetrics.filter((m) => m.healthy).length;
+          const kpiReorder = productMetrics.filter((m) => m.needsReorder).length;
+          const kpiOut = productMetrics.filter((m) => m.outOfStock).length;
+          const searchedMetrics =
+            inventoryQuery === ""
+              ? productMetrics
+              : productMetrics.filter((m) =>
+                  `${m.product.name} ${m.product.code} ${m.category}`
+                    .toLowerCase()
+                    .includes(inventoryQuery),
+                );
+          const filteredMetrics = searchedMetrics.filter((m) => {
+            if (inventoryStockFilter === "low") return m.lowStock;
+            if (inventoryStockFilter === "reorder") return m.needsReorder;
+            if (inventoryStockFilter === "out") return m.outOfStock;
+            return true;
+          });
+          const categoryCounts = productMetrics.reduce<Record<string, number>>((acc, m) => {
+            acc[m.category] = (acc[m.category] || 0) + 1;
+            return acc;
+          }, {});
+          const dominantCategory =
+            Object.entries(categoryCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ||
+            "All categories";
+          const canMutateInventory = hasPermission("inventory.adjust");
 
+          if (inventoryDashboard) {
             return (
-              <>
-          <div className="inventory-toolbar mb-5 flex flex-wrap items-center justify-between gap-3">
-            <span className="inventory-toolbar-count text-xs text-muted-foreground">
-              {inventoryQuery
-                ? `${filteredInventoryProducts.length} of ${dbProducts.length} products`
-                : `${dbProducts.length} inventory products tracked`}
-              {isSuperAdmin ? " · view only" : ""}
-            </span>
-            <div className="inventory-toolbar-actions flex flex-wrap items-center gap-2 sm:gap-3">
-              <div className="inventory-search relative w-full min-w-0 sm:w-64">
-                <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                <input
-                  type="search"
-                  aria-label="Search inventory items"
-                  placeholder="Search items by name, code…"
-                  value={inventorySearch}
-                  onChange={(e) => setInventorySearch(e.target.value)}
-                  className="inventory-search-input h-8 w-full rounded-md border border-border bg-background pl-9 pr-8 text-xs font-medium focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-                />
-                {inventorySearch && (
-                  <button
-                    type="button"
-                    aria-label="Clear inventory search"
-                    onClick={() => setInventorySearch("")}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                )}
-              </div>
-              {!isSuperAdmin && hasPermission("inventory.adjust") && (
-                <>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="inventory-toolbar-btn h-8 gap-1.5 text-xs font-semibold"
-                  onClick={() => {
-                    if (dbProducts.length > 0 && dbProducts[0]) {
-                      setInboundProductId(dbProducts[0].id || "");
-                      setInboundReorder(String(dbProducts[0].reorder_level || 20));
-                    }
-                    setInboundModal(true);
-                  }}
-                >
-                  <Plus className="size-3.5" />
-                  <span className="inventory-btn-full">Inbound Stock</span>
-                  <span className="inventory-btn-short">Inbound</span>
-                </Button>
-                <CoaImportButton
-                  actorRole={currentUser?.role}
-                  actorName={currentUser?.name || "User"}
-                  defaultCompanyId={company}
-                  onImported={reloadData}
-                />
-                <Button
-                  size="sm"
-                  className="inventory-toolbar-btn h-8 gap-1.5 text-xs font-semibold"
-                  onClick={() => setProdModal(true)}
-                >
-                  <Plus className="size-3.5" />
-                  <span className="inventory-btn-full">Add Product</span>
-                  <span className="inventory-btn-short">Add</span>
-                </Button>
-                </>
-              )}
-            </div>
-          </div>
-          {isSuperAdmin ? (
-            (() => {
-              const cleanType = (raw: string | undefined) =>
-                String(raw || "")
-                  .replace(/\s*#ws:.*$/i, "")
-                  .trim() || "Uncategorized";
-              const byType = filteredInventoryProducts.reduce<Record<string, DBProduct[]>>((acc, p) => {
-                const key = cleanType(p.category);
-                if (!acc[key]) acc[key] = [];
-                acc[key].push(p);
-                return acc;
-              }, {});
-              const typeNames = Object.keys(byType).sort((a, b) => a.localeCompare(b));
+              <div className="inventory-page inventory-dashboard">
+                <header className="inv-dash-header">
+                  <div className="inv-dash-header-copy min-w-0">
+                    <div className="inv-dash-title-row">
+                      <h1 className="inv-dash-title">Inventory</h1>
+                      <span className="inv-dash-count-badge">
+                        {kpiTotal} products tracked
+                      </span>
+                    </div>
+                    <p className="inv-dash-subtitle">{dominantCategory}</p>
+                  </div>
+                  <div className="inv-dash-header-actions">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="inv-dash-action-btn h-9 gap-1.5 text-xs font-semibold"
+                      onClick={() => navigate({ to: "/analytics" })}
+                    >
+                      <BarChart3 className="size-3.5" />
+                      Reports
+                    </Button>
+                    <CoaImportButton
+                      actorRole={currentUser?.role}
+                      actorName={currentUser?.name || "User"}
+                      defaultCompanyId={company}
+                      onImported={reloadData}
+                      label="Import"
+                      shortLabel="Import"
+                    />
+                    {canMutateInventory && (
+                      <Button
+                        size="sm"
+                        className="inv-dash-action-btn h-9 gap-1.5 text-xs font-semibold"
+                        onClick={() => setProdModal(true)}
+                      >
+                        <Plus className="size-3.5" />
+                        Add Product
+                      </Button>
+                    )}
+                  </div>
+                </header>
 
-              return (
-                <div className="inventory-type-list">
-                  {typeNames.map((typeName) => (
-                    <section key={typeName} className="inventory-type-group">
-                      <div className="inventory-type-head">
-                        <h3 className="inventory-type-title">{typeName}</h3>
-                        <span className="inventory-type-count">
-                          {(byType[typeName] || []).length}{" "}
-                          {(byType[typeName] || []).length === 1 ? "item" : "items"}
-                        </span>
+                <div className="inv-dash-kpis">
+                  {[
+                    {
+                      key: "total",
+                      label: "Total Products",
+                      value: kpiTotal,
+                      icon: Package,
+                      tone: "primary",
+                    },
+                    {
+                      key: "low",
+                      label: "Low Stock",
+                      value: kpiLow,
+                      icon: AlertTriangle,
+                      tone: "warning",
+                    },
+                    {
+                      key: "healthy",
+                      label: "In Stock",
+                      value: kpiHealthy,
+                      icon: Check,
+                      tone: "success",
+                    },
+                    {
+                      key: "reorder",
+                      label: "Reorder Needed",
+                      value: kpiReorder,
+                      icon: ShoppingBag,
+                      tone: "primary",
+                    },
+                  ].map((kpi) => (
+                    <div key={kpi.key} className={`inv-dash-kpi inv-dash-kpi-${kpi.tone}`}>
+                      <span className="inv-dash-kpi-icon" aria-hidden>
+                        <kpi.icon className="size-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="inv-dash-kpi-value">{kpi.value}</p>
+                        <p className="inv-dash-kpi-label">{kpi.label}</p>
                       </div>
-                      <div className="inventory-list">
-                        {(byType[typeName] || []).map((p) => {
-                          const totalStock = p.on_hand;
-                          const outbound = outboundOrderedQuantity(dbOrders, p);
-                          const available = availableFromStock(totalStock, outbound);
-                          const low = available < p.reorder_level;
+                    </div>
+                  ))}
+                </div>
+
+                <div className="inv-dash-controls">
+                  <div className="inv-dash-segments" role="tablist" aria-label="Stock filters">
+                    {(
+                      [
+                        { id: "all" as const, label: "All Products", count: kpiTotal },
+                        { id: "low" as const, label: "Low Stock", count: kpiLow },
+                        { id: "reorder" as const, label: "To Reorder", count: kpiReorder },
+                        { id: "out" as const, label: "Out of Stock", count: kpiOut },
+                      ] as const
+                    ).map((seg) => (
+                      <button
+                        key={seg.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={inventoryStockFilter === seg.id}
+                        className={`inv-dash-segment ${
+                          inventoryStockFilter === seg.id ? "is-active" : ""
+                        }`}
+                        onClick={() => setInventoryStockFilter(seg.id)}
+                      >
+                        {seg.label}
+                        <span className="inv-dash-segment-count">{seg.count}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="inv-dash-search-wrap">
+                    <div className="inv-dash-search relative min-w-0 flex-1">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                      <input
+                        type="search"
+                        aria-label="Search inventory products"
+                        placeholder="Search products by name or code..."
+                        value={inventorySearch}
+                        onChange={(e) => setInventorySearch(e.target.value)}
+                        className="inv-dash-search-input"
+                      />
+                      {inventorySearch && (
+                        <button
+                          type="button"
+                          aria-label="Clear inventory search"
+                          onClick={() => setInventorySearch("")}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        >
+                          <X className="size-3.5" />
+                        </button>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="inv-dash-filter-btn h-9 w-9 shrink-0 p-0"
+                      aria-label="Filter inventory"
+                      title="Filter"
+                    >
+                      <Filter className="size-3.5" />
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="inv-dash-table-shell">
+                  <div className="inv-dash-table-scroll">
+                    <table className="inv-dash-table">
+                      <thead>
+                        <tr>
+                          <th scope="col">Product</th>
+                          <th scope="col">Category</th>
+                          <th scope="col">Price</th>
+                          <th scope="col">Stock</th>
+                          <th scope="col">Total</th>
+                          <th scope="col">Outbound</th>
+                          <th scope="col">Available</th>
+                          <th scope="col">Min reorder</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredMetrics.map((m) => {
+                          const p = m.product;
+                          const stockMax = Math.max(m.reorder, 1);
+                          const stockPct = Math.max(
+                            0,
+                            Math.min(100, (Math.max(m.available, 0) / stockMax) * 100),
+                          );
                           return (
-                            <article className="inventory-row" key={p.id || p.code}>
-                              <div className="inventory-row-main">
-                                <div className="inventory-row-identity min-w-0">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <span
-                                      className={`status shrink-0 ${low ? "warning" : "success"}`}
-                                    >
-                                      {low ? "Low stock" : "Healthy"}
+                            <tr
+                              key={p.id || p.code}
+                              className="inv-dash-row"
+                              tabIndex={0}
+                              aria-label={`Open details for ${p.name}`}
+                              onClick={() => setSelectedInventoryProduct(p)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  setSelectedInventoryProduct(p);
+                                }
+                              }}
+                            >
+                              <td className="inv-dash-col-product">
+                                <div className="inv-dash-product">
+                                  {m.needsReorder ? (
+                                    <span className="inv-dash-status is-low">
+                                      <span className="inv-dash-status-dot" aria-hidden />
+                                      Low stock
                                     </span>
-                                    <h2 className="inventory-row-name text-sm font-bold text-foreground truncate">
-                                      {p.name}
-                                    </h2>
-                                    <span className="text-[10px] font-mono text-muted-foreground">
-                                      {p.code}
+                                  ) : (
+                                    <span className="inv-dash-status is-ok">
+                                      <span className="inv-dash-status-dot" aria-hidden />
+                                      Healthy
                                     </span>
-                                  </div>
+                                  )}
+                                  <p className="inv-dash-product-name">{p.name}</p>
+                                  <p className="inv-dash-product-code">{p.code}</p>
                                   {canViewAmounts && (
-                                    <p className="mt-1 text-[11px] text-muted-foreground">
+                                    <p className="inv-dash-product-prices">
                                       Selling ₹{p.unit_price}/{p.unit}
-                                      <span className="mx-1.5 text-muted-foreground/50">·</span>
+                                      <span aria-hidden> · </span>
                                       Wholesale ₹{p.wholesale_price || p.unit_price}/{p.unit}
                                     </p>
                                   )}
                                 </div>
-                                <div className="inventory-row-metrics">
-                                  <div className="inventory-row-metric">
-                                    <span className="inventory-row-metric-label">Total</span>
-                                    <span className="inventory-row-metric-value">
-                                      {totalStock}
-                                      <span className="unit">{p.unit}</span>
-                                    </span>
-                                  </div>
-                                  <div className="inventory-row-metric">
-                                    <span className="inventory-row-metric-label">Outbound</span>
-                                    <span className="inventory-row-metric-value">
-                                      {outbound}
-                                      <span className="unit">{p.unit}</span>
-                                    </span>
-                                  </div>
-                                  <div className="inventory-row-metric">
-                                    <span className="inventory-row-metric-label">Available</span>
+                              </td>
+                              <td>
+                                <span className="inv-dash-cat">{m.category}</span>
+                              </td>
+                              <td className="inv-dash-num">
+                                {canViewAmounts ? (
+                                  <span className="inv-dash-price">
+                                    ₹{p.unit_price}/{p.unit}
+                                  </span>
+                                ) : (
+                                  <span className="text-muted-foreground">—</span>
+                                )}
+                              </td>
+                              <td className="inv-dash-col-stock">
+                                <div className="inv-dash-stock">
+                                  <div
+                                    className="inv-dash-stock-track"
+                                    role="progressbar"
+                                    aria-valuemin={0}
+                                    aria-valuemax={stockMax}
+                                    aria-valuenow={Math.max(m.available, 0)}
+                                    aria-label={`${p.name} stock versus reorder`}
+                                  >
                                     <span
-                                      className={`inventory-row-metric-value ${low ? "text-amber-600 dark:text-amber-400" : ""}`}
-                                    >
-                                      {available}
-                                      <span className="unit">{p.unit}</span>
-                                    </span>
+                                      className={`inv-dash-stock-fill ${
+                                        m.needsReorder ? "is-low" : "is-ok"
+                                      }`}
+                                      style={{ width: `${stockPct}%` }}
+                                    />
                                   </div>
-                                  <div className="inventory-row-metric">
-                                    <span className="inventory-row-metric-label">Min reorder</span>
-                                    <span className="inventory-row-metric-value">
-                                      {p.reorder_level}
-                                      <span className="unit">{p.unit}</span>
-                                    </span>
-                                  </div>
+                                  <p className="inv-dash-stock-caption">
+                                    {Math.max(m.available, 0)} / {m.reorder} {p.unit}
+                                  </p>
                                 </div>
-                              </div>
-                            </article>
+                              </td>
+                              <td className="inv-dash-num">
+                                <span className="inv-dash-metric">
+                                  {m.total}
+                                  <span className="inv-dash-unit">{p.unit}</span>
+                                </span>
+                              </td>
+                              <td className="inv-dash-num">
+                                <span className="inv-dash-metric">
+                                  {m.outbound}
+                                  <span className="inv-dash-unit">{p.unit}</span>
+                                </span>
+                              </td>
+                              <td className="inv-dash-num">
+                                <span
+                                  className={`inv-dash-metric ${
+                                    m.needsReorder ? "is-warn" : ""
+                                  }`}
+                                >
+                                  {m.available}
+                                  <span className="inv-dash-unit">{p.unit}</span>
+                                </span>
+                              </td>
+                              <td className="inv-dash-num">
+                                <span className="inv-dash-metric">
+                                  {m.reorder}
+                                  <span className="inv-dash-unit">{p.unit}</span>
+                                </span>
+                              </td>
+                            </tr>
                           );
                         })}
-                      </div>
-                    </section>
-                  ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {dbProducts.length === 0 ? (
+                    <p className="inventory-empty p-8 text-center text-muted-foreground text-sm">
+                      No products in inventory yet.
+                    </p>
+                  ) : filteredMetrics.length === 0 ? (
+                    <p className="inventory-empty p-8 text-center text-muted-foreground text-sm">
+                      No products match the current search or filter.
+                    </p>
+                  ) : null}
                 </div>
-              );
-            })()
-          ) : (
-            <div className="module-grid inventory-grid">
-              {filteredInventoryProducts.map((p) => {
-                const totalStock = p.on_hand;
-                const outbound = outboundOrderedQuantity(dbOrders, p);
-                const available = availableFromStock(totalStock, outbound);
-                return (
-                  <article className="module-item inventory-card" key={p.code}>
-                    <div className="inventory-card-head flex items-start justify-between gap-2">
-                      <span className="inventory-card-icon flex size-10 shrink-0 items-center justify-center rounded-md bg-accent text-primary">
-                        <Package size={20} />
-                      </span>
-                      <div className="inventory-card-actions flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:gap-2">
-                        <span
-                          className={`status shrink-0 ${available < p.reorder_level ? "warning" : "success"}`}
-                        >
-                          {available < p.reorder_level ? "Low stock" : "Healthy"}
+              </div>
+            );
+          }
+
+          const filteredInventoryProducts = filteredMetrics.map((m) => m.product);
+
+          return (
+            <div className="inventory-page">
+              <div className="inventory-toolbar mb-5 flex flex-wrap items-center justify-between gap-3">
+                <span className="inventory-toolbar-count text-xs text-muted-foreground">
+                  {inventoryQuery
+                    ? `${filteredInventoryProducts.length} of ${dbProducts.length} products`
+                    : `${dbProducts.length} inventory products tracked`}
+                </span>
+                <div className="inventory-toolbar-actions flex flex-wrap items-center gap-2 sm:gap-3">
+                  <div className="inventory-search relative w-full min-w-0 sm:w-64">
+                    <Search className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                    <input
+                      type="search"
+                      aria-label="Search inventory items"
+                      placeholder="Search items by name, code…"
+                      value={inventorySearch}
+                      onChange={(e) => setInventorySearch(e.target.value)}
+                      className="inventory-search-input h-8 w-full rounded-md border border-border bg-background pl-9 pr-8 text-xs font-medium focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+                    />
+                    {inventorySearch && (
+                      <button
+                        type="button"
+                        aria-label="Clear inventory search"
+                        onClick={() => setInventorySearch("")}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      >
+                        <X className="size-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  {canMutateInventory && (
+                    <>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="inventory-toolbar-btn h-8 gap-1.5 text-xs font-semibold"
+                        onClick={() => {
+                          if (dbProducts.length > 0 && dbProducts[0]) {
+                            setInboundProductId(dbProducts[0].id || "");
+                            setInboundReorder(String(dbProducts[0].reorder_level || 20));
+                          }
+                          setInboundModal(true);
+                        }}
+                      >
+                        <Plus className="size-3.5" />
+                        <span className="inventory-btn-full">Inbound Stock</span>
+                        <span className="inventory-btn-short">Inbound</span>
+                      </Button>
+                      <CoaImportButton
+                        actorRole={currentUser?.role}
+                        actorName={currentUser?.name || "User"}
+                        defaultCompanyId={company}
+                        onImported={reloadData}
+                      />
+                      <Button
+                        size="sm"
+                        className="inventory-toolbar-btn h-8 gap-1.5 text-xs font-semibold"
+                        onClick={() => setProdModal(true)}
+                      >
+                        <Plus className="size-3.5" />
+                        <span className="inventory-btn-full">Add Product</span>
+                        <span className="inventory-btn-short">Add</span>
+                      </Button>
+                    </>
+                  )}
+                </div>
+              </div>
+              <div className="module-grid inventory-grid">
+                {filteredInventoryProducts.map((p) => {
+                  const totalStock = p.on_hand;
+                  const outbound = outboundOrderedQuantity(dbOrders, p);
+                  const available = availableFromStock(totalStock, outbound);
+                  return (
+                    <article className="module-item inventory-card" key={p.code}>
+                      <div className="inventory-card-head flex items-start justify-between gap-2">
+                        <span className="inventory-card-icon flex size-10 shrink-0 items-center justify-center rounded-md bg-accent text-primary">
+                          <Package size={20} />
                         </span>
-                        {hasPermission("inventory.adjust") && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="inventory-edit-btn h-7 px-2 text-xs font-semibold hover:border-primary/60 cursor-pointer"
-                            title="Edit on-hand stock and reorder level"
-                            onClick={() => openEditStock(p)}
+                        <div className="inventory-card-actions flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:gap-2">
+                          <span
+                            className={`status shrink-0 ${available < p.reorder_level ? "warning" : "success"}`}
                           >
-                            <Pencil className="size-3 sm:mr-1" />
-                            <span className="inventory-edit-label">Edit Stock</span>
-                          </Button>
+                            {available < p.reorder_level ? "Low stock" : "Healthy"}
+                          </span>
+                          {canMutateInventory && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="inventory-edit-btn h-7 px-2 text-xs font-semibold hover:border-primary/60 cursor-pointer"
+                              title="Edit on-hand stock and reorder level"
+                              onClick={() => openEditStock(p)}
+                            >
+                              <Pencil className="size-3 sm:mr-1" />
+                              <span className="inventory-edit-label">Edit Stock</span>
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                      <p className="inventory-card-meta eyebrow mt-4 sm:mt-5 !text-[8px]">
+                        {p.category} · {p.code}
+                      </p>
+                      <h2 className="inventory-card-name mt-1.5 sm:mt-2 text-sm font-bold break-words">
+                        {p.name}
+                      </h2>
+                      {canViewAmounts && (
+                        <div className="inventory-card-prices mt-1.5 flex items-center gap-2 flex-wrap text-[11px]">
+                          <span className="font-semibold text-foreground">
+                            Selling: ₹{p.unit_price}/{p.unit}
+                          </span>
+                          <span className="text-muted-foreground/60">·</span>
+                          <span className="text-muted-foreground">
+                            Wholesale: ₹{p.wholesale_price || p.unit_price}/{p.unit}
+                          </span>
+                        </div>
+                      )}
+                      <div className="inventory-stock-grid mt-5 sm:mt-6 grid grid-cols-3 gap-2 border-t border-border pt-3 sm:pt-4">
+                        {[
+                          { n: "Total", full: "Total Stock", v: totalStock },
+                          { n: "Outbound", full: "Outbound / Ordered", v: outbound },
+                          { n: "Available", full: "Available Stock", v: available },
+                        ].map((x) => (
+                          <div key={x.full} className="inventory-stock-cell min-w-0">
+                            <p className="inventory-stock-label text-xs font-semibold text-muted-foreground">
+                              <span className="inventory-stock-label-full">{x.full}</span>
+                              <span className="inventory-stock-label-short">{x.n}</span>
+                            </p>
+                            <p className="inventory-stock-value mt-1 text-lg font-bold">
+                              {x.v}
+                              <span className="ml-1 text-xs font-normal text-muted-foreground">
+                                {p.unit}
+                              </span>
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                      <progress
+                        className="stock-track mt-3 sm:mt-4 w-full"
+                        max={Math.max(totalStock, 1)}
+                        value={Math.max(available, 0)}
+                        aria-label={`${p.name} available stock`}
+                      />
+                      <div className="inventory-card-footer mt-3 sm:mt-4 pt-3 border-t border-border/70 flex items-center justify-between gap-2 text-xs">
+                        <span className="text-muted-foreground text-[11px] min-w-0">
+                          Min Reorder:{" "}
+                          <strong className="text-foreground">
+                            {p.reorder_level} {p.unit}
+                          </strong>
+                        </span>
+                        {canMutateInventory && (
+                          <button
+                            type="button"
+                            onClick={() => openEditStock(p)}
+                            className="inventory-footer-edit shrink-0 text-[11px] font-semibold text-primary hover:underline flex items-center gap-1 cursor-pointer"
+                            title={`Directly edit stock on hand for ${p.name}`}
+                          >
+                            <Pencil className="size-2.5" />
+                            <span className="inventory-footer-edit-full">Edit Stock Count</span>
+                            <span className="inventory-footer-edit-short">Edit</span>
+                          </button>
                         )}
                       </div>
-                    </div>
-                    <p className="inventory-card-meta eyebrow mt-4 sm:mt-5 !text-[8px]">
-                      {p.category} · {p.code}
-                    </p>
-                    <h2 className="inventory-card-name mt-1.5 sm:mt-2 text-sm font-bold break-words">
-                      {p.name}
-                    </h2>
-                    {canViewAmounts && (
-                      <div className="inventory-card-prices mt-1.5 flex items-center gap-2 flex-wrap text-[11px]">
-                        <span className="font-semibold text-foreground">
-                          Selling: ₹{p.unit_price}/{p.unit}
-                        </span>
-                        <span className="text-muted-foreground/60">·</span>
-                        <span className="text-muted-foreground">
-                          Wholesale: ₹{p.wholesale_price || p.unit_price}/{p.unit}
-                        </span>
-                      </div>
-                    )}
-                    <div className="inventory-stock-grid mt-5 sm:mt-6 grid grid-cols-3 gap-2 border-t border-border pt-3 sm:pt-4">
-                      {[
-                        { n: "Total", full: "Total Stock", v: totalStock },
-                        { n: "Outbound", full: "Outbound / Ordered", v: outbound },
-                        { n: "Available", full: "Available Stock", v: available },
-                      ].map((x) => (
-                        <div key={x.full} className="inventory-stock-cell min-w-0">
-                          <p className="inventory-stock-label text-xs font-semibold text-muted-foreground">
-                            <span className="inventory-stock-label-full">{x.full}</span>
-                            <span className="inventory-stock-label-short">{x.n}</span>
-                          </p>
-                          <p className="inventory-stock-value mt-1 text-lg font-bold">
-                            {x.v}
-                            <span className="ml-1 text-xs font-normal text-muted-foreground">
-                              {p.unit}
-                            </span>
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                    <progress
-                      className="stock-track mt-3 sm:mt-4 w-full"
-                      max={Math.max(totalStock, 1)}
-                      value={Math.max(available, 0)}
-                      aria-label={`${p.name} available stock`}
-                    />
-                    <div className="inventory-card-footer mt-3 sm:mt-4 pt-3 border-t border-border/70 flex items-center justify-between gap-2 text-xs">
-                      <span className="text-muted-foreground text-[11px] min-w-0">
-                        Min Reorder:{" "}
-                        <strong className="text-foreground">
-                          {p.reorder_level} {p.unit}
-                        </strong>
-                      </span>
-                      {hasPermission("inventory.adjust") && (
-                        <button
-                          type="button"
-                          onClick={() => openEditStock(p)}
-                          className="inventory-footer-edit shrink-0 text-[11px] font-semibold text-primary hover:underline flex items-center gap-1 cursor-pointer"
-                          title={`Directly edit stock on hand for ${p.name}`}
-                        >
-                          <Pencil className="size-2.5" />
-                          <span className="inventory-footer-edit-full">Edit Stock Count</span>
-                          <span className="inventory-footer-edit-short">Edit</span>
-                        </button>
-                      )}
-                    </div>
-                    {p.id && <ProductBatchesPanel productId={p.id} productName={p.name} />}
-                  </article>
-                );
-              })}
+                      {p.id && <ProductBatchesPanel productId={p.id} productName={p.name} />}
+                    </article>
+                  );
+                })}
+              </div>
+              {dbProducts.length === 0 ? (
+                <p className="inventory-empty p-8 text-center text-muted-foreground text-sm">
+                  No products in inventory. Add a product to configure the catalog.
+                </p>
+              ) : filteredInventoryProducts.length === 0 ? (
+                <p className="inventory-empty p-8 text-center text-muted-foreground text-sm">
+                  No products match “{inventorySearch.trim()}”.
+                </p>
+              ) : null}
             </div>
-          )}
-          {dbProducts.length === 0 ? (
-            <p className="inventory-empty p-8 text-center text-muted-foreground text-sm">
-              {isSuperAdmin
-                ? "No products in inventory yet."
-                : "No products in inventory. Add a product to configure the catalog."}
-            </p>
-          ) : filteredInventoryProducts.length === 0 ? (
-            <p className="inventory-empty p-8 text-center text-muted-foreground text-sm">
-              No products match “{inventorySearch.trim()}”.
-            </p>
-          ) : null}
-              </>
-            );
-          })()}
-        </div>
+          );
+        })()
       ) : module === "accounts" ? (
         <>
           {/* INVOICES & FINANCE DESK KPIS */}
@@ -8252,6 +8490,227 @@ export function ModuleWorkspace({
               </Button>
             </div>
           </form>
+        </SheetContent>
+      </Sheet>
+
+      {/* INVENTORY PRODUCT DETAIL SHEET */}
+      <Sheet
+        open={!!selectedInventoryProduct}
+        onOpenChange={(open) => !open && setSelectedInventoryProduct(null)}
+      >
+        <SheetContent className="overflow-y-auto max-h-[100dvh] w-full sm:max-w-xl pb-16">
+          <SheetHeader>
+            <SheetTitle className="pr-6">
+              {selectedInventoryProduct?.name || "Product details"}
+            </SheetTitle>
+            <SheetDescription>
+              Full product profile, stock analysis, batches and COA reports
+            </SheetDescription>
+          </SheetHeader>
+          {selectedInventoryProduct &&
+            (() => {
+              const p = selectedInventoryProduct;
+              const totalStock = p.on_hand;
+              const outbound = outboundOrderedQuantity(dbOrders, p);
+              const available = availableFromStock(totalStock, outbound);
+              const low = available < p.reorder_level;
+              const nameKey = p.name.trim().toLowerCase();
+              const codeKey = p.code.trim().toLowerCase();
+              const relatedOrders = dbOrders
+                .filter((o) => {
+                  if (
+                    p.company_id !== "all" &&
+                    o.company_id !== "all" &&
+                    o.company_id !== p.company_id
+                  ) {
+                    return false;
+                  }
+                  const line = parseOrderItemsSummary(o.items_summary);
+                  if (!line) return false;
+                  const lineName = line.productName.toLowerCase();
+                  return lineName === nameKey || lineName === codeKey;
+                })
+                .slice(0, 8);
+              const cleanCategory =
+                String(p.category || "")
+                  .replace(/\s*#ws:.*$/i, "")
+                  .trim() || "Uncategorized";
+              const companyName =
+                p.company_id === "all"
+                  ? "All companies"
+                  : companies.find((c) => c.id === p.company_id)?.name || p.company_id;
+
+              return (
+                <div className="mt-5 space-y-5 pb-10">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className={`status ${low ? "warning" : "success"}`}>
+                      {low ? "Low stock" : "Healthy"}
+                    </span>
+                    <span className="text-[11px] font-mono text-muted-foreground">{p.code}</span>
+                    <span className="text-[11px] text-muted-foreground">· {cleanCategory}</span>
+                  </div>
+
+                  <section className="rounded-xl border border-border bg-card p-4 space-y-3">
+                    <h3 className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                      Product details
+                    </h3>
+                    <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3 text-xs">
+                      <div>
+                        <dt className="text-muted-foreground">SKU / Code</dt>
+                        <dd className="mt-0.5 font-semibold font-mono text-foreground">{p.code}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Category</dt>
+                        <dd className="mt-0.5 font-semibold text-foreground">{cleanCategory}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Company</dt>
+                        <dd className="mt-0.5 font-semibold text-foreground">{companyName}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Unit</dt>
+                        <dd className="mt-0.5 font-semibold text-foreground">{p.unit}</dd>
+                      </div>
+                      {canViewAmounts && (
+                        <>
+                          <div>
+                            <dt className="text-muted-foreground">Selling price</dt>
+                            <dd className="mt-0.5 font-semibold text-foreground">
+                              ₹{p.unit_price}/{p.unit}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-muted-foreground">Wholesale price</dt>
+                            <dd className="mt-0.5 font-semibold text-foreground">
+                              ₹{p.wholesale_price || p.unit_price}/{p.unit}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-muted-foreground">Est. inventory value</dt>
+                            <dd className="mt-0.5 font-semibold text-foreground">
+                              {money((Number(p.on_hand) || 0) * (Number(p.unit_price) || 0))}
+                            </dd>
+                          </div>
+                        </>
+                      )}
+                      <div>
+                        <dt className="text-muted-foreground">Reserved</dt>
+                        <dd className="mt-0.5 font-semibold text-foreground">
+                          {p.reserved} {p.unit}
+                        </dd>
+                      </div>
+                    </dl>
+                  </section>
+
+                  <section className="rounded-xl border border-border bg-card p-4 space-y-3">
+                    <h3 className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                      Stock analysis
+                    </h3>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      {[
+                        { label: "Total", value: totalStock },
+                        { label: "Outbound", value: outbound },
+                        { label: "Available", value: available, warn: low },
+                        { label: "Min reorder", value: p.reorder_level },
+                      ].map((m) => (
+                        <div
+                          key={m.label}
+                          className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2"
+                        >
+                          <p className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                            {m.label}
+                          </p>
+                          <p
+                            className={`mt-1 text-sm font-bold ${
+                              m.warn ? "text-amber-600 dark:text-amber-400" : "text-foreground"
+                            }`}
+                          >
+                            {m.value}
+                            <span className="ml-1 text-[10px] font-medium text-muted-foreground">
+                              {p.unit}
+                            </span>
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                    <progress
+                      className="stock-track w-full"
+                      max={Math.max(totalStock, 1)}
+                      value={Math.max(available, 0)}
+                      aria-label={`${p.name} available stock`}
+                    />
+                    <p className="text-[11px] text-muted-foreground">
+                      {low
+                        ? `Available stock is below the reorder level of ${p.reorder_level} ${p.unit}.`
+                        : `Available stock is at or above the reorder level of ${p.reorder_level} ${p.unit}.`}
+                    </p>
+                  </section>
+
+                  <section className="rounded-xl border border-border bg-card p-4 space-y-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <h3 className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                        Demand · recent orders
+                      </h3>
+                      <span className="text-[11px] text-muted-foreground">
+                        {relatedOrders.length} shown
+                      </span>
+                    </div>
+                    {relatedOrders.length === 0 ? (
+                      <p className="text-[11px] text-muted-foreground">
+                        No matching orders found for this product yet.
+                      </p>
+                    ) : (
+                      <ul className="space-y-2">
+                        {relatedOrders.map((o) => {
+                          const line = parseOrderItemsSummary(o.items_summary);
+                          return (
+                            <li
+                              key={o.id}
+                              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/15 px-3 py-2 text-[11px]"
+                            >
+                              <div className="min-w-0">
+                                <p className="font-semibold text-foreground truncate">
+                                  {o.id} · {o.customer_name}
+                                </p>
+                                <p className="text-muted-foreground mt-0.5">
+                                  {line
+                                    ? `${line.quantity} ${p.unit}`
+                                    : o.items_summary || "—"}{" "}
+                                  · {o.status}
+                                </p>
+                              </div>
+                              {canViewAmounts && (
+                                <span className="font-semibold text-foreground shrink-0">
+                                  {money(Number(o.total_amount) || 0)}
+                                </span>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </section>
+
+                  <section className="rounded-xl border border-border bg-card p-4 space-y-3">
+                    <h3 className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                      Batches &amp; analysis report
+                    </h3>
+                    {p.id ? (
+                      <ProductBatchesPanel
+                        productId={p.id}
+                        productName={p.name}
+                        tone="inventory"
+                        embedded
+                      />
+                    ) : (
+                      <p className="text-[11px] text-muted-foreground">
+                        This product has no catalog id yet, so batch / COA records cannot be loaded.
+                      </p>
+                    )}
+                  </section>
+                </div>
+              );
+            })()}
         </SheetContent>
       </Sheet>
 
