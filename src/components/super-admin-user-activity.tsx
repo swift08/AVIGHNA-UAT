@@ -205,8 +205,8 @@ export function SuperAdminUserActivityButton() {
       </Button>
 
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent className="w-full sm:max-w-md overflow-y-auto">
-          <SheetHeader>
+        <SheetContent className="app-sheet w-full sm:max-w-md overflow-y-auto">
+          <SheetHeader className="text-left pr-12">
             <SheetTitle className="flex items-center gap-2">
               {selected ? (
                 <>
@@ -229,8 +229,8 @@ export function SuperAdminUserActivityButton() {
             </SheetTitle>
             <SheetDescription>
               {selected
-                ? "Full activity trail for this login."
-                : "Super Admin only — open a user to review their activity."}
+                ? "Activity for this login."
+                : "Open a user to review activity."}
             </SheetDescription>
           </SheetHeader>
 

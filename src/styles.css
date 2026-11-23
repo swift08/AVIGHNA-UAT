@@ -1604,8 +1604,8 @@
   display: none;
 }
 .mobile-nav-sheet {
-  width: 100% !important;
-  max-width: 100% !important;
+  width: 50vw !important;
+  max-width: 50vw !important;
   z-index: 60 !important;
 }
 .mobile-nav-sheet .nav-item {
@@ -2118,15 +2118,219 @@ html.driver-mobile .content [class*="min-w-"] {
   max-width: 100%;
 }
 html.driver-mobile .mobile-nav-sheet {
-  width: min(430px, 100vw) !important;
-  max-width: min(430px, 100vw) !important;
-  left: max(0px, calc(50vw - 215px)) !important;
+  width: 50vw !important;
+  max-width: 50vw !important;
+  left: 0 !important;
+  right: auto !important;
 }
 html.driver-mobile [role="dialog"].right-0 {
   width: min(430px, 100vw) !important;
   max-width: min(430px, 100vw) !important;
   right: max(0px, calc(50vw - 215px)) !important;
   left: auto !important;
+}
+
+/* Native Android field app: full-bleed phone UI (not a centered web preview). */
+html.field-native,
+html.field-native body {
+  background: var(--background);
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+html.field-native .workspace.driver-mobile {
+  width: 100% !important;
+  max-width: none !important;
+  margin-inline: 0 !important;
+  min-height: 100dvh;
+  box-shadow: none !important;
+  padding-top: env(safe-area-inset-top, 0px);
+}
+html.field-native .mobile-bottom-nav {
+  width: 100% !important;
+  max-width: none !important;
+  margin-inline: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+}
+html.field-native .mobile-nav-sheet {
+  width: 50vw !important;
+  max-width: 50vw !important;
+  left: 0 !important;
+  right: auto !important;
+  padding-top: max(20px, env(safe-area-inset-top, 12px)) !important;
+}
+html.driver-mobile .mobile-nav-sheet {
+  width: 50vw !important;
+  max-width: 50vw !important;
+  left: 0 !important;
+  right: auto !important;
+}
+html.field-native [role="dialog"].right-0,
+html.driver-mobile [role="dialog"].right-0,
+html.field-native .app-sheet,
+html.driver-mobile .app-sheet {
+  width: 100vw !important;
+  max-width: 100vw !important;
+  left: 0 !important;
+  right: 0 !important;
+  padding-top: max(16px, env(safe-area-inset-top, 12px)) !important;
+  padding-bottom: max(16px, env(safe-area-inset-bottom, 12px)) !important;
+  padding-left: 14px !important;
+  padding-right: 14px !important;
+  box-sizing: border-box !important;
+}
+html.field-native .app-sheet .drawer-field,
+html.driver-mobile .app-sheet .drawer-field,
+html.field-native [role="dialog"] .drawer-field,
+html.driver-mobile [role="dialog"] .drawer-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 0 !important;
+}
+html.field-native .app-sheet form,
+html.driver-mobile .app-sheet form {
+  gap: 12px;
+}
+html.field-native .app-sheet .drawer-field input,
+html.field-native .app-sheet .drawer-field select,
+html.field-native .app-sheet .drawer-field textarea,
+html.driver-mobile .app-sheet .drawer-field input,
+html.driver-mobile .app-sheet .drawer-field select,
+html.driver-mobile .app-sheet .drawer-field textarea,
+html.field-native [role="dialog"] input,
+html.field-native [role="dialog"] select,
+html.field-native [role="dialog"] textarea,
+html.driver-mobile [role="dialog"] input,
+html.driver-mobile [role="dialog"] select,
+html.driver-mobile [role="dialog"] textarea {
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
+  font-size: 16px !important; /* stops iOS/Android zoom-on-focus */
+}
+html.field-native .app-sheet .grid,
+html.driver-mobile .app-sheet .grid {
+  grid-template-columns: 1fr !important;
+  gap: 10px !important;
+}
+html.field-native .data-table,
+html.driver-mobile .data-table {
+  font-size: 11px;
+}
+html.field-native .table-scroll,
+html.driver-mobile .table-scroll {
+  margin-inline: -4px;
+  padding-bottom: 8px;
+}
+html.field-native .topbar-search {
+  display: none !important;
+}
+html.field-native .content {
+  padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px));
+}
+html.field-native .eyebrow {
+  display: none;
+}
+html.field-native .page-heading {
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  margin-bottom: 8px;
+}
+html.field-native .page-heading + p,
+html.driver-mobile .page-heading + p {
+  display: none !important;
+}
+html.field-native .login-tagline,
+html.field-native .login-eyebrow {
+  display: none;
+}
+
+/* Log Visit: normal flow only — no sticky layers (they overlapped topbar/bottom nav). */
+.field-visit-screen {
+  margin: 0;
+  padding: 0;
+}
+.field-visit-log {
+  max-width: none;
+  margin: 0;
+  padding: 0 0 24px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+.field-visit-log-head {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 16px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--border);
+  position: static;
+  background: transparent;
+}
+.field-visit-log-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--foreground);
+  line-height: 1.2;
+}
+.field-app-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  min-height: 40px;
+  padding: 0 12px 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.field-app-back:active {
+  background: var(--muted);
+}
+.field-visit-actions {
+  position: static;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  background: transparent;
+}
+.field-visit-capture-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+@media (min-width: 640px) {
+  .field-visit-capture-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+html.driver-mobile .field-visit-capture-grid,
+html.field-native .field-visit-capture-grid {
+  grid-template-columns: 1fr !important;
+}
+html.driver-mobile .field-visit-log,
+html.field-native .field-visit-log {
+  padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+}
+html.driver-mobile .content:has(.field-visit-screen),
+html.field-native .content:has(.field-visit-screen) {
+  padding-top: 12px;
 }
 
 /* Sales/logistics phone shell: stack lead stages instead of side kanban. */
@@ -4192,4 +4396,28 @@ html.driver-mobile .leads-directory-head,
   .login-visual-img {
     transform: none;
   }
+}
+
+/* Field Android app login: single-column phone form, no desktop banner split. */
+.login-screen-field {
+  grid-template-columns: 1fr !important;
+  min-height: 100dvh;
+  padding-top: env(safe-area-inset-top, 0px);
+}
+.login-screen-field .login-visual {
+  min-height: 28dvh !important;
+  max-height: 32dvh;
+}
+.login-screen-field .login-panel {
+  min-height: auto !important;
+  border-left: 0 !important;
+  border-top: 1px solid var(--border);
+  align-items: flex-start !important;
+  padding: 24px 20px calc(28px + env(safe-area-inset-bottom, 0px)) !important;
+}
+.login-screen-field .login-panel-logo {
+  display: block !important;
+}
+.login-screen-field .login-brand {
+  font-size: 32px;
 }

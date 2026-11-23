@@ -41,6 +41,8 @@ import {
   Scale,
   BarChart3,
 } from "lucide-react";
+import { isFieldAdminNavUrl, isFieldApp } from "@/lib/field-app";
+import { requestFieldPermissions } from "@/lib/live-capture";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -300,11 +302,55 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
+  const fieldApp = isFieldApp();
+  const fieldMobileRole =
+    currentUser?.role === "logistics" ||
+    currentUser?.role === "sales" ||
+    (fieldApp && currentUser?.role === "super_admin");
+
   useEffect(() => {
-    const mobileOnly = currentUser?.role === "logistics" || currentUser?.role === "sales";
-    document.documentElement.classList.toggle("driver-mobile", mobileOnly);
+    document.documentElement.classList.toggle("driver-mobile", Boolean(fieldMobileRole));
     return () => document.documentElement.classList.remove("driver-mobile");
-  }, [currentUser?.role]);
+  }, [fieldMobileRole]);
+
+  useEffect(() => {
+    const field = isFieldApp();
+    document.documentElement.classList.toggle("field-native", field);
+    document.body.classList.toggle("field-native", field);
+    if (!field) return;
+    void import("@capacitor/status-bar")
+      .then(({ StatusBar, Style }) =>
+        Promise.all([
+          StatusBar.setOverlaysWebView({ overlay: false }).catch(() => undefined),
+          StatusBar.setStyle({ style: Style.Light }).catch(() => undefined),
+        ]),
+      )
+      .catch(() => undefined);
+    return () => {
+      document.documentElement.classList.remove("field-native");
+      document.body.classList.remove("field-native");
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    if (
+      !fieldApp &&
+      currentUser.role !== "sales" &&
+      currentUser.role !== "logistics" &&
+      currentUser.role !== "super_admin"
+    ) {
+      return;
+    }
+    // Super Admin on field app only needs approvals — skip camera/mic prompts.
+    if (fieldApp && currentUser.role === "super_admin") return;
+    void requestFieldPermissions();
+  }, [currentUser, fieldApp]);
+
+  useEffect(() => {
+    if (!fieldApp || currentUser?.role !== "super_admin") return;
+    if (!isFieldAdminNavUrl(path)) void navigate({ to: "/orders" });
+  }, [fieldApp, currentUser?.role, path, navigate]);
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -345,10 +391,8 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   return (
     <div
       className={`workspace ${collapsed ? "collapsed" : ""} ${
-        currentUser.role === "sales" || currentUser.role === "logistics" ? "field-role" : ""
-      } ${
-        currentUser.role === "logistics" || currentUser.role === "sales" ? "driver-mobile" : ""
-      }`}
+        fieldMobileRole ? "field-role" : ""
+      } ${fieldMobileRole ? "driver-mobile" : ""}`}
     >
       {/* --------------------------------------------------------------- */}
       {/* SIDEBAR                                                         */}
@@ -408,9 +452,13 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
 
         <nav className="flex-1 overflow-y-auto px-3 pb-4" aria-label="Main navigation">
           {navigation.map((group) => {
-            const visibleItems = group.items.filter((item) =>
-              navVisible(item, currentUser?.role, hasPermission),
-            );
+            const visibleItems = group.items.filter((item) => {
+              if (!navVisible(item, currentUser?.role, hasPermission)) return false;
+              if (fieldApp && currentUser?.role === "super_admin") {
+                return isFieldAdminNavUrl(item.url);
+              }
+              return true;
+            });
             if (visibleItems.length === 0) return null;
             return (
               <div key={group.section}>
@@ -430,7 +478,13 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                   >
                     <Link to={item.url}>
                       <item.icon />
-                      <span className="sidebar-copy">{navLabel(item, currentUser?.role)}</span>
+                      <span className="sidebar-copy">
+                        {fieldApp &&
+                        currentUser?.role === "super_admin" &&
+                        item.url === "/orders"
+                          ? "Order approvals"
+                          : navLabel(item, currentUser?.role)}
+                      </span>
                     </Link>
                   </Button>
                 ))}
@@ -603,73 +657,84 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
 
         {/* MOBILE STRICT BOTTOM NAVIGATION */}
         <nav className="mobile-bottom-nav" aria-label="Mobile Bottom Navigation">
-          <Link to="/" className={`mobile-bottom-nav-item ${path === "/" ? "active" : ""}`}>
-            <LayoutDashboard className="size-4" />
-            <span>Overview</span>
-          </Link>
-          {hasPermission("leads.view") && (
-            <Link
-              to="/leads"
-              className={`mobile-bottom-nav-item ${path === "/leads" ? "active" : ""}`}
-            >
-              <Users className="size-4" />
-              <span>Leads</span>
-            </Link>
-          )}
-          {/* Sales logs visits; supervisors review them in sidebar — bottom nav stays ops-focused. */}
-          {currentUser?.role === "sales" && hasPermission("field_visits.view") && (
-            <Link
-              to="/field-visits"
-              className={`mobile-bottom-nav-item ${path === "/field-visits" ? "active" : ""}`}
-            >
-              <MapPin className="size-4" />
-              <span>Visits</span>
-            </Link>
-          )}
-          {hasPermission("orders.view") && (
+          {fieldApp && currentUser.role === "super_admin" ? (
             <Link
               to="/orders"
-              className={`mobile-bottom-nav-item ${path === "/orders" ? "active" : ""}`}
+              className={`mobile-bottom-nav-item ${path === "/orders" || path.startsWith("/orders/") ? "active" : ""}`}
             >
               <ShoppingBag className="size-4" />
-              <span>Orders</span>
+              <span>Order approvals</span>
             </Link>
-          )}
-          {currentUser?.role !== "sales" && hasPermission("inventory.view") && (
-            <Link
-              to="/inventory"
-              className={`mobile-bottom-nav-item ${path === "/inventory" ? "active" : ""}`}
-            >
-              <Package className="size-4" />
-              <span>Stock</span>
-            </Link>
-          )}
-          {hasPermission("logistics.view") && (
-            <Link
-              to="/logistics"
-              className={`mobile-bottom-nav-item ${path === "/logistics" ? "active" : ""}`}
-            >
-              <Truck className="size-4" />
-              <span>Logistics</span>
-            </Link>
-          )}
-          {currentUser.role === "sales" && hasPermission("customers.view") && (
-            <Link
-              to="/customers"
-              className={`mobile-bottom-nav-item ${path === "/customers" || path.startsWith("/customers/") ? "active" : ""}`}
-            >
-              <Building2 className="size-4" />
-              <span>Customers</span>
-            </Link>
-          )}
-          {currentUser.role === "sales" && hasPermission("payments.record") && (
-            <Link
-              to="/accounts"
-              className={`mobile-bottom-nav-item ${path === "/accounts" ? "active" : ""}`}
-            >
-              <CreditCard className="size-4" />
-              <span>Payments</span>
-            </Link>
+          ) : (
+            <>
+              <Link to="/" className={`mobile-bottom-nav-item ${path === "/" ? "active" : ""}`}>
+                <LayoutDashboard className="size-4" />
+                <span>Overview</span>
+              </Link>
+              {hasPermission("leads.view") && (
+                <Link
+                  to="/leads"
+                  className={`mobile-bottom-nav-item ${path === "/leads" ? "active" : ""}`}
+                >
+                  <Users className="size-4" />
+                  <span>Leads</span>
+                </Link>
+              )}
+              {currentUser?.role === "sales" && hasPermission("field_visits.view") && (
+                <Link
+                  to="/field-visits"
+                  className={`mobile-bottom-nav-item ${path === "/field-visits" ? "active" : ""}`}
+                >
+                  <MapPin className="size-4" />
+                  <span>Visits</span>
+                </Link>
+              )}
+              {hasPermission("orders.view") && (
+                <Link
+                  to="/orders"
+                  className={`mobile-bottom-nav-item ${path === "/orders" ? "active" : ""}`}
+                >
+                  <ShoppingBag className="size-4" />
+                  <span>Orders</span>
+                </Link>
+              )}
+              {currentUser?.role !== "sales" && hasPermission("inventory.view") && (
+                <Link
+                  to="/inventory"
+                  className={`mobile-bottom-nav-item ${path === "/inventory" ? "active" : ""}`}
+                >
+                  <Package className="size-4" />
+                  <span>Stock</span>
+                </Link>
+              )}
+              {hasPermission("logistics.view") && (
+                <Link
+                  to="/logistics"
+                  className={`mobile-bottom-nav-item ${path === "/logistics" ? "active" : ""}`}
+                >
+                  <Truck className="size-4" />
+                  <span>Logistics</span>
+                </Link>
+              )}
+              {currentUser.role === "sales" && hasPermission("customers.view") && (
+                <Link
+                  to="/customers"
+                  className={`mobile-bottom-nav-item ${path === "/customers" || path.startsWith("/customers/") ? "active" : ""}`}
+                >
+                  <Building2 className="size-4" />
+                  <span>Customers</span>
+                </Link>
+              )}
+              {currentUser.role === "sales" && hasPermission("payments.record") && (
+                <Link
+                  to="/accounts"
+                  className={`mobile-bottom-nav-item ${path === "/accounts" ? "active" : ""}`}
+                >
+                  <CreditCard className="size-4" />
+                  <span>Payments</span>
+                </Link>
+              )}
+            </>
           )}
         </nav>
 
@@ -677,9 +742,10 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
         <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
           <SheetContent
             side="left"
-            className="mobile-nav-sheet p-0 flex flex-col h-full bg-card border-0"
+            showClose={false}
+            className="mobile-nav-sheet p-0 flex flex-col h-full bg-card border-0 w-[50vw] max-w-[50vw] sm:max-w-[50vw] pt-[max(0.75rem,env(safe-area-inset-top,12px))]"
           >
-            <SheetHeader className="p-4 border-b border-border text-left">
+            <SheetHeader className="px-4 pt-3 pb-3 border-b border-border text-left">
               <div className="flex items-center gap-2.5">
                 <img
                   src="/logos/logos/avighna.png"
@@ -688,9 +754,13 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                 />
                 <div>
                   <SheetTitle className="text-sm font-bold">avighna one</SheetTitle>
-                  <SheetDescription className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
-                    Unified Enterprise OS
-                  </SheetDescription>
+                  {(currentUser?.role === "sales" ||
+                    currentUser?.role === "logistics" ||
+                    isFieldApp()) ? null : (
+                    <SheetDescription className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">
+                      Unified Enterprise OS
+                    </SheetDescription>
+                  )}
                 </div>
               </div>
             </SheetHeader>
@@ -720,9 +790,13 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
               aria-label="Mobile drawer navigation"
             >
               {navigation.map((group) => {
-                const visibleItems = group.items.filter((item) =>
-                  navVisible(item, currentUser?.role, hasPermission),
-                );
+                const visibleItems = group.items.filter((item) => {
+                  if (!navVisible(item, currentUser?.role, hasPermission)) return false;
+                  if (fieldApp && currentUser?.role === "super_admin") {
+                    return isFieldAdminNavUrl(item.url);
+                  }
+                  return true;
+                });
                 if (visibleItems.length === 0) return null;
                 return (
                   <div key={group.section}>
@@ -745,7 +819,13 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                         >
                           <Link to={item.url}>
                             <item.icon className="size-4 shrink-0" />
-                            <span className="truncate">{navLabel(item, currentUser?.role)}</span>
+                            <span className="truncate">
+                              {fieldApp &&
+                              currentUser?.role === "super_admin" &&
+                              item.url === "/orders"
+                                ? "Order approvals"
+                                : navLabel(item, currentUser?.role)}
+                            </span>
                           </Link>
                         </Button>
                       ))}
@@ -860,24 +940,28 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
           }
         }}
       >
-        <SheetContent className="overflow-y-auto max-h-screen w-full sm:max-w-md">
-          <SheetHeader>
+        <SheetContent className="app-sheet overflow-y-auto max-h-screen w-full sm:max-w-md">
+          <SheetHeader className="text-left pr-12">
             <SheetTitle>
               {notice === "notifications"
                 ? "Notifications"
                 : notice === "profile"
-                  ? "User Profile & Security"
-                  : "Workspace system"}
+                  ? "Profile"
+                  : "Workspace"}
             </SheetTitle>
-            <SheetDescription>
-              {notice === "notifications"
-                ? "Real-time updates, approvals & enterprise alerts"
-                : notice === "profile"
-                  ? currentUser?.role === "super_admin"
-                    ? "Manage session, role permissions, and password"
-                    : "Manage your session and password"
-                  : "Avighna One ERP"}
-            </SheetDescription>
+            {(currentUser?.role === "sales" ||
+              currentUser?.role === "logistics" ||
+              isFieldApp()) ? null : (
+              <SheetDescription>
+                {notice === "notifications"
+                  ? "Real-time updates, approvals & enterprise alerts"
+                  : notice === "profile"
+                    ? currentUser?.role === "super_admin"
+                      ? "Manage session, role permissions, and password"
+                      : "Manage your session and password"
+                    : "Avighna One ERP"}
+              </SheetDescription>
+            )}
           </SheetHeader>
 
           {notice === "notifications" ? (

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { useWorkspace } from "./workspace-provider";
 import { SYSTEM_USERS, type RoleType } from "@/lib/auth-service";
 import { isDemoAuthEnabled } from "@/lib/security";
+import { isFieldApp, isFieldRole } from "@/lib/field-app";
 
 export function LoginPage() {
   const { login, loginAsRole } = useWorkspace();
@@ -12,6 +13,10 @@ export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const fieldApp = isFieldApp();
+  const demoUsers = fieldApp
+    ? SYSTEM_USERS.filter((u) => isFieldRole(u.role))
+    : SYSTEM_USERS;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -35,7 +40,7 @@ export function LoginPage() {
   };
 
   return (
-    <div className="login-screen">
+    <div className={`login-screen${fieldApp ? " login-screen-field" : ""}`}>
       <div className="login-visual" aria-hidden="true">
         <img src="/images/login-banner.jpg" alt="" className="login-visual-img" />
         <div className="login-visual-shade" />
@@ -53,8 +58,12 @@ export function LoginPage() {
         <div className="login-panel-inner">
           <div className="login-panel-head">
             <img src="/logos/logos/avighna.png" alt="Avighna" className="login-panel-logo" />
-            <h2>Welcome back</h2>
-            <p>Sign in to continue to your workspace.</p>
+            <h2>{fieldApp ? "Sign in" : "Welcome back"}</h2>
+            <p>
+              {fieldApp
+                ? "Sign in with your Avighna account."
+                : "Sign in to continue to your workspace."}
+            </p>
           </div>
 
           {error && (
@@ -72,7 +81,7 @@ export function LoginPage() {
                 type="email"
                 autoComplete="username"
                 required
-                placeholder="you@avighna.com"
+                placeholder="you@company.com"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
               />
@@ -111,7 +120,7 @@ export function LoginPage() {
             <div className="login-demo">
               <p>Demo access</p>
               <div className="login-demo-list">
-                {SYSTEM_USERS.map((u) => (
+                {demoUsers.map((u) => (
                   <button key={u.id} type="button" onClick={() => handleQuickLogin(u.role)}>
                     <span className="login-demo-avatar">{u.initials}</span>
                     <span className="login-demo-meta">

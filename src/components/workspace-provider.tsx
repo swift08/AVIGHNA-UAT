@@ -16,6 +16,7 @@ import {
   isDemoAuthEnabled,
   setDemoActor,
 } from "@/lib/security";
+import { FIELD_APP_LOGIN_ERROR, isFieldApp, isFieldRole } from "@/lib/field-app";
 
 interface WorkspaceContextType {
   company: CompanyId;
@@ -72,8 +73,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
     supabase.auth
       .getSession()
-      .then(({ data }) => {
+      .then(async ({ data }) => {
         const profile = data.session?.user ? profileFromAuth(data.session.user) : null;
+        if (profile && isFieldApp() && !isFieldRole(profile.role)) {
+          await supabase.auth.signOut();
+          setCurrentUser(null);
+          return;
+        }
         if (profile) {
           setDemoActor(null);
           setCurrentUser(profile);
@@ -83,6 +89,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       const profile = session?.user ? profileFromAuth(session.user) : null;
+      if (profile && isFieldApp() && !isFieldRole(profile.role)) {
+        void supabase.auth.signOut();
+        setCurrentUser(null);
+        return;
+      }
       if (profile) {
         setDemoActor(null);
         setCurrentUser(profile);
@@ -126,7 +137,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         password,
       });
       const profile = data.user ? profileFromAuth(data.user) : null;
-      if (!error && profile) {
+      if (!error && data.user) {
+        if (!profile) {
+          await supabase.auth.signOut();
+          return { success: false, error: "This account has no app role assigned." };
+        }
         const status = String(data.user?.user_metadata?.["status"] || "Active").toLowerCase();
         if (status === "inactive") {
           await supabase.auth.signOut();
@@ -138,6 +153,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
             success: false,
             error: "This login is waiting for Super Admin approval.",
           };
+        }
+        if (isFieldApp() && !isFieldRole(profile.role)) {
+          await supabase.auth.signOut();
+          return { success: false, error: FIELD_APP_LOGIN_ERROR };
         }
         clearLoginRateLimit(emailOrRole);
         setDemoActor(null);
@@ -158,6 +177,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (!res.user) {
       return { success: false, error: res.error || "Authentication failed" };
     }
+    if (isFieldApp() && !isFieldRole(res.user.role)) {
+      return { success: false, error: FIELD_APP_LOGIN_ERROR };
+    }
 
     // Keep trying to attach a Supabase session for the same credentials so RLS works.
     if (password) {
@@ -172,6 +194,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const loginAsRole = (role: RoleType) => {
     if (!isDemoAuthEnabled()) return;
+    if (isFieldApp() && !isFieldRole(role)) return;
     const res = authenticateAsRole(role);
     if (res.user) {
       void supabase.auth.signOut();

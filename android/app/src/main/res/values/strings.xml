@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Avighna Field</string>
+    <string name="title_activity_main">Avighna Field</string>
+    <string name="package_name">com.avighna.field</string>
+    <string name="custom_url_scheme">com.avighna.field</string>
+</resources>

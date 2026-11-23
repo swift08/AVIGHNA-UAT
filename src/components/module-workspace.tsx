@@ -75,6 +75,8 @@ import {
 import { companies, money as moneyFormat } from "@/lib/workspace-data";
 import { SYSTEM_USERS } from "@/lib/auth-service";
 import { scopeForDriver } from "@/lib/driver-scope";
+import { isFieldApp } from "@/lib/field-app";
+import { captureLiveGps, takeLivePhoto } from "@/lib/live-capture";
 import { buildSalesInvoiceHtml, suggestSalesInvoiceNumber } from "@/lib/sales-invoice";
 import {
   buildPurchaseOrderHtml,
@@ -190,43 +192,6 @@ export const PRESET_UNITS = [
   { value: "cans", label: "cans (Cans / Tins)" },
   { value: "tons", label: "tons (Metric Tons)" },
 ];
-
-async function processImageFile(file: File): Promise<string> {
-  return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        let width = img.width;
-        let height = img.height;
-        const maxDim = 1000;
-        if (width > maxDim || height > maxDim) {
-          if (width > height) {
-            height = Math.round((height * maxDim) / width);
-            width = maxDim;
-          } else {
-            width = Math.round((width * maxDim) / height);
-            height = maxDim;
-          }
-        }
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          resolve(canvas.toDataURL("image/jpeg", 0.75));
-        } else {
-          resolve((e.target?.result as string) || "");
-        }
-      };
-      img.onerror = () => resolve((e.target?.result as string) || "");
-      img.src = (e.target?.result as string) || "";
-    };
-    reader.onerror = () => resolve("");
-    reader.readAsDataURL(file);
-  });
-}
 
 export function ModuleWorkspace({
   module,
@@ -777,7 +742,7 @@ export function ModuleWorkspace({
   });
 
   const titles: Record<string, string> = {
-    orders: "Orders",
+    orders: isFieldApp() && isSuperAdmin ? "Order approvals" : "Orders",
     tasks: "My work",
     leads: "Lead pipeline",
     customers: selectedCustomerDetails?.name || (customerId ? "Customer profile" : "Customers"),
@@ -1120,46 +1085,22 @@ export function ModuleWorkspace({
     reloadData();
   };
 
-  const handleAddGpsAndPhotos = () => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          setGpsLocation({
-            lat: Number(pos.coords.latitude.toFixed(4)),
-            lng: Number(pos.coords.longitude.toFixed(4)),
-            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          });
-        },
-        () => {
-          setGpsLocation({
-            lat: 12.9716,
-            lng: 77.5946,
-            time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          });
-        },
-      );
-    } else {
-      setGpsLocation({
-        lat: 12.9716,
-        lng: 77.5946,
-        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      });
+  const handleRefreshGps = async () => {
+    try {
+      setGpsLocation(await captureLiveGps());
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not refresh GPS.");
     }
-
-    const input = document.getElementById("proof-photos-input") as HTMLInputElement;
-    if (input) input.click();
   };
 
-  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    const processed: string[] = [];
-    for (const file of Array.from(files)) {
-      const dataUrl = await processImageFile(file);
-      if (dataUrl) processed.push(dataUrl);
+  const handleTakeProofPhoto = async () => {
+    try {
+      const dataUrl = await takeLivePhoto();
+      setProofPhotos((prev) => [...prev, dataUrl]);
+    } catch (err) {
+      if (err instanceof Error && /cancel|No photo/i.test(err.message)) return;
+      toast.error(err instanceof Error ? err.message : "Camera capture failed.");
     }
-    setProofPhotos((prev) => [...prev, ...processed]);
-    e.target.value = "";
   };
 
   const startVoiceRecording = async () => {
@@ -1249,6 +1190,16 @@ export function ModuleWorkspace({
       audioStreamRef.current = null;
     }
     setIsRecording(false);
+  };
+
+  const clearVoiceMemo = () => {
+    if (isRecording) stopVoiceRecording();
+    stopCurrentAudio();
+    setHasVoiceNote(false);
+    setVoiceAudioDataUrl(null);
+    setRecordingDuration(0);
+    audioChunksRef.current = [];
+    mediaRecorderRef.current = null;
   };
 
   const revokeAudioObjectUrl = () => {
@@ -2186,50 +2137,33 @@ export function ModuleWorkspace({
     capturePodLocation();
   };
 
-  const capturePodLocation = () => {
+  const capturePodLocation = async () => {
     setPodGpsError("");
-    if (!navigator.geolocation) {
+    try {
+      setPodGps(await captureLiveGps());
+      setPodGpsError("");
+    } catch (err) {
       setPodGps(null);
-      setPodGpsError("This device cannot share location. Allow location to finish the delivery.");
-      return;
+      setPodGpsError(
+        err instanceof Error
+          ? err.message
+          : "Could not read the delivery location. Turn location on and try again.",
+      );
     }
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setPodGps({
-          lat: Number(pos.coords.latitude.toFixed(4)),
-          lng: Number(pos.coords.longitude.toFixed(4)),
-          time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        });
-        setPodGpsError("");
-      },
-      (err) => {
-        setPodGps(null);
-        setPodGpsError(
-          err.code === err.PERMISSION_DENIED
-            ? "Location permission was denied. Allow location access in the browser, then try again."
-            : "Could not read the delivery location. Turn location on and try again.",
-        );
-      },
-      { enableHighAccuracy: true, timeout: 12000 },
-    );
   };
 
-  const handlePodPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    if (file.type && !file.type.startsWith("image/")) {
-      setPodPhotoError("Take a delivery photo with the camera.");
-      return;
-    }
-    const dataUrl = await processImageFile(file);
-    if (!dataUrl) {
-      setPodPhotoError("Could not read that photo. Take it again with the camera.");
-      return;
-    }
+  const handleTakePodPhoto = async () => {
     setPodPhotoError("");
-    setPodPhotoPreview(dataUrl);
-    setPodPhotoUrls([dataUrl]);
+    try {
+      const dataUrl = await takeLivePhoto();
+      setPodPhotoPreview(dataUrl);
+      setPodPhotoUrls([dataUrl]);
+    } catch (err) {
+      if (err instanceof Error && /cancel|No photo/i.test(err.message)) return;
+      setPodPhotoError(
+        err instanceof Error ? err.message : "Take a delivery photo with the camera.",
+      );
+    }
   };
 
   const handleSubmittingPod = async (e: React.FormEvent) => {
@@ -3130,11 +3064,16 @@ export function ModuleWorkspace({
           : ""
       }`}
     >
-      <p className="eyebrow mb-2">
-        {company === "all"
-          ? "Organization workspace"
-          : companies.find((c) => c.id === company)?.short}
-      </p>
+      {!(
+        currentUser?.role === "sales" ||
+        currentUser?.role === "logistics"
+      ) && (
+        <p className="eyebrow mb-2">
+          {company === "all"
+            ? "Organization workspace"
+            : companies.find((c) => c.id === company)?.short}
+        </p>
+      )}
       {module === "customers" && customerId ? (
         <div className="customer-dossier-topbar mb-1">
           <Button
@@ -3149,10 +3088,13 @@ export function ModuleWorkspace({
           </Button>
         </div>
       ) : null}
-      {!(module === "inventory" && (isSuperAdmin || isSupervisor)) && (
+      {!(module === "inventory" && (isSuperAdmin || isSupervisor)) &&
+        !(module === "field-visits" && tab === "Log a visit") && (
         <>
           <h1 className="page-heading">{titles[module]}</h1>
-          <p className="mt-2 text-xs text-muted-foreground">{subtitle[module]}</p>
+          {currentUser?.role !== "sales" && currentUser?.role !== "logistics" && (
+            <p className="mt-2 text-xs text-muted-foreground">{subtitle[module]}</p>
+          )}
         </>
       )}
 
@@ -6597,7 +6539,7 @@ export function ModuleWorkspace({
                                 onClick={() => handleOpenPodModal(delivery)}
                               >
                                 <Check className="size-3.5" />
-                                Submit Proof of Delivery (POD)
+                                Submit POD
                               </Button>
                             )}
 
@@ -6854,39 +6796,29 @@ export function ModuleWorkspace({
           })()}
         </>
       ) : module === "field-visits" ? (
-        <div className={currentUser?.role === "sales" ? "space-y-4" : "space-y-6"}>
+        <div
+          className={
+            tab === "Log a visit"
+              ? "field-visit-screen"
+              : currentUser?.role === "sales"
+                ? "space-y-4"
+                : "space-y-6"
+          }
+        >
           {tab === "Log a visit" ? (
             /* CLEAN LOG VISIT FORM */
-            <div
-              className={`panel mx-auto space-y-5 ${
-                currentUser?.role === "sales"
-                  ? "max-w-xl p-4 sm:p-5"
-                  : "max-w-3xl p-6 md:p-8 space-y-6"
-              }`}
-            >
-              <div className="flex items-center justify-between pb-3 border-b border-border">
-                <div>
-                  <h2
-                    className={`font-black tracking-tight text-foreground ${
-                      currentUser?.role === "sales" ? "text-base" : "text-xl"
-                    }`}
-                  >
-                    Log Field Visit
-                  </h2>
-                  <p className="text-xs text-muted-foreground mt-0.5">
-                    {currentUser?.role === "sales"
-                      ? "Client, purpose, notes, GPS and proof"
-                      : "Record on-site meeting outcomes, GPS coordinates, voice memo and photos"}
-                  </p>
-                </div>
-                <Button
-                  variant="outline"
-                  size="sm"
+            <div className="field-visit-log space-y-4">
+              <div className="field-visit-log-head">
+                <button
+                  type="button"
                   onClick={() => setTab("Visit history")}
-                  className="text-xs font-semibold cursor-pointer"
+                  className="field-app-back"
+                  aria-label="Back to visit history"
                 >
-                  ← Back to History
-                </Button>
+                  <ArrowLeft className="size-4 shrink-0" />
+                  <span>History</span>
+                </button>
+                <h2 className="field-visit-log-title">Log Visit</h2>
               </div>
 
               {visitSuccessNotice && (
@@ -6896,16 +6828,16 @@ export function ModuleWorkspace({
                 </div>
               )}
 
-              {/* 1. Entity & Client Account */}
+              {/* 1. Company & Client */}
               <div className="space-y-3">
                 <label className="text-xs font-bold text-foreground flex items-center gap-2">
                   <Building2 className="size-3.5 text-primary" />
-                  <span>1. Operating Company & Client</span>
+                  <span>Company & Client</span>
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
                     <label className="text-[11px] font-semibold text-muted-foreground block mb-1">
-                      Company Workspace
+                      Company
                     </label>
                     <select
                       value={visitFirm}
@@ -6924,7 +6856,7 @@ export function ModuleWorkspace({
                   </div>
                   <div>
                     <label className="text-[11px] font-semibold text-muted-foreground block mb-1">
-                      Client Account <span className="text-destructive">*</span>
+                      Client <span className="text-destructive">*</span>
                     </label>
                     <select
                       required
@@ -6932,7 +6864,7 @@ export function ModuleWorkspace({
                       onChange={(e) => setVisitSelectedCustomer(e.target.value)}
                       className="w-full text-xs font-semibold h-10 px-3 rounded-lg border border-border bg-background cursor-pointer"
                     >
-                      <option value="">-- Choose client account --</option>
+                      <option value="">Select client</option>
                       {dbCustomers
                         .filter((c) => c.company_id === visitFirm || company === "all")
                         .map((c) => (
@@ -6972,11 +6904,11 @@ export function ModuleWorkspace({
                 </div>
               </div>
 
-              {/* 2. Visit Mission & Purpose (With Custom Option) */}
+              {/* 2. Purpose */}
               <div className="space-y-3 pt-2 border-t border-border/60">
                 <label className="text-xs font-bold text-foreground flex items-center gap-2">
                   <CalendarDays className="size-3.5 text-primary" />
-                  <span>2. Visit Mission & Purpose</span>
+                  <span>Purpose</span>
                 </label>
                 <div className="flex flex-wrap gap-2">
                   {[
@@ -7000,7 +6932,7 @@ export function ModuleWorkspace({
                             : "bg-muted/40 text-muted-foreground border-border hover:bg-muted"
                         }`}
                       >
-                        {p === "Custom" ? "✨ Custom Purpose..." : p}
+                        {p}
                       </button>
                     );
                   })}
@@ -7012,62 +6944,35 @@ export function ModuleWorkspace({
                       required
                       value={visitCustomPurpose}
                       onChange={(e) => setVisitCustomPurpose(e.target.value)}
-                      placeholder="Type custom mission / purpose (e.g. Machinery Inspection, Quality Audit)..."
+                      placeholder="Enter purpose"
                       className="w-full text-xs font-semibold h-10 px-3 rounded-lg border border-primary bg-background focus:ring-1 focus:ring-primary"
                     />
                   </div>
                 )}
               </div>
 
-              {/* 3. Discussion Notes & Outcome */}
+              {/* 3. Notes */}
               <div className="space-y-3 pt-2 border-t border-border/60">
-                <div className="flex items-center justify-between">
-                  <label className="text-xs font-bold text-foreground flex items-center gap-2">
-                    <FileCheck2 className="size-3.5 text-primary" />
-                    <span>3. Discussion Notes & Outcome</span>
-                  </label>
-                  <span className="text-[11px] text-muted-foreground font-mono">
-                    {visitRequirement.length} chars
-                  </span>
-                </div>
+                <label className="text-xs font-bold text-foreground flex items-center gap-2">
+                  <FileCheck2 className="size-3.5 text-primary" />
+                  <span>Notes</span>
+                </label>
                 <textarea
                   rows={3}
                   value={visitRequirement}
                   onChange={(e) => setVisitRequirement(e.target.value)}
-                  placeholder="Record customer discussion, product interest, approved quantities, negotiated rates, next steps..."
+                  placeholder="Notes"
                   className="w-full text-xs font-medium p-3 rounded-lg border border-border bg-background resize-none focus:border-primary focus:ring-1 focus:ring-primary leading-relaxed"
                 />
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[10px] font-bold text-muted-foreground mr-1">
-                    Quick insert:
-                  </span>
-                  {[
-                    "Sample batch approved",
-                    "Price negotiated: Ready for PO",
-                    "Payment promised within 48h",
-                    "Follow-up scheduled for next week",
-                  ].map((tag) => (
-                    <button
-                      key={tag}
-                      type="button"
-                      onClick={() =>
-                        setVisitRequirement((prev) => (prev ? `${prev}. ${tag}` : tag))
-                      }
-                      className="text-[10px] font-medium px-2 py-0.5 rounded-full border border-border bg-muted/40 hover:bg-muted text-muted-foreground transition-colors cursor-pointer"
-                    >
-                      + {tag}
-                    </button>
-                  ))}
-                </div>
               </div>
 
-              {/* 4. On-site Verification Deck (GPS, Audio Memo, Proof Photos) */}
+              {/* 4. GPS / Voice / Photos */}
               <div className="space-y-3 pt-2 border-t border-border/60">
                 <label className="text-xs font-bold text-foreground flex items-center gap-2">
                   <Navigation className="size-3.5 text-primary" />
-                  <span>4. On-Site Verification Deck</span>
+                  <span>GPS, Voice & Photos</span>
                 </label>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="field-visit-capture-grid">
                   {/* GPS Box */}
                   <div className="p-3.5 rounded-xl border border-border bg-card/60 space-y-2">
                     <div className="flex items-center justify-between">
@@ -7080,18 +6985,18 @@ export function ModuleWorkspace({
                         </span>
                       )}
                     </div>
-                    <p className="text-[11px] text-muted-foreground font-mono truncate">
-                      {gpsLocation
-                        ? `${gpsLocation.lat.toFixed(4)}, ${gpsLocation.lng.toFixed(4)}`
-                        : "No coordinates acquired"}
-                    </p>
+                    {gpsLocation && (
+                      <p className="text-[11px] text-muted-foreground font-mono truncate">
+                        {gpsLocation.lat.toFixed(4)}, {gpsLocation.lng.toFixed(4)}
+                      </p>
+                    )}
                     <button
                       type="button"
-                      onClick={handleAddGpsAndPhotos}
+                      onClick={() => void handleRefreshGps()}
                       className="w-full py-1.5 px-2 rounded-lg text-xs font-semibold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <MapPin className="size-3" />
-                      <span>{gpsLocation ? "Refresh GPS" : "Acquire GPS"}</span>
+                      <span>{gpsLocation ? "Refresh GPS" : "Get GPS"}</span>
                     </button>
                   </div>
 
@@ -7099,21 +7004,14 @@ export function ModuleWorkspace({
                   <div className="p-3.5 rounded-xl border border-border bg-card/60 space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                        <Mic className="size-3.5 text-primary" /> Audio Memo
+                        <Mic className="size-3.5 text-primary" /> Voice
                       </span>
                       {hasVoiceNote && (
                         <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-                          Recorded ({recordingDuration}s)
+                          {recordingDuration}s
                         </span>
                       )}
                     </div>
-                    <p className="text-[11px] text-muted-foreground truncate">
-                      {isRecording
-                        ? `Recording (${recordingDuration}s)... speak into microphone`
-                        : hasVoiceNote
-                          ? "Voice memo captured"
-                          : "Record live audio briefing"}
-                    </p>
                     <div className="space-y-1.5">
                       <button
                         type="button"
@@ -7135,10 +7033,10 @@ export function ModuleWorkspace({
                         {isRecording ? <MicOff className="size-3" /> : <Mic className="size-3" />}
                         <span>
                           {isRecording
-                            ? `Stop Recording (${recordingDuration}s)`
+                            ? `Stop (${recordingDuration}s)`
                             : hasVoiceNote
-                              ? "Re-record Mic Memo"
-                              : "Record Live Voice Memo"}
+                              ? "Re-record"
+                              : "Record"}
                         </span>
                       </button>
 
@@ -7164,9 +7062,18 @@ export function ModuleWorkspace({
                           ) : (
                             <Play className="size-3 text-primary" />
                           )}
-                          <span>
-                            {isPlayingPreview ? "Pause Preview" : "Listen to What You Spoke"}
-                          </span>
+                          <span>{isPlayingPreview ? "Pause" : "Play"}</span>
+                        </button>
+                      )}
+
+                      {hasVoiceNote && !isRecording && (
+                        <button
+                          type="button"
+                          onClick={clearVoiceMemo}
+                          className="w-full py-1 px-2 rounded-lg text-[11px] font-semibold bg-destructive/10 hover:bg-destructive/15 text-destructive border border-destructive/20 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Trash2 className="size-3" />
+                          <span>Remove</span>
                         </button>
                       )}
                     </div>
@@ -7176,37 +7083,21 @@ export function ModuleWorkspace({
                   <div className="p-3.5 rounded-xl border border-border bg-card/60 space-y-2">
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                        <Camera className="size-3.5 text-primary" /> Proof Photos
+                        <Camera className="size-3.5 text-primary" /> Photos
                       </span>
                       {proofPhotos.length > 0 && (
                         <span className="text-[10px] font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded">
-                          {proofPhotos.length} photo(s)
+                          {proofPhotos.length}
                         </span>
                       )}
                     </div>
-                    <p className="text-[11px] text-muted-foreground truncate">
-                      {proofPhotos.length > 0
-                        ? `${proofPhotos.length} attached`
-                        : "Storefront / signed slip"}
-                    </p>
-                    <input
-                      id="proof-photos-input"
-                      type="file"
-                      multiple
-                      accept="image/*"
-                      className="hidden"
-                      onChange={handlePhotoUpload}
-                    />
                     <button
                       type="button"
-                      onClick={() => {
-                        const input = document.getElementById("proof-photos-input");
-                        if (input) input.click();
-                      }}
+                      onClick={() => void handleTakeProofPhoto()}
                       className="w-full py-1.5 px-2 rounded-lg text-xs font-semibold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                     >
                       <Camera className="size-3" />
-                      <span>Attach Photo(s)</span>
+                      <span>Take Photo</span>
                     </button>
                   </div>
                 </div>
@@ -7216,7 +7107,7 @@ export function ModuleWorkspace({
                     {proofPhotos.map((photo, idx) => (
                       <div
                         key={idx}
-                        className="relative size-14 rounded-lg overflow-hidden border border-border shadow-xs group"
+                        className="relative size-16 rounded-lg overflow-hidden border border-border shadow-xs"
                       >
                         <img
                           src={photo}
@@ -7230,10 +7121,11 @@ export function ModuleWorkspace({
                         />
                         <button
                           type="button"
+                          aria-label={`Remove photo ${idx + 1}`}
                           onClick={() =>
                             setProofPhotos((photos) => photos.filter((_, i) => i !== idx))
                           }
-                          className="absolute inset-0 bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="absolute top-0.5 right-0.5 size-7 rounded-full bg-black/75 text-white flex items-center justify-center shadow-sm active:bg-black"
                         >
                           <X className="size-3.5" />
                         </button>
@@ -7244,28 +7136,29 @@ export function ModuleWorkspace({
               </div>
 
               {/* Action Buttons */}
-              <div className="flex flex-wrap items-center gap-3 pt-4 border-t border-border">
+              <div className="field-visit-actions">
                 <Button
                   onClick={handleSaveVisit}
-                  className="flex-1 h-10 font-bold text-xs cursor-pointer"
+                  className="w-full h-11 font-bold text-xs cursor-pointer"
                 >
                   <Check className="size-3.5 mr-1.5" />
-                  Save Visit Record
+                  Save
                 </Button>
                 <Button
                   onClick={handleCreateOrderFromVisit}
                   variant="outline"
-                  className="flex-1 h-10 font-bold text-xs cursor-pointer"
+                  className="w-full h-11 font-bold text-xs cursor-pointer"
                 >
                   <ShoppingBag className="size-3.5 mr-1.5" />
-                  Convert to Sales Order
+                  Create Order
                 </Button>
                 <Button
                   variant="ghost"
                   onClick={() => setTab("Visit history")}
-                  className="h-10 text-xs text-muted-foreground cursor-pointer"
+                  className="w-full h-11 text-xs text-muted-foreground cursor-pointer gap-1.5"
                 >
-                  Cancel
+                  <ArrowLeft className="size-3.5" />
+                  History
                 </Button>
               </div>
             </div>
@@ -7387,13 +7280,13 @@ export function ModuleWorkspace({
                           </div>
                           <div className="p-4 rounded-xl border border-border bg-card shadow-2xs">
                             <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                              GPS Geotagged
+                              GPS
                             </span>
                             <p className="text-xl font-black text-primary mt-1">{gpsCount}</p>
                           </div>
                           <div className="p-4 rounded-xl border border-border bg-card shadow-2xs">
                             <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block">
-                              Voice Briefings
+                              Voice
                             </span>
                             <p className="text-xl font-black text-purple-600 dark:text-purple-400 mt-1">
                               {voiceCount}
@@ -7405,20 +7298,7 @@ export function ModuleWorkspace({
 
                     <div className="space-y-3">
                       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                        <div>
-                          <h3 className="text-sm font-bold text-foreground">
-                            {isSalesVisits ? "Your visits" : "Logged Field Visits"}
-                          </h3>
-                          <p className="text-[11px] text-muted-foreground">
-                            {canViewAllFieldVisits
-                              ? `${visibleFieldVisits.length} visits recorded across ${
-                                  company === "all"
-                                    ? "all companies"
-                                    : companies.find((c) => c.id === company)?.short
-                                }`
-                              : `${visibleFieldVisits.length} logged by you`}
-                          </p>
-                        </div>
+                        <h3 className="text-sm font-bold text-foreground">Visits</h3>
                         {canLogFieldVisit && (
                           <Button
                             size="sm"
@@ -11388,18 +11268,18 @@ export function ModuleWorkspace({
                   </span>
                 )}
               </div>
-              <p className="text-[11px] text-muted-foreground font-mono truncate">
-                {podGps
-                  ? `${podGps.lat.toFixed(4)}, ${podGps.lng.toFixed(4)} · ${podGps.time}`
-                  : "No coordinates acquired"}
-              </p>
+              {podGps && (
+                <p className="text-[11px] text-muted-foreground font-mono truncate">
+                  {podGps.lat.toFixed(4)}, {podGps.lng.toFixed(4)} · {podGps.time}
+                </p>
+              )}
               <button
                 type="button"
-                onClick={capturePodLocation}
+                onClick={() => void capturePodLocation()}
                 className="w-full py-1.5 px-2 rounded-lg text-xs font-semibold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
               >
                 <MapPin className="size-3" />
-                <span>{podGps ? "Refresh GPS" : "Acquire GPS"}</span>
+                <span>{podGps ? "Refresh GPS" : "Get GPS"}</span>
               </button>
               {podGpsError && <p className="text-[11px] text-destructive">{podGpsError}</p>}
             </div>
@@ -11407,16 +11287,16 @@ export function ModuleWorkspace({
             <div className="space-y-2 p-3.5 rounded-xl border border-border bg-card">
               <label className="text-xs font-bold text-foreground flex items-center gap-1.5">
                 <Camera className="size-4 text-primary" />
-                Proof of Delivery Photo (Camera Capture) *
+                Delivery Photo *
               </label>
-              <input
-                type="file"
-                accept="image/*"
-                capture="environment"
-                required={podPhotoUrls.length === 0}
-                className="text-xs w-full file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-primary file:text-primary-foreground hover:file:opacity-90"
-                onChange={handlePodPhoto}
-              />
+              <button
+                type="button"
+                onClick={() => void handleTakePodPhoto()}
+                className="w-full py-1.5 px-2 rounded-lg text-xs font-semibold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Camera className="size-3" />
+                <span>{podPhotoPreview ? "Retake Photo" : "Take Photo"}</span>
+              </button>
               {podPhotoError && <p className="text-[11px] text-destructive">{podPhotoError}</p>}
               {podPhotoPreview && (
                 <div className="mt-2 relative rounded-lg overflow-hidden border border-border max-h-40">
@@ -11425,19 +11305,28 @@ export function ModuleWorkspace({
                     alt="POD Capture Preview"
                     className="w-full h-40 object-cover"
                   />
-                  <span className="absolute bottom-1 right-1 text-[10px] bg-black/70 text-white px-2 py-0.5 rounded font-mono">
-                    Captured POD
-                  </span>
+                  <button
+                    type="button"
+                    aria-label="Remove delivery photo"
+                    onClick={() => {
+                      setPodPhotoPreview(null);
+                      setPodPhotoUrls([]);
+                      setPodPhotoError("");
+                    }}
+                    className="absolute top-1.5 right-1.5 size-8 rounded-full bg-black/75 text-white flex items-center justify-center shadow-sm active:bg-black"
+                  >
+                    <X className="size-4" />
+                  </button>
                 </div>
               )}
             </div>
 
             <label className="drawer-field">
-              Driver Remarks / Observations
+              Remarks
               <input
                 value={podRemarks}
                 onChange={(e) => setPodRemarks(e.target.value)}
-                placeholder="Optional delivery notes or customer remarks"
+                placeholder="Optional"
               />
             </label>
 
@@ -11453,7 +11342,7 @@ export function ModuleWorkspace({
               }`}
             >
               <Check className="size-4 mr-1.5" />
-              Submit Proof of Delivery ({podOutcome})
+              Submit ({podOutcome})
             </Button>
           </form>
         </SheetContent>
@@ -11709,10 +11598,6 @@ export function ModuleWorkspace({
         </SheetContent>
       </Sheet>
 
-      <p className="mt-7 text-xs text-muted-foreground">
-        Connected to Supabase ·{" "}
-        {company === "all" ? "All companies" : companies.find((c) => c.id === company)?.short}
-      </p>
     </main>
   );
 }

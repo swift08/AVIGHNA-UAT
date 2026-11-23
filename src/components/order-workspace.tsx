@@ -321,12 +321,12 @@ export function OrderDetail({
           }
         }}
       >
-        <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
-          <SheetHeader>
-            <SheetTitle>{order.id}</SheetTitle>
-            <SheetDescription>Order workspace & approval control</SheetDescription>
+        <SheetContent className="app-sheet w-full sm:max-w-lg overflow-y-auto">
+          <SheetHeader className="text-left pr-12">
+            <SheetTitle className="text-base sm:text-lg break-all">{order.id}</SheetTitle>
+            <SheetDescription>Order & approval</SheetDescription>
           </SheetHeader>
-          <div className="mt-8 space-y-6">
+          <div className="mt-5 space-y-5">
             <div className="flex items-center gap-3">
               <span className="avatar size-12 text-sm">{orderInitials}</span>
               <div>
@@ -1453,14 +1453,11 @@ export function OrderTable({
 
       {/* CREATE ORDER DRAWER */}
       <Sheet open={createOpen} onOpenChange={setCreateOpen}>
-        <SheetContent className="w-full sm:max-w-lg overflow-y-auto">
-          <SheetHeader>
-            <SheetTitle>Create Order</SheetTitle>
-            <SheetDescription>
-              Orders undergo real-time inventory validation before submission
-            </SheetDescription>
+        <SheetContent className="app-sheet w-full sm:max-w-lg overflow-y-auto">
+          <SheetHeader className="text-left pr-12">
+            <SheetTitle className="text-base sm:text-lg">Create Order</SheetTitle>
           </SheetHeader>
-          <form onSubmit={handleCreateOrder} className="mt-6 space-y-4">
+          <form onSubmit={handleCreateOrder} className="mt-4 space-y-3.5 pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
             {(exceedsAvailable || shortageNotice) && (
               <div className="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
                 <AlertTriangle className="size-4 shrink-0 mt-0.5" />
@@ -1888,15 +1885,15 @@ export function OrderTable({
             </label>
             <Button
               type="submit"
-              className="w-full mt-6"
+              className="w-full mt-4 h-11 text-xs font-bold"
               disabled={isSubmitting || exceedsAvailable || !selectedProduct}
             >
               {isSubmitting
-                ? "Checking inventory & submitting..."
+                ? "Submitting..."
                 : exceedsAvailable
-                  ? "Cannot Submit — Quantity Exceeds Stock"
+                  ? "Stock too low"
                   : selectedProduct && parseFloat(unitPrice) < Number(selectedProduct.unit_price)
-                    ? "Submit Order (Requires Super Admin Approval)"
+                    ? "Submit (needs approval)"
                     : "Submit Order"}
             </Button>
           </form>

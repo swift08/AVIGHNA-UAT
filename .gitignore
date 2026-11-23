@@ -37,6 +37,15 @@ dist-ssr
 *.sw?
 supabase/.temp/
 
+# Capacitor / Android local build junk (keep android/ project sources)
+android/.gradle/
+android/app/build/
+android/build/
+android/captures/
+android/local.properties
+*.apk
+*.aab
+
 tmp-coa-samples/
 # Local Tesseract cache at repo root (bundled model lives in tessdata/ and public/)
 /eng.traineddata

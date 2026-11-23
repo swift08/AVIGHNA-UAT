@@ -116,7 +116,8 @@ export const SECURITY_HEADERS: Record<string, string> = {
   "X-Content-Type-Options": "nosniff",
   "X-Frame-Options": "DENY",
   "Referrer-Policy": "strict-origin-when-cross-origin",
-  "Permissions-Policy": "camera=(), microphone=(self), geolocation=(self)",
+  // Field app needs live camera + mic + GPS (gallery upload is blocked in UI, not here).
+  "Permissions-Policy": "camera=(self), microphone=(self), geolocation=(self)",
   "Cross-Origin-Opener-Policy": "same-origin",
   "Cross-Origin-Resource-Policy": "same-origin",
   "Content-Security-Policy": [

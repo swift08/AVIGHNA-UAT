@@ -1,6 +1,6 @@
 /**
  * Wipe transactional / dummy business data from Supabase.
- * Preserves companies, roles, permissions, and user_profiles.
+ * Preserves companies, roles, permissions, user_profiles, and inventory products.
  *
  * Usage: npx tsx scripts/verify_clean_state.ts
  * Requires SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY in .env
@@ -43,7 +43,7 @@ const supabase = createClient(supabaseUrl, serviceRoleKey, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-/** FK-safe wipe order (children first). */
+/** FK-safe wipe order (children first). Inventory `products` are intentionally kept. */
 const businessTables = [
   "payments",
   "deliveries",
@@ -59,11 +59,13 @@ const businessTables = [
   "inventory_logs",
   "batch_quality_results",
   "product_batches",
-  "products",
+  // "products" — keep inventory list
   "vehicles",
   "audit_logs",
   "notifications",
 ];
+
+const preservedTables = ["products", "companies", "roles", "permissions", "user_profiles"];
 
 function isMissingTable(message: string) {
   return /Could not find the table|does not exist|schema cache/i.test(message);
@@ -125,12 +127,17 @@ async function resetAndVerify() {
     }
   }
 
-  const companies = await countTable("companies");
-  const roles = await countTable("roles");
-  const profiles = await countTable("user_profiles");
-  console.log(
-    `\nPreserved: companies=${companies.count}, roles=${roles.count}, user_profiles=${profiles.count}`,
-  );
+  console.log("\n=== PRESERVED ===\n");
+  for (const table of preservedTables) {
+    const { count, error } = await countTable(table);
+    if (error && isMissingTable(error)) {
+      console.log(`  ${table}: (not in this DB)`);
+    } else if (error) {
+      console.log(`  ${table}: ERROR ${error}`);
+    } else {
+      console.log(`  ${table}: ${count}`);
+    }
+  }
 
   if (allZero) {
     console.log("\nSUCCESS: all business tables are empty.");
