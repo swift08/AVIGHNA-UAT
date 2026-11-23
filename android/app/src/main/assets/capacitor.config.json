@@ -1,0 +1,12 @@
+{
+	"appId": "com.avighna.field",
+	"appName": "Avighna Field",
+	"webDir": "www",
+	"server": {
+		"url": "https://avighna-uat-six.vercel.app/?app=field",
+		"cleartext": false
+	},
+	"android": {
+		"allowMixedContent": false
+	}
+}
