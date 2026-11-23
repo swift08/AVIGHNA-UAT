@@ -10,9 +10,11 @@ describe("field-app roles", () => {
     expect(FIELD_ROLES).toEqual(["sales", "logistics", "super_admin"]);
   });
 
-  it("limits super-admin field nav to order approvals only", () => {
+  it("limits super-admin field nav to orders and field visits", () => {
     expect(isFieldAdminNavUrl("/orders")).toBe(true);
     expect(isFieldAdminNavUrl("/orders/abc")).toBe(true);
+    expect(isFieldAdminNavUrl("/field-visits")).toBe(true);
+    expect(isFieldAdminNavUrl("/field-visits/abc")).toBe(true);
     expect(isFieldAdminNavUrl("/administration")).toBe(false);
     expect(isFieldAdminNavUrl("/")).toBe(false);
     expect(isFieldAdminNavUrl("/inventory")).toBe(false);

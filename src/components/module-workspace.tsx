@@ -76,6 +76,7 @@ import { companies, money as moneyFormat } from "@/lib/workspace-data";
 import { SYSTEM_USERS } from "@/lib/auth-service";
 import { scopeForDriver } from "@/lib/driver-scope";
 import { isFieldApp } from "@/lib/field-app";
+import { openMapsAt, parseMapCoords } from "@/lib/maps";
 import { captureLiveGps, takeLivePhoto } from "@/lib/live-capture";
 import { buildSalesInvoiceHtml, suggestSalesInvoiceNumber } from "@/lib/sales-invoice";
 import {
@@ -6492,23 +6493,26 @@ export function ModuleWorkspace({
                             {(delivery.gps_latitude != null ||
                               (delivery.photos && delivery.photos.length > 0)) && (
                               <div className="space-y-2">
-                                {delivery.gps_latitude != null && (
-                                  <a
-                                    href={`https://maps.google.com/?q=${delivery.gps_latitude},${delivery.gps_longitude ?? ""}`}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1 rounded-lg border border-emerald-500/20 transition-colors"
-                                  >
-                                    <MapPin className="size-3.5 shrink-0" />
-                                    <span>
-                                      GPS: {Number(delivery.gps_latitude).toFixed(4)},{" "}
-                                      {delivery.gps_longitude != null
-                                        ? Number(delivery.gps_longitude).toFixed(4)
-                                        : "—"}{" "}
-                                      ↗
-                                    </span>
-                                  </a>
-                                )}
+                                {(() => {
+                                  const coords = parseMapCoords(
+                                    delivery.gps_latitude,
+                                    delivery.gps_longitude,
+                                  );
+                                  if (!coords) return null;
+                                  return (
+                                    <button
+                                      type="button"
+                                      onClick={() => void openMapsAt(coords.lat, coords.lng)}
+                                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1 rounded-lg border border-emerald-500/20 transition-colors cursor-pointer"
+                                    >
+                                      <MapPin className="size-3.5 shrink-0" />
+                                      <span>
+                                        GPS: {coords.lat.toFixed(4)}, {coords.lng.toFixed(4)} · Open
+                                        Maps
+                                      </span>
+                                    </button>
+                                  );
+                                })()}
                                 {delivery.photos && delivery.photos.length > 0 && (
                                   <div className="flex flex-wrap gap-2">
                                     {delivery.photos.map((photoUrl, idx) => (
@@ -7461,12 +7465,28 @@ export function ModuleWorkspace({
                                     <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
                                       {companies.find((c) => c.id === v.company_id)?.short || "—"} ·{" "}
                                       {v.scheduled_date} · {v.scheduled_time}
-                                      {v.gps_latitude ? " · GPS" : ""}
                                       {v.voice_recording_path ? " · Voice" : ""}
                                       {v.photos && v.photos.length > 0
                                         ? ` · ${v.photos.length} photo${v.photos.length === 1 ? "" : "s"}`
                                         : ""}
                                     </p>
+                                    {(() => {
+                                      const coords = parseMapCoords(v.gps_latitude, v.gps_longitude);
+                                      if (!coords) return null;
+                                      return (
+                                        <button
+                                          type="button"
+                                          className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            void openMapsAt(coords.lat, coords.lng);
+                                          }}
+                                        >
+                                          <MapPin className="size-3" />
+                                          {coords.lat.toFixed(4)}, {coords.lng.toFixed(4)} · Maps
+                                        </button>
+                                      );
+                                    })()}
                                   </div>
                                   <div className="flex items-center gap-2 shrink-0">
                                     <span
@@ -7522,12 +7542,31 @@ export function ModuleWorkspace({
                                   {v.outcome_notes || "No outcome notes yet."}
                                 </p>
                                 <div className="flex flex-row flex-wrap items-center gap-1.5">
-                                  {v.gps_latitude ? (
-                                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20">
-                                      <MapPin className="size-3" />
-                                      GPS
-                                    </span>
-                                  ) : null}
+                                  {(() => {
+                                    const coords = parseMapCoords(v.gps_latitude, v.gps_longitude);
+                                    if (!coords) return null;
+                                    return (
+                                      <span
+                                        role="link"
+                                        tabIndex={0}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          void openMapsAt(coords.lat, coords.lng);
+                                        }}
+                                        onKeyDown={(e) => {
+                                          if (e.key !== "Enter" && e.key !== " ") return;
+                                          e.preventDefault();
+                                          e.stopPropagation();
+                                          void openMapsAt(coords.lat, coords.lng);
+                                        }}
+                                        className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 px-2 py-0.5 rounded-md border border-emerald-500/20 hover:bg-emerald-500/20 cursor-pointer"
+                                        title={`${coords.lat.toFixed(5)}, ${coords.lng.toFixed(5)} — Open Maps`}
+                                      >
+                                        <MapPin className="size-3" />
+                                        {coords.lat.toFixed(4)}, {coords.lng.toFixed(4)}
+                                      </span>
+                                    );
+                                  })()}
                                   {v.voice_recording_path ? (
                                     <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-purple-700 dark:text-purple-300 bg-purple-500/10 px-2 py-0.5 rounded-md border border-purple-500/20">
                                       <Volume2 className="size-3" />
@@ -9830,18 +9869,23 @@ export function ModuleWorkspace({
               )}
 
               <div className="flex flex-wrap gap-2">
-                {selectedVisitDetail.gps_latitude ? (
-                  <a
-                    href={`https://maps.google.com/?q=${selectedVisitDetail.gps_latitude},${selectedVisitDetail.gps_longitude || 77.5946}`}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1.5 rounded-lg border border-emerald-500/20"
-                  >
-                    <MapPin className="size-3.5" />
-                    GPS {selectedVisitDetail.gps_latitude.toFixed(4)},{" "}
-                    {selectedVisitDetail.gps_longitude?.toFixed(4)} ↗
-                  </a>
-                ) : null}
+                {(() => {
+                  const coords = parseMapCoords(
+                    selectedVisitDetail.gps_latitude,
+                    selectedVisitDetail.gps_longitude,
+                  );
+                  if (!coords) return null;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => void openMapsAt(coords.lat, coords.lng)}
+                      className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1.5 rounded-lg border border-emerald-500/20 cursor-pointer"
+                    >
+                      <MapPin className="size-3.5" />
+                      GPS {coords.lat.toFixed(5)}, {coords.lng.toFixed(5)} · Open Maps
+                    </button>
+                  );
+                })()}
                 {selectedVisitDetail.voice_recording_path ? (
                   <Button
                     size="sm"

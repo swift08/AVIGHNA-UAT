@@ -19,11 +19,16 @@ export function isFieldRole(role: string | undefined | null): role is FieldRole 
   return role === "sales" || role === "logistics" || role === "super_admin";
 }
 
-/** Nav URLs Super Admin gets in the field app — order approvals only (no RBAC). */
-export const FIELD_ADMIN_URLS = ["/orders"] as const;
+/** Nav URLs Super Admin gets in the field app — approvals + visit GPS check (no RBAC). */
+export const FIELD_ADMIN_URLS = ["/orders", "/field-visits"] as const;
 
 export function isFieldAdminNavUrl(url: string): boolean {
-  return url === "/orders" || url.startsWith("/orders/");
+  return (
+    url === "/orders" ||
+    url.startsWith("/orders/") ||
+    url === "/field-visits" ||
+    url.startsWith("/field-visits/")
+  );
 }
 
 export const FIELD_APP_LOGIN_ERROR =

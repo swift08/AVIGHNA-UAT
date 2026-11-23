@@ -658,13 +658,22 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
         {/* MOBILE STRICT BOTTOM NAVIGATION */}
         <nav className="mobile-bottom-nav" aria-label="Mobile Bottom Navigation">
           {fieldApp && currentUser.role === "super_admin" ? (
-            <Link
-              to="/orders"
-              className={`mobile-bottom-nav-item ${path === "/orders" || path.startsWith("/orders/") ? "active" : ""}`}
-            >
-              <ShoppingBag className="size-4" />
-              <span>Order approvals</span>
-            </Link>
+            <>
+              <Link
+                to="/orders"
+                className={`mobile-bottom-nav-item ${path === "/orders" || path.startsWith("/orders/") ? "active" : ""}`}
+              >
+                <ShoppingBag className="size-4" />
+                <span>Orders</span>
+              </Link>
+              <Link
+                to="/field-visits"
+                className={`mobile-bottom-nav-item ${path === "/field-visits" || path.startsWith("/field-visits/") ? "active" : ""}`}
+              >
+                <MapPin className="size-4" />
+                <span>Visits</span>
+              </Link>
+            </>
           ) : (
             <>
               <Link to="/" className={`mobile-bottom-nav-item ${path === "/" ? "active" : ""}`}>
