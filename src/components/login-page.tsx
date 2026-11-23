@@ -2,21 +2,16 @@ import { useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useWorkspace } from "./workspace-provider";
-import { SYSTEM_USERS, type RoleType } from "@/lib/auth-service";
-import { isDemoAuthEnabled } from "@/lib/security";
-import { isFieldApp, isFieldRole } from "@/lib/field-app";
+import { isFieldApp } from "@/lib/field-app";
 
 export function LoginPage() {
-  const { login, loginAsRole } = useWorkspace();
+  const { login } = useWorkspace();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const fieldApp = isFieldApp();
-  const demoUsers = fieldApp
-    ? SYSTEM_USERS.filter((u) => isFieldRole(u.role))
-    : SYSTEM_USERS;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,10 +28,6 @@ export function LoginPage() {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleQuickLogin = (role: RoleType) => {
-    loginAsRole(role);
   };
 
   return (
@@ -58,12 +49,8 @@ export function LoginPage() {
         <div className="login-panel-inner">
           <div className="login-panel-head">
             <img src="/logos/logos/avighna.png" alt="Avighna" className="login-panel-logo" />
-            <h2>{fieldApp ? "Sign in" : "Welcome back"}</h2>
-            <p>
-              {fieldApp
-                ? "Sign in with your Avighna account."
-                : "Sign in to continue to your workspace."}
-            </p>
+            <h2>Sign in</h2>
+            <p>Sign in with your Avighna account.</p>
           </div>
 
           {error && (
@@ -115,23 +102,6 @@ export function LoginPage() {
               {loading ? "Signing in..." : "Sign in"}
             </Button>
           </form>
-
-          {isDemoAuthEnabled() && (
-            <div className="login-demo">
-              <p>Demo access</p>
-              <div className="login-demo-list">
-                {demoUsers.map((u) => (
-                  <button key={u.id} type="button" onClick={() => handleQuickLogin(u.role)}>
-                    <span className="login-demo-avatar">{u.initials}</span>
-                    <span className="login-demo-meta">
-                      <span className="login-demo-name">{u.name}</span>
-                      <span className="login-demo-role">{u.roleName}</span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>
