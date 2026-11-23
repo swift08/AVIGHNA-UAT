@@ -1,6 +1,6 @@
 {
   "versionCode": 2,
   "versionName": "1.1",
-  "apkUrl": "https://github.com/swift08/AVIGHNA-UAT/releases/download/field-v1.1/avighna-field.apk",
+  "apkUrl": "https://avighna-uat.vercel.app/downloads/avighna-field.apk",
   "message": "A new version of Avighna Field is available."
 }
