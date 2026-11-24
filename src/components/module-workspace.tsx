@@ -63,7 +63,7 @@ import {
 } from "@/components/ui/sheet";
 import { useWorkspace } from "./workspace-provider";
 import { CompanyLogo } from "./workspace-shell";
-import { OrderTable, getOrderManager } from "./order-workspace";
+import { OrderTable, getOrderManager, unitConversionFactor } from "./order-workspace";
 import { TaskWorkspace } from "./task-workspace";
 import { SuppliersWorkspace } from "./suppliers-workspace";
 import { RevenueChart } from "./revenue-chart";
@@ -79,7 +79,13 @@ import { SYSTEM_USERS } from "@/lib/auth-service";
 import { scopeForDriver } from "@/lib/driver-scope";
 import { isFieldApp } from "@/lib/field-app";
 import { openMapsAt, parseMapCoords } from "@/lib/maps";
-import { captureLiveGps, takeLivePhoto } from "@/lib/live-capture";
+import {
+  captureLiveGps,
+  clearVisitCameraDraft,
+  consumeVisitCameraDraft,
+  saveVisitCameraDraft,
+  takeLivePhoto,
+} from "@/lib/live-capture";
 import { buildSalesInvoiceHtml, suggestSalesInvoiceNumber } from "@/lib/sales-invoice";
 import {
   buildPurchaseOrderHtml,
@@ -95,6 +101,7 @@ import {
 import { missingPhone, missingRequired } from "@/lib/form-required";
 import { listStaffLogins } from "@/lib/login-admin";
 import { TeamLogins } from "./team-logins";
+import { AuditLogsPanel } from "./audit-logs-panel";
 import { CoaImportButton, ProductBatchesPanel } from "./coa-import";
 import { getBatchCoaAccess, listProductBatches } from "@/lib/coa-service";
 import {
@@ -546,6 +553,20 @@ export function ModuleWorkspace({
   const [visitLogTime, setVisitLogTime] = useState(() =>
     new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
   );
+
+  // Inline order booking state when visitPurpose === "Order booking"
+  const [visitOrderProductId, setVisitOrderProductId] = useState("");
+  const [visitOrderQty, setVisitOrderQty] = useState("1");
+  const [visitOrderUnit, setVisitOrderUnit] = useState("kg");
+  const [visitOrderPrice, setVisitOrderPrice] = useState("");
+  const [visitOrderGstRate, setVisitOrderGstRate] = useState("18");
+  const [visitOrderIsInterstate, setVisitOrderIsInterstate] = useState(false);
+  const [visitOrderTransportMode, setVisitOrderTransportMode] = useState<
+    "Logistics / Assigned Vehicle" | "Manufacturer Vehicle"
+  >("Logistics / Assigned Vehicle");
+  const [visitOrderDispatchDetails, setVisitOrderDispatchDetails] = useState("");
+  const [visitOrderTerms, setVisitOrderTerms] = useState("");
+  const [visitOrderSubmitting, setVisitOrderSubmitting] = useState(false);
 
   // Field visit Edit modal state (1-time edit for sales, full edit for superadmin/supervisor)
   const [editVisitModal, setEditVisitModal] = useState(false);
@@ -1172,14 +1193,69 @@ export function ModuleWorkspace({
   };
 
   const handleTakeProofPhoto = async () => {
+    saveVisitCameraDraft({
+      visitFirm,
+      visitSelectedCustomer,
+      visitPurpose,
+      visitCustomPurpose,
+      visitRequirement,
+      visitLogDate: visitLogDate || "",
+      visitLogTime: visitLogTime || "",
+      gpsLocation,
+      proofPhotos,
+      visitOrderProductId,
+      visitOrderQty,
+      visitOrderUnit,
+      visitOrderPrice,
+      visitOrderGstRate,
+      visitOrderIsInterstate,
+      visitOrderTransportMode,
+      visitOrderDispatchDetails,
+      visitOrderTerms,
+    });
     try {
       const dataUrl = await takeLivePhoto();
+      clearVisitCameraDraft();
       setProofPhotos((prev) => [...prev, dataUrl]);
     } catch (err) {
+      clearVisitCameraDraft();
       if (err instanceof Error && /cancel|No photo/i.test(err.message)) return;
       toast.error(err instanceof Error ? err.message : "Camera capture failed.");
     }
   };
+
+  useEffect(() => {
+    if (module !== "field-visits") return;
+    const draft = consumeVisitCameraDraft();
+    if (!draft) return;
+    setTab("Log a visit");
+    if (draft.visitFirm) setVisitFirm(draft.visitFirm);
+    if (draft.visitSelectedCustomer) setVisitSelectedCustomer(draft.visitSelectedCustomer);
+    if (draft.visitPurpose) setVisitPurpose(draft.visitPurpose);
+    if (draft.visitCustomPurpose) setVisitCustomPurpose(draft.visitCustomPurpose);
+    if (draft.visitRequirement) setVisitRequirement(draft.visitRequirement);
+    if (draft.visitLogDate) setVisitLogDate(draft.visitLogDate);
+    if (draft.visitLogTime) setVisitLogTime(draft.visitLogTime);
+    if (draft.gpsLocation) setGpsLocation(draft.gpsLocation);
+    if (Array.isArray(draft.proofPhotos) && draft.proofPhotos.length > 0) {
+      setProofPhotos(draft.proofPhotos);
+    }
+    if (draft.visitOrderProductId !== undefined) setVisitOrderProductId(draft.visitOrderProductId);
+    if (draft.visitOrderQty !== undefined) setVisitOrderQty(draft.visitOrderQty);
+    if (draft.visitOrderUnit !== undefined) setVisitOrderUnit(draft.visitOrderUnit);
+    if (draft.visitOrderPrice !== undefined) setVisitOrderPrice(draft.visitOrderPrice);
+    if (draft.visitOrderGstRate !== undefined) setVisitOrderGstRate(draft.visitOrderGstRate);
+    if (draft.visitOrderIsInterstate !== undefined) {
+      setVisitOrderIsInterstate(draft.visitOrderIsInterstate);
+    }
+    if (draft.visitOrderTransportMode !== undefined) {
+      setVisitOrderTransportMode(draft.visitOrderTransportMode);
+    }
+    if (draft.visitOrderDispatchDetails !== undefined) {
+      setVisitOrderDispatchDetails(draft.visitOrderDispatchDetails);
+    }
+    if (draft.visitOrderTerms !== undefined) setVisitOrderTerms(draft.visitOrderTerms);
+  }, [module]);
 
   const startVoiceRecording = async () => {
     try {
@@ -1595,40 +1671,155 @@ export function ModuleWorkspace({
     const effectivePurpose =
       visitPurpose === "Custom" ? visitCustomPurpose.trim() || "Client Meeting" : visitPurpose;
 
-    await scheduleFieldVisit({
-      companyId: visitFirm,
-      customerName: clientName,
-      customerId: matchedCust?.id,
-      purpose: effectivePurpose,
-      scheduledDate: (visitLogDate || new Date().toISOString().split("T")[0]) || "",
-      scheduledTime:
-        visitLogTime || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      assignedTo: currentUser?.id,
-      assignedToName: currentUser?.name || "Ravi Kumar",
-      creatorName: currentUser?.name || "Ravi Kumar",
-      outcomeNotes: visitRequirement || "Visit completed on site.",
-      gpsLatitude: gpsLocation?.lat || 12.9716,
-      gpsLongitude: gpsLocation?.lng || 77.5946,
-      photos: proofPhotos,
-      voiceRecordingPath:
-        voiceAudioDataUrl ||
-        (hasVoiceNote ? `voice-memo-${recordingDuration || 8}s.m4a` : undefined),
-      status: "Completed",
-    });
+    const shouldCreateInlineOrder =
+      visitPurpose === "Order booking" && visitOrderProductId.trim().length > 0;
+    const selectedOrderProduct = shouldCreateInlineOrder
+      ? dbProducts.find((p) => p.id === visitOrderProductId)
+      : undefined;
 
-    setVisitSuccessNotice(`Visit to "${clientName}" saved with on-site GPS & verification!`);
-    setTimeout(() => setVisitSuccessNotice(null), 5000);
-    setVisitRequirement("");
-    setHasVoiceNote(false);
-    setVoiceAudioDataUrl(null);
-    setRecordingDuration(0);
-    setGpsLocation(null);
-    setProofPhotos([]);
-    setVisitCustomPurpose("");
-    setVisitLogDate(new Date().toISOString().split("T")[0]);
-    setVisitLogTime(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
-    setTab("Visit history");
-    reloadData();
+    let orderQty = 0;
+    let orderFactor = 1;
+    let orderEffectiveUnitPrice = 0;
+    let orderTaxAmount = 0;
+    let orderCombinedNotes = "";
+
+    if (shouldCreateInlineOrder) {
+      if (!selectedOrderProduct) {
+        toast.error("Selected product not found in inventory.");
+        return;
+      }
+      orderQty = Number(visitOrderQty);
+      const basePrice = Number(visitOrderPrice);
+      if (!Number.isFinite(orderQty) || orderQty <= 0) {
+        toast.error("Please enter a valid order quantity.");
+        return;
+      }
+      if (!Number.isFinite(basePrice) || basePrice <= 0) {
+        toast.error("Please enter a valid unit price.");
+        return;
+      }
+      const baseUnit = selectedOrderProduct.unit || "kg";
+      orderFactor = unitConversionFactor(visitOrderUnit, baseUnit);
+      const qtyInBaseUnit = orderQty * orderFactor;
+      const availableStock = Math.max(
+        0,
+        Number(selectedOrderProduct.on_hand ?? 0) - Number(selectedOrderProduct.reserved ?? 0),
+      );
+      if (qtyInBaseUnit > availableStock) {
+        toast.error("Insufficient stock", {
+          description: `Requested ${qtyInBaseUnit.toLocaleString("en-IN", { maximumFractionDigits: 3 })} ${baseUnit} exceeds available stock (${availableStock.toLocaleString("en-IN")} ${baseUnit}).`,
+        });
+        return;
+      }
+      orderEffectiveUnitPrice = basePrice * orderFactor;
+      const subtotal = orderQty * orderEffectiveUnitPrice;
+      const gstPct = Math.max(0, Number(visitOrderGstRate) || 0);
+      orderTaxAmount = Math.round(((subtotal * gstPct) / 100) * 100) / 100;
+
+      const noteParts: string[] = [];
+      if (gstPct > 0) {
+        if (visitOrderIsInterstate) {
+          noteParts.push(`[IGST: ${gstPct}% (₹${orderTaxAmount.toLocaleString("en-IN")})]`);
+        } else {
+          const halfPct = gstPct / 2;
+          const halfAmt = Math.round((orderTaxAmount / 2) * 100) / 100;
+          noteParts.push(
+            `[CGST: ${halfPct}% (₹${halfAmt.toLocaleString("en-IN")}) + SGST: ${halfPct}% (₹${halfAmt.toLocaleString("en-IN")})]`,
+          );
+        }
+      }
+      if (visitOrderDispatchDetails.trim()) {
+        noteParts.push(`[Dispatch: ${visitOrderDispatchDetails.trim()}]`);
+      }
+      if (visitOrderTerms.trim()) {
+        noteParts.push(`[Terms: ${visitOrderTerms.trim()}]`);
+      }
+      if (visitRequirement.trim()) {
+        noteParts.push(visitRequirement.trim());
+      }
+      orderCombinedNotes = noteParts.join(" | ");
+    }
+
+    setVisitOrderSubmitting(true);
+    try {
+      if (shouldCreateInlineOrder && selectedOrderProduct) {
+        const orderRes = await createOrder({
+          companyId: visitFirm,
+          customerName: clientName,
+          productId: selectedOrderProduct.id,
+          productName: selectedOrderProduct.name,
+          quantity: orderQty,
+          unit: visitOrderUnit,
+          unitPrice: orderEffectiveUnitPrice,
+          catalogPrice: selectedOrderProduct.unit_price,
+          wholesalePrice: selectedOrderProduct.wholesale_price,
+          tax: orderTaxAmount,
+          deliveryAddress: matchedCust?.address || undefined,
+          notes: orderCombinedNotes || undefined,
+          creatorName: currentUser?.name || "Sales Executive",
+          transportMode: visitOrderTransportMode,
+        });
+        if (!orderRes.success) {
+          toast.error("Order not created", {
+            description: orderRes.error || "Order could not be created.",
+          });
+          return;
+        }
+        toast.success("Order created from visit", {
+          description: `Order #${orderRes.orderId} booked for ${clientName}.`,
+        });
+      }
+
+      await scheduleFieldVisit({
+        companyId: visitFirm,
+        customerName: clientName,
+        customerId: matchedCust?.id,
+        purpose: effectivePurpose,
+        scheduledDate: (visitLogDate || new Date().toISOString().split("T")[0]) || "",
+        scheduledTime:
+          visitLogTime || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        assignedTo: currentUser?.id,
+        assignedToName: currentUser?.name || "Sales Executive",
+        creatorName: currentUser?.name || "Sales Executive",
+        outcomeNotes: visitRequirement || "Visit completed on site.",
+        gpsLatitude: gpsLocation?.lat || 12.9716,
+        gpsLongitude: gpsLocation?.lng || 77.5946,
+        photos: proofPhotos,
+        voiceRecordingPath:
+          voiceAudioDataUrl ||
+          (hasVoiceNote ? `voice-memo-${recordingDuration || 8}s.m4a` : undefined),
+        status: "Completed",
+      });
+
+      setVisitSuccessNotice(
+        shouldCreateInlineOrder
+          ? `Visit to "${clientName}" & Order saved successfully!`
+          : `Visit to "${clientName}" saved with on-site GPS & verification!`,
+      );
+      setTimeout(() => setVisitSuccessNotice(null), 5000);
+      setVisitRequirement("");
+      setHasVoiceNote(false);
+      setVoiceAudioDataUrl(null);
+      setRecordingDuration(0);
+      setGpsLocation(null);
+      setProofPhotos([]);
+      setVisitCustomPurpose("");
+      setVisitOrderProductId("");
+      setVisitOrderQty("1");
+      setVisitOrderUnit("kg");
+      setVisitOrderPrice("");
+      setVisitOrderGstRate("18");
+      setVisitOrderIsInterstate(false);
+      setVisitOrderTransportMode("Logistics / Assigned Vehicle");
+      setVisitOrderDispatchDetails("");
+      setVisitOrderTerms("");
+      setVisitLogDate(new Date().toISOString().split("T")[0]);
+      setVisitLogTime(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+      setTab("Visit history");
+      reloadData();
+    } finally {
+      setVisitOrderSubmitting(false);
+    }
   };
 
   const handleCreateOrderFromVisit = async () => {
@@ -6397,24 +6588,7 @@ export function ModuleWorkspace({
           ) : tab === "Roles" ? (
             <TeamLogins />
           ) : (
-            <div className="p-6 rounded-xl border border-border bg-card">
-              <h4 className="text-sm font-bold mb-2">Audit Trail</h4>
-              <p className="text-xs text-muted-foreground mb-4">
-                Tamper-evident audit logs recorded in PostgreSQL db_audit_logs.
-              </p>
-              <div className="space-y-2">
-                <div className="text-xs p-3 rounded bg-muted/40 border border-border flex justify-between">
-                  <span>
-                    System security configuration initialized for all 4 company workspaces
-                  </span>
-                  <span className="text-muted-foreground">Active</span>
-                </div>
-                <div className="text-xs p-3 rounded bg-muted/40 border border-border flex justify-between">
-                  <span>Multi-tenant row-level access validated</span>
-                  <span className="text-muted-foreground">Active</span>
-                </div>
-              </div>
-            </div>
+            <AuditLogsPanel companyId={company} />
           )}
           <p className="mt-6 text-xs text-muted-foreground">
             Each login keeps a fixed job role; the feature matrix only adjusts permissions.
@@ -7677,6 +7851,263 @@ export function ModuleWorkspace({
                     />
                   </div>
                 )}
+
+                {visitPurpose === "Order booking" && (() => {
+                  const firmProducts = dbProducts.filter(
+                    (p): p is typeof p & { id: string } =>
+                      Boolean(p.id) && (p.company_id === visitFirm || !visitFirm),
+                  );
+                  const orderProductOptions = firmProducts.map((p) => {
+                    const avail = Math.max(0, Number(p.on_hand ?? 0) - Number(p.reserved ?? 0));
+                    const u = p.unit || "kg";
+                    return {
+                      value: p.id,
+                      label: `${p.name} — ${avail.toLocaleString("en-IN")} ${u} in stock`,
+                      keywords: `${p.name} ${p.code || ""} ${p.category || ""}`,
+                    };
+                  });
+                  const selectedProd = firmProducts.find((p) => p.id === visitOrderProductId);
+                  const baseUnit = selectedProd?.unit || "kg";
+                  const availStock = selectedProd
+                    ? Math.max(0, Number(selectedProd.on_hand ?? 0) - Number(selectedProd.reserved ?? 0))
+                    : 0;
+                  const qtyNum = Number(visitOrderQty) || 0;
+                  const factor = unitConversionFactor(visitOrderUnit, baseUnit);
+                  const qtyInBase = qtyNum * factor;
+                  const overStock = Boolean(selectedProd && qtyNum > 0 && qtyInBase > availStock);
+                  const basePrice = Number(visitOrderPrice) || 0;
+                  const effectiveUnitPrice = basePrice * factor;
+                  const subtotal = qtyNum * effectiveUnitPrice;
+                  const gstPct = Math.max(0, Number(visitOrderGstRate) || 0);
+                  const taxAmt = Math.round(((subtotal * gstPct) / 100) * 100) / 100;
+                  const grandTotal = subtotal + taxAmt;
+
+                  return (
+                    <div className="mt-2 p-3.5 rounded-xl border border-primary/30 bg-primary/[0.03] space-y-3 animate-in fade-in">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                          <ShoppingBag className="size-3.5 text-primary" />
+                          New Order Booking
+                        </span>
+                        <span className="text-[11px] text-muted-foreground">
+                          Customer &amp; firm pre-filled from above
+                        </span>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-semibold text-muted-foreground">
+                          Product *
+                        </label>
+                        <SearchableSelect
+                          value={visitOrderProductId}
+                          onChange={(val) => {
+                            setVisitOrderProductId(val);
+                            const prod = firmProducts.find((p) => p.id === val);
+                            if (prod) {
+                              setVisitOrderUnit(prod.unit || "kg");
+                              setVisitOrderPrice(
+                                prod.unit_price != null ? String(prod.unit_price) : "",
+                              );
+                            }
+                          }}
+                          options={orderProductOptions}
+                          placeholder="Select product from inventory..."
+                          searchPlaceholder="Search product or SKU..."
+                          emptyText="No products found for this firm"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-muted-foreground">
+                            Quantity *
+                          </label>
+                          <input
+                            type="number"
+                            min="0.001"
+                            step="any"
+                            value={visitOrderQty}
+                            onChange={(e) => setVisitOrderQty(e.target.value)}
+                            placeholder="Qty"
+                            className="w-full text-xs font-semibold h-9 px-3 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-muted-foreground">
+                            Unit
+                          </label>
+                          <select
+                            value={visitOrderUnit}
+                            onChange={(e) => setVisitOrderUnit(e.target.value)}
+                            className="w-full text-xs font-semibold h-9 px-2.5 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
+                          >
+                            {["kg", "g", "L", "ml", "Bags", "Boxes", "Units", "MT"].map((u) => (
+                              <option key={u} value={u}>
+                                {u}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-muted-foreground">
+                            Unit Price (₹ / {baseUnit}) *
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={visitOrderPrice}
+                            onChange={(e) => setVisitOrderPrice(e.target.value)}
+                            placeholder="Price"
+                            className="w-full text-xs font-semibold h-9 px-3 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
+                      </div>
+
+                      {overStock && (
+                        <div className="text-[11px] font-semibold text-destructive bg-destructive/10 border border-destructive/30 rounded-lg px-3 py-2">
+                          Requested {qtyInBase.toLocaleString("en-IN", { maximumFractionDigits: 3 })}{" "}
+                          {baseUnit} exceeds available stock (
+                          {availStock.toLocaleString("en-IN")} {baseUnit}). Reduce quantity to book.
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 items-end">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-muted-foreground">
+                            GST Rate
+                          </label>
+                          <select
+                            value={visitOrderGstRate}
+                            onChange={(e) => setVisitOrderGstRate(e.target.value)}
+                            className="w-full text-xs font-semibold h-9 px-2.5 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
+                          >
+                            {[0, 5, 12, 18, 28].map((r) => (
+                              <option key={r} value={String(r)}>
+                                {r}% GST
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <label className="flex items-center gap-2 h-9 px-3 rounded-lg border border-border bg-background text-xs font-medium cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={visitOrderIsInterstate}
+                            onChange={(e) => setVisitOrderIsInterstate(e.target.checked)}
+                            className="!w-4 !h-4 accent-primary"
+                          />
+                          <span>Interstate (IGST)</span>
+                        </label>
+                      </div>
+
+                      {selectedProd && qtyNum > 0 && basePrice > 0 && (
+                        <div className="rounded-lg border border-border/80 bg-background/80 p-2.5 text-[11px] space-y-1">
+                          <div className="flex justify-between text-muted-foreground">
+                            <span>Subtotal</span>
+                            <span className="font-semibold text-foreground">
+                              ₹{subtotal.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                          {gstPct > 0 &&
+                            (visitOrderIsInterstate ? (
+                              <div className="flex justify-between text-muted-foreground">
+                                <span>IGST ({gstPct}%)</span>
+                                <span>
+                                  ₹{taxAmt.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                                </span>
+                              </div>
+                            ) : (
+                              <>
+                                <div className="flex justify-between text-muted-foreground">
+                                  <span>CGST ({gstPct / 2}%)</span>
+                                  <span>
+                                    ₹
+                                    {(taxAmt / 2).toLocaleString("en-IN", {
+                                      maximumFractionDigits: 2,
+                                    })}
+                                  </span>
+                                </div>
+                                <div className="flex justify-between text-muted-foreground">
+                                  <span>SGST ({gstPct / 2}%)</span>
+                                  <span>
+                                    ₹
+                                    {(taxAmt / 2).toLocaleString("en-IN", {
+                                      maximumFractionDigits: 2,
+                                    })}
+                                  </span>
+                                </div>
+                              </>
+                            ))}
+                          <div className="flex justify-between pt-1 border-t border-border/60 font-bold text-foreground">
+                            <span>Total (incl. GST)</span>
+                            <span>
+                              ₹{grandTotal.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-semibold text-muted-foreground">
+                          Transport
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setVisitOrderTransportMode("Logistics / Assigned Vehicle")
+                            }
+                            className={`h-9 px-2.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                              visitOrderTransportMode === "Logistics / Assigned Vehicle"
+                                ? "bg-primary text-primary-foreground border-primary"
+                                : "bg-background text-muted-foreground border-border hover:bg-muted"
+                            }`}
+                          >
+                            1. Company Vehicle
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setVisitOrderTransportMode("Manufacturer Vehicle")}
+                            className={`h-9 px-2.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                              visitOrderTransportMode === "Manufacturer Vehicle"
+                                ? "bg-primary text-primary-foreground border-primary"
+                                : "bg-background text-muted-foreground border-border hover:bg-muted"
+                            }`}
+                          >
+                            2. Other Means
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-muted-foreground">
+                            Dispatch Details
+                          </label>
+                          <input
+                            type="text"
+                            value={visitOrderDispatchDetails}
+                            onChange={(e) => setVisitOrderDispatchDetails(e.target.value)}
+                            placeholder="Expected dispatch / delivery note"
+                            className="w-full text-xs h-9 px-3 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-muted-foreground">
+                            Terms &amp; Conditions
+                          </label>
+                          <input
+                            type="text"
+                            value={visitOrderTerms}
+                            onChange={(e) => setVisitOrderTerms(e.target.value)}
+                            placeholder="Payment / delivery terms"
+                            className="w-full text-xs h-9 px-3 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* 3. Notes */}
@@ -7867,10 +8298,15 @@ export function ModuleWorkspace({
               <div className="field-visit-actions">
                 <Button
                   onClick={handleSaveVisit}
+                  disabled={visitOrderSubmitting}
                   className="w-full h-11 font-bold text-xs cursor-pointer"
                 >
                   <Check className="size-3.5 mr-1.5" />
-                  Save
+                  {visitOrderSubmitting
+                    ? "Saving..."
+                    : visitPurpose === "Order booking" && visitOrderProductId
+                      ? "Save Visit & Book Order"
+                      : "Save"}
                 </Button>
                 <Button
                   onClick={handleCreateOrderFromVisit}

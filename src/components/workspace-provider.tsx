@@ -17,6 +17,7 @@ import {
   setDemoActor,
 } from "@/lib/security";
 import { FIELD_APP_LOGIN_ERROR, canUseFieldApp, isFieldApp } from "@/lib/field-app";
+import { logAudit } from "@/lib/erp-service";
 
 interface WorkspaceContextType {
   company: CompanyId;
@@ -161,12 +162,27 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         clearLoginRateLimit(emailOrRole);
         setDemoActor(null);
         setCurrentUser(profile);
+        void logAudit({
+          userName: profile.name,
+          companyId: profile.company === "all" ? undefined : profile.company,
+          module: "auth",
+          action: "login",
+          recordId: profile.id,
+          description: `${profile.name} (${profile.roleName}) logged in via ${email}`,
+        });
         return { success: true };
       }
     }
 
     // DEV/demo local auth fallback (disabled in production unless explicitly enabled).
     if (!isDemoAuthEnabled()) {
+      void logAudit({
+        userName: email || "Unknown",
+        module: "auth",
+        action: "login_failed",
+        recordId: email || "unknown",
+        description: `Failed login attempt for ${email || "unknown"}`,
+      });
       return {
         success: false,
         error: "Invalid email or password.",
@@ -175,6 +191,13 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
     const res = authenticateUser(emailOrRole, password);
     if (!res.user) {
+      void logAudit({
+        userName: email || "Unknown",
+        module: "auth",
+        action: "login_failed",
+        recordId: email || "unknown",
+        description: `Failed login attempt for ${email || "unknown"}: ${res.error || "Authentication failed"}`,
+      });
       return { success: false, error: res.error || "Authentication failed" };
     }
     if (isFieldApp() && !canUseFieldApp(res.user)) {
@@ -189,6 +212,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     clearLoginRateLimit(emailOrRole);
     setDemoActor(res.user);
     setCurrentUser(res.user);
+    void logAudit({
+      userName: res.user.name,
+      companyId: res.user.company === "all" ? undefined : res.user.company,
+      module: "auth",
+      action: "login",
+      recordId: res.user.id,
+      description: `${res.user.name} (${res.user.roleName}) logged in`,
+    });
     return { success: true };
   };
 
@@ -200,14 +231,93 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       void supabase.auth.signOut();
       setDemoActor(res.user);
       setCurrentUser(res.user);
+      void logAudit({
+        userName: res.user.name,
+        companyId: res.user.company === "all" ? undefined : res.user.company,
+        module: "auth",
+        action: "role_switch",
+        recordId: res.user.id,
+        description: `Switched session to ${res.user.name} (${res.user.roleName})`,
+      });
     }
   };
 
   const logout = () => {
+    if (currentUser) {
+      void logAudit({
+        userName: currentUser.name,
+        companyId: currentUser.company === "all" ? undefined : currentUser.company,
+        module: "auth",
+        action: "logout",
+        recordId: currentUser.id,
+        description: `${currentUser.name} (${currentUser.roleName}) logged out`,
+      });
+    }
     setDemoActor(null);
     void supabase.auth.signOut();
     setCurrentUser(null);
   };
+
+  // Global UI click & navigation audit logger for authenticated users
+  useEffect(() => {
+    if (!currentUser) return;
+    let lastClickKey = "";
+    let lastClickAt = 0;
+    let lastPath = "";
+
+    const logPageView = () => {
+      const path = window.location.pathname;
+      if (!path || path === lastPath) return;
+      lastPath = path;
+      void logAudit({
+        userName: currentUser.name,
+        companyId: company === "all" ? undefined : company,
+        module: "navigation",
+        action: "page_view",
+        recordId: path,
+        description: `Opened ${path}`,
+      });
+    };
+
+    const onClick = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const el = target?.closest('button, a, [role="button"], [role="tab"]');
+      if (!el) return;
+      const rawLabel =
+        el.getAttribute("aria-label") ||
+        el.getAttribute("title") ||
+        (el.textContent || "").replace(/\s+/g, " ").trim();
+      const label = rawLabel.slice(0, 80);
+      if (!label) return;
+      const path = window.location.pathname;
+      const now = Date.now();
+      const key = `${path}::${label}`;
+      // Deduplicate rapid double-clicks within 600ms
+      if (key === lastClickKey && now - lastClickAt < 600) return;
+      lastClickKey = key;
+      lastClickAt = now;
+      void logAudit({
+        userName: currentUser.name,
+        companyId: company === "all" ? undefined : company,
+        module: "ui",
+        action: "button_click",
+        recordId: path,
+        description: `Clicked "${label}" on ${path}`,
+      });
+    };
+
+    logPageView();
+    window.addEventListener("popstate", logPageView);
+    document.addEventListener("click", onClick, { capture: true, passive: true });
+    // Watch SPA pushState navigation via lightweight interval check
+    // ponytail: 1s poll avoids monkey-patching history.pushState across router versions
+    const navTimer = window.setInterval(logPageView, 1000);
+    return () => {
+      window.removeEventListener("popstate", logPageView);
+      document.removeEventListener("click", onClick, { capture: true });
+      window.clearInterval(navTimer);
+    };
+  }, [currentUser, company]);
 
   const changePassword = async (currentPass: string, newPass: string) => {
     if (!currentUser) {

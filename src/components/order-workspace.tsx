@@ -991,7 +991,7 @@ function normalizeMeasureUnit(raw: string): "kg" | "g" | "l" | "ml" | null {
 }
 
 /** Multiplier to convert a quantity in `orderUnit` into `productBaseUnit` (e.g. g -> kg = 0.001). */
-function unitConversionFactor(orderUnit: string, productBaseUnit: string): number {
+export function unitConversionFactor(orderUnit: string, productBaseUnit: string): number {
   const from = normalizeMeasureUnit(orderUnit);
   const to = normalizeMeasureUnit(productBaseUnit);
   if (!from || !to || from === to) return 1;

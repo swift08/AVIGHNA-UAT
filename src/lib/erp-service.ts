@@ -302,7 +302,11 @@ export async function logAudit(entry: {
 
 export async function fetchAuditLogs(companyId?: string): Promise<DBAuditLog[]> {
   try {
-    let query = supabase.from("audit_logs").select("*").order("created_at", { ascending: false });
+    let query = supabase
+      .from("audit_logs")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(500);
     if (companyId && companyId !== "all") {
       query = query.or(`company_id.eq.${companyId},company_id.is.null`);
     }

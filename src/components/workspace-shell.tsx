@@ -42,7 +42,11 @@ import {
   BarChart3,
 } from "lucide-react";
 import { isFieldAdminNavUrl, isFieldApp } from "@/lib/field-app";
-import { requestFieldPermissions } from "@/lib/live-capture";
+import {
+  initNativeCameraRestore,
+  readVisitCameraDraft,
+  requestFieldPermissions,
+} from "@/lib/live-capture";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -352,6 +356,16 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
     if (!fieldApp || currentUser?.role !== "super_admin") return;
     if (!isFieldAdminNavUrl(path)) void navigate({ to: "/orders" });
   }, [fieldApp, currentUser?.role, path, navigate]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    initNativeCameraRestore(() => {
+      void navigate({ to: "/field-visits" });
+    });
+    if (path === "/" && readVisitCameraDraft()) {
+      void navigate({ to: "/field-visits" });
+    }
+  }, [currentUser, path, navigate]);
 
   const handleChangePassword = async (e: React.FormEvent) => {
     e.preventDefault();
