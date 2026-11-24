@@ -2,6 +2,7 @@
 -- AVIGHNA ONE / CHROMASHIFT ERP MASTER SCHEMA (PRODUCTION READY)
 -- Multi-Company Workspace with Full Master User Flow & RLS
 -- Clean configuration: Zero dummy/seed business records
+-- Re-run safe: IF NOT EXISTS / ON CONFLICT / DROP POLICY IF EXISTS
 -- ========================================================================
 
 -- Enable required extensions

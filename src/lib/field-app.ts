@@ -1,4 +1,7 @@
-/** Field Android app roles. Detected via Capacitor or ?app=field. */
+/**
+ * Field Android app roles.
+ * Detected via Capacitor native shell or `?app=field` on the hosted web URL.
+ */
 export const FIELD_ROLES = ["sales", "logistics", "super_admin"] as const;
 
 export type FieldRole = (typeof FIELD_ROLES)[number];
@@ -19,7 +22,10 @@ export function isFieldRole(role: string | undefined | null): role is FieldRole 
   return role === "sales" || role === "logistics" || role === "super_admin";
 }
 
-/** Nav URLs Super Admin gets in the field app — approvals + visit GPS check (no RBAC). */
+/**
+ * Nav URLs Super Admin gets in the field app:
+ * order approvals + sales visit GPS review (no RBAC / admin console).
+ */
 export const FIELD_ADMIN_URLS = ["/orders", "/field-visits"] as const;
 
 export function isFieldAdminNavUrl(url: string): boolean {
