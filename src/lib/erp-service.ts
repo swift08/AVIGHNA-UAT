@@ -2204,6 +2204,101 @@ export async function updateCustomer(payload: {
   return data as DBCustomer;
 }
 
+export async function importStockExcelRows(
+  rows: Array<{
+    company_id: CompanyId;
+    name: string;
+    category: string;
+    quantity: number;
+    unit: string;
+    rate: number;
+  }>,
+  userName: string = "Admin",
+): Promise<{ inserted: number; updated: number }> {
+  await requirePermission("inventory.adjust");
+
+  const prefixMap: Record<string, string> = {
+    avighna: "AVG",
+    asian: "ASA",
+    atharva: "ATH",
+    ganesh: "GAN",
+  };
+
+  const { data: existing, error: fetchErr } = await supabase
+    .from("products")
+    .select("id, company_id, code, name");
+  if (fetchErr) throw fetchErr;
+
+  const usedCodes = new Set((existing || []).map((p) => String(p.code || "").toUpperCase()));
+  const existingByKey = new Map(
+    (existing || []).map((p) => [
+      `${p.company_id}::${String(p.name || "").trim().toLowerCase()}`,
+      p,
+    ]),
+  );
+
+  let inserted = 0;
+  let updated = 0;
+
+  for (const row of rows) {
+    const key = `${row.company_id}::${row.name.trim().toLowerCase()}`;
+    const match = existingByKey.get(key);
+    if (match) {
+      const { error } = await supabase
+        .from("products")
+        .update({
+          category: row.category,
+          unit: row.unit,
+          unit_price: row.rate,
+          on_hand: row.quantity,
+        })
+        .eq("id", match.id);
+      if (error) throw error;
+      updated += 1;
+    } else {
+      const prefix = prefixMap[row.company_id] || "PRD";
+      const slug =
+        row.name
+          .toUpperCase()
+          .replace(/[^A-Z0-9]+/g, "")
+          .slice(0, 10) || "ITEM";
+      let code = `${prefix}-${slug}`;
+      let idx = 2;
+      while (usedCodes.has(code)) {
+        code = `${prefix}-${slug.slice(0, 8)}${idx}`;
+        idx += 1;
+      }
+      usedCodes.add(code);
+
+      const { error } = await supabase.from("products").insert({
+        company_id: row.company_id,
+        code,
+        name: row.name,
+        category: row.category,
+        unit: row.unit,
+        unit_price: row.rate,
+        wholesale_price: 0,
+        on_hand: row.quantity,
+        reserved: 0,
+        reorder_level: 10,
+      });
+      if (error) throw error;
+      inserted += 1;
+    }
+  }
+
+  await logAudit({
+    userName,
+    companyId: rows[0]?.company_id || "all",
+    module: "inventory",
+    action: "stock_excel_imported",
+    recordId: "EXCEL",
+    description: `${userName} imported stock Excel (${inserted} added, ${updated} updated)`,
+  });
+
+  return { inserted, updated };
+}
+
 // ----------------------------------------------------------------------------
 // SUPPLIERS SERVICE (accounts-owned vendor master)
 // ----------------------------------------------------------------------------
@@ -3876,7 +3971,7 @@ export async function assignOrderVehicle(
   const updates = {
     transport_mode: "Logistics / Assigned Vehicle" as const,
     assigned_vehicle: matchedVehicle?.plate_number || vehicleNo,
-    assigned_driver: payload.driverName || matchedVehicle?.driver_name || "Logistics Driver",
+    assigned_driver: payload.driverName || matchedVehicle?.driver_name || "Warehouse Supervisor",
     assigned_driver_phone: payload.driverPhone || matchedVehicle?.driver_phone,
   };
 

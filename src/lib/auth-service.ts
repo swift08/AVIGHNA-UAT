@@ -22,9 +22,9 @@ export interface UserProfile {
 export const ROLE_NAMES: Record<RoleType, string> = {
   super_admin: "Owner / Super Admin",
   sales: "Sales Executive",
-  supervisor: "Warehouse Supervisor",
+  supervisor: "Supervisor",
   accounts: "Accounts Manager",
-  logistics: "Logistics Driver",
+  logistics: "Warehouse Supervisor",
   custom: "Custom access",
 };
 
@@ -424,7 +424,7 @@ export const SYSTEM_USERS: UserProfile[] = [
     email: "supervisor@avighna.com",
     phone: "+91 98450 44556",
     role: "supervisor",
-    roleName: "Warehouse Supervisor",
+    roleName: "Supervisor",
     initials: "AN",
     company: "atharva",
     permissions: ROLE_PERMISSIONS.supervisor,
@@ -446,7 +446,7 @@ export const SYSTEM_USERS: UserProfile[] = [
     email: "logistics@avighna.com",
     phone: "+91 98450 33445",
     role: "logistics",
-    roleName: "Logistics Driver",
+    roleName: "Warehouse Supervisor",
     initials: "MP",
     company: "ganesh",
     permissions: ROLE_PERMISSIONS.logistics,
@@ -598,14 +598,6 @@ export function hasUserPermission(user: UserProfile | null, permission: string):
       permission === "purchases.create" ||
       permission === "purchases.approve" ||
       permission === "purchases.receive")
-  ) {
-    return false;
-  }
-
-  // 1d. Super admin inventory is view-only — stock add/adjust stays with ops
-  if (
-    user.role === "super_admin" &&
-    (permission === "inventory.adjust" || permission === "inventory.edit")
   ) {
     return false;
   }

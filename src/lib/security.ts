@@ -131,6 +131,7 @@ export const SECURITY_HEADERS: Record<string, string> = {
     // Voice memos are stored as data: URLs (and played via blob: object URLs).
     "media-src 'self' data: blob:",
     "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
+    "frame-src 'self' https://*.supabase.co blob:",
     "frame-ancestors 'none'",
     "base-uri 'self'",
     "form-action 'self'",

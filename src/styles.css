@@ -3111,12 +3111,13 @@ html.driver-mobile .leads-directory-head,
 .inv-dash-table-scroll {
   width: 100%;
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .inv-dash-table {
   width: 100%;
-  min-width: 980px;
+  min-width: 920px;
   border-collapse: collapse;
-  table-layout: fixed;
+  table-layout: auto;
 }
 .inv-dash-table th {
   padding: 12px 14px;
@@ -3131,19 +3132,21 @@ html.driver-mobile .leads-directory-head,
   white-space: nowrap;
 }
 .inv-dash-table th:nth-child(1) {
-  width: 28%;
+  min-width: 240px;
+  width: 30%;
 }
 .inv-dash-table th:nth-child(2) {
-  width: 12%;
+  min-width: 110px;
 }
 .inv-dash-table th:nth-child(3) {
-  width: 9%;
+  min-width: 120px;
+  text-align: right;
 }
 .inv-dash-table th:nth-child(4) {
-  width: 15%;
+  min-width: 140px;
 }
 .inv-dash-table th:nth-child(n + 5) {
-  width: 9%;
+  min-width: 84px;
   text-align: right;
 }
 .inv-dash-table td {

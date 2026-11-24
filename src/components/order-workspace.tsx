@@ -14,6 +14,7 @@ import {
 import { toast } from "sonner";
 import { missingRequired } from "@/lib/form-required";
 import { Button } from "@/components/ui/button";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   Sheet,
   SheetContent,
@@ -1520,11 +1521,18 @@ export function OrderTable({
             </label>
             <label className="drawer-field">
               Inventory item <span className="text-destructive">*</span>
-              <select
+              <SearchableSelect
                 required
                 value={selectedProduct?.id || ""}
-                onChange={(e) => {
-                  const product = inventoryItems.find((item) => item.id === e.target.value);
+                placeholder={
+                  inventoryItems.length
+                    ? "Select an item from inventory"
+                    : "No inventory items for this company"
+                }
+                searchPlaceholder="Search inventory item by name or code..."
+                emptyText="No matching inventory items"
+                onChange={(val) => {
+                  const product = inventoryItems.find((item) => item.id === val);
                   setSelectedProduct(product || null);
                   setProductName(product?.name || "");
                   setPurchaseReference("");
@@ -1535,22 +1543,15 @@ export function OrderTable({
                     setUnitPrice(String(product.unit_price));
                   }
                 }}
-              >
-                <option value="">
-                  {inventoryItems.length
-                    ? "Select an item from inventory"
-                    : "No inventory items for this company"}
-                </option>
-                {inventoryItems.map((product) => {
+                options={inventoryItems.map((product) => {
                   const available = Number(product.on_hand) - Number(product.reserved);
-                  return (
-                    <option key={product.id || product.code} value={product.id}>
-                      {product.name} ({product.code}) — {available} {product.unit} available
-                      {canViewAmounts ? ` · ₹${product.unit_price}` : ""}
-                    </option>
-                  );
+                  return {
+                    value: product.id || product.code,
+                    label: `${product.name} (${product.code}) — ${available} ${product.unit} available${canViewAmounts ? ` · ₹${product.unit_price}` : ""}`,
+                    keywords: `${product.name} ${product.code} ${product.category} ${product.unit}`,
+                  };
                 })}
-              </select>
+              />
               {selectedProduct && canViewAmounts && (
                 <div className="mt-1 flex items-center justify-between rounded border border-border bg-muted/40 px-2.5 py-1.5 text-[11px]">
                   <div>

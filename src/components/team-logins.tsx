@@ -212,15 +212,18 @@ function StaffCard({
                 ))}
               </select>
             </label>
-            <fieldset className="grid gap-2">
-              <legend className="text-xs font-semibold">
+            <fieldset className="grid gap-1.5">
+              <legend className="text-xs font-semibold mb-1">
                 Permission matrix (does not change role)
               </legend>
               {ACCESS_FEATURES.map((feature) => (
-                <label key={feature.id} className="flex items-start gap-2 text-xs">
+                <label
+                  key={feature.id}
+                  className="flex items-start gap-2.5 rounded-lg border border-border/70 bg-card/60 px-2.5 py-2 text-xs hover:bg-muted/40 cursor-pointer"
+                >
                   <input
                     type="checkbox"
-                    className="mt-0.5"
+                    className="mt-0.5 size-4 shrink-0 !w-4 !h-4 accent-primary cursor-pointer"
                     checked={features.includes(feature.id)}
                     aria-label={`${feature.name} for ${user.name}`}
                     onChange={(e) =>
@@ -231,9 +234,11 @@ function StaffCard({
                       )
                     }
                   />
-                  <span>
-                    <span className="font-semibold">{feature.name}</span>
-                    <span className="block text-muted-foreground">{feature.description}</span>
+                  <span className="min-w-0 flex-1 text-left">
+                    <span className="block font-semibold text-foreground">{feature.name}</span>
+                    <span className="block text-muted-foreground leading-snug">
+                      {feature.description}
+                    </span>
                   </span>
                 </label>
               ))}
@@ -533,11 +538,11 @@ export function TeamLogins() {
           {ACCESS_FEATURES.filter((feature) => allowed.includes(feature.id)).map((feature) => (
             <label
               key={feature.id}
-              className="flex items-start gap-2 rounded-lg border border-border bg-card p-2.5 text-xs"
+              className="flex items-start gap-2.5 rounded-lg border border-border bg-card p-2.5 text-xs hover:bg-muted/40 cursor-pointer"
             >
               <input
                 type="checkbox"
-                className="mt-0.5"
+                className="mt-0.5 size-4 shrink-0 !w-4 !h-4 accent-primary cursor-pointer"
                 checked={features.includes(feature.id)}
                 onChange={(e) =>
                   setFeatures((current) =>
@@ -547,9 +552,11 @@ export function TeamLogins() {
                   )
                 }
               />
-              <span>
-                <span className="font-semibold text-foreground">{feature.name}</span>
-                <span className="block text-muted-foreground">{feature.description}</span>
+              <span className="min-w-0 flex-1 text-left">
+                <span className="block font-semibold text-foreground">{feature.name}</span>
+                <span className="block text-muted-foreground leading-snug">
+                  {feature.description}
+                </span>
               </span>
             </label>
           ))}

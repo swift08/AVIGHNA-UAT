@@ -23,6 +23,7 @@ import {
   Phone,
   Play,
   Plus,
+  Upload,
   Search,
   ShieldAlert,
   ShoppingBag,
@@ -52,6 +53,7 @@ import {
 import { Navigate, useNavigate, useRouterState } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   Sheet,
   SheetContent,
@@ -122,6 +124,7 @@ import {
   updateCustomer,
   fetchSuppliers,
   createProduct,
+  importStockExcelRows,
   inboundStock,
   updateProductStock,
   recordPayment,
@@ -777,11 +780,15 @@ export function ModuleWorkspace({
     void fetchDealCostEntries(company).then(setDbDealCosts).catch(() => setDbDealCosts([]));
   }, [module, company]);
 
+  const [activeUsersCount, setActiveUsersCount] = useState<number>(1);
+
   useEffect(() => {
     if (currentUser?.role !== "super_admin" && currentUser?.role !== "supervisor") return;
     listStaffLogins()
       .then((res) => {
         if (!res.ok) return;
+        const activeCount = res.users.filter((u) => u.status === "Active").length;
+        setActiveUsersCount(activeCount > 0 ? activeCount : 1);
         const extras = res.users
           .filter((user) => user.role === "logistics")
           .map((user) => ({ name: user.name, phone: user.phone }));
@@ -1482,7 +1489,7 @@ export function ModuleWorkspace({
       additionalQuantity: qty,
       newReorderLevel: isNaN(reorder) ? undefined : reorder,
       notes: inboundNotes,
-      userName: currentUser?.name || "Warehouse Supervisor",
+      userName: currentUser?.name || "Supervisor",
     });
     setInboundModal(false);
     setInboundNotes("");
@@ -1555,7 +1562,7 @@ export function ModuleWorkspace({
         wholesalePrice: newWholesale,
         unit: finalUnit,
         reason: fullReason,
-        userName: currentUser?.name || "Warehouse Supervisor",
+        userName: currentUser?.name || "Supervisor",
       });
 
       setDbProducts((prev) => prev.map((p) => (p.id === editStockProduct.id ? updated : p)));
@@ -3847,18 +3854,83 @@ export function ModuleWorkspace({
                       actorName={currentUser?.name || "User"}
                       defaultCompanyId={company}
                       onImported={reloadData}
-                      label="Import"
-                      shortLabel="Import"
+                      label="Import COA"
+                      shortLabel="COA"
                     />
                     {canMutateInventory && (
-                      <Button
-                        size="sm"
-                        className="inv-dash-action-btn h-9 gap-1.5 text-xs font-semibold"
-                        onClick={() => setProdModal(true)}
-                      >
-                        <Plus className="size-3.5" />
-                        Add Product
-                      </Button>
+                      <label className="inline-flex">
+                        <input
+                          type="file"
+                          accept=".xls,.xlsx"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            e.target.value = "";
+                            if (!file) return;
+                            try {
+                              const XLSX = await import("xlsx");
+                              const { parseTallyStockWorkbook } = await import(
+                                "@/lib/stock-excel-parser"
+                              );
+                              const buf = await file.arrayBuffer();
+                              const wb = XLSX.read(buf, { type: "array" });
+                              const fallbackCompany = company !== "all" ? company : "asian";
+                              const parsed = parseTallyStockWorkbook(wb, fallbackCompany);
+                              if (parsed.rows.length === 0) {
+                                toast.error("No stock items found in Excel", {
+                                  description:
+                                    "Expected Tally Stock Summary columns: Particulars, Quantity, Rate, Value.",
+                                });
+                                return;
+                              }
+                              const res = await importStockExcelRows(
+                                parsed.rows,
+                                currentUser?.name || "Admin",
+                              );
+                              toast.success("Stock Excel imported", {
+                                description: `${res.inserted} added, ${res.updated} updated from ${file.name}.`,
+                              });
+                              reloadData();
+                            } catch (err) {
+                              toast.error("Excel import failed", {
+                                description:
+                                  err instanceof Error ? err.message : "Could not parse file.",
+                              });
+                            }
+                          }}
+                        />
+                        <span className="inv-dash-action-btn inline-flex items-center justify-center whitespace-nowrap rounded-md border border-input bg-background px-3 h-9 gap-1.5 text-xs font-semibold shadow-xs hover:bg-accent hover:text-accent-foreground cursor-pointer">
+                          <Upload className="size-3.5" />
+                          Import Excel
+                        </span>
+                      </label>
+                    )}
+                    {canMutateInventory && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="inv-dash-action-btn h-9 gap-1.5 text-xs font-semibold"
+                          onClick={() => {
+                            if (dbProducts.length > 0 && dbProducts[0]) {
+                              setInboundProductId(dbProducts[0].id || "");
+                              setInboundReorder(String(dbProducts[0].reorder_level || 20));
+                            }
+                            setInboundModal(true);
+                          }}
+                        >
+                          <Package className="size-3.5" />
+                          Add Stock
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="inv-dash-action-btn h-9 gap-1.5 text-xs font-semibold"
+                          onClick={() => setProdModal(true)}
+                        >
+                          <Plus className="size-3.5" />
+                          Add Product
+                        </Button>
+                      </>
                     )}
                   </div>
                 </header>
@@ -4165,6 +4237,54 @@ export function ModuleWorkspace({
                         defaultCompanyId={company}
                         onImported={reloadData}
                       />
+                      <label className="inline-flex">
+                        <input
+                          type="file"
+                          accept=".xls,.xlsx"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            e.target.value = "";
+                            if (!file) return;
+                            try {
+                              const XLSX = await import("xlsx");
+                              const { parseTallyStockWorkbook } = await import(
+                                "@/lib/stock-excel-parser"
+                              );
+                              const buf = await file.arrayBuffer();
+                              const wb = XLSX.read(buf, { type: "array" });
+                              const fallbackCompany =
+                                company !== "all" ? company : "asian";
+                              const parsed = parseTallyStockWorkbook(wb, fallbackCompany);
+                              if (parsed.rows.length === 0) {
+                                toast.error("No stock items found in Excel", {
+                                  description:
+                                    "Expected Tally Stock Summary columns: Particulars, Quantity, Rate, Value.",
+                                });
+                                return;
+                              }
+                              const res = await importStockExcelRows(
+                                parsed.rows,
+                                currentUser?.name || "Admin",
+                              );
+                              toast.success("Stock Excel imported", {
+                                description: `${res.inserted} added, ${res.updated} updated from ${file.name}.`,
+                              });
+                              reloadData();
+                            } catch (err) {
+                              toast.error("Excel import failed", {
+                                description:
+                                  err instanceof Error ? err.message : "Could not parse file.",
+                              });
+                            }
+                          }}
+                        />
+                        <span className="inline-flex items-center justify-center whitespace-nowrap rounded-md border border-input bg-background px-3 h-8 gap-1.5 text-xs font-semibold shadow-xs hover:bg-accent hover:text-accent-foreground cursor-pointer">
+                          <Upload className="size-3.5" />
+                          <span className="inventory-btn-full">Import Excel</span>
+                          <span className="inventory-btn-short">Excel</span>
+                        </span>
+                      </label>
                       <Button
                         size="sm"
                         className="inventory-toolbar-btn h-8 gap-1.5 text-xs font-semibold"
@@ -6107,7 +6227,7 @@ export function ModuleWorkspace({
             </div>
             <div className="kpi">
               <p className="text-xs text-muted-foreground uppercase font-semibold">ACTIVE USERS</p>
-              <p className="kpi-value">7</p>
+              <p className="kpi-value">{activeUsersCount}</p>
               <span className="trend">RBAC authenticated</span>
             </div>
             <div className="kpi">
@@ -7446,30 +7566,35 @@ export function ModuleWorkspace({
                     <label className="text-[11px] font-semibold text-muted-foreground block mb-1">
                       Customer <span className="text-destructive">*</span>
                     </label>
-                    <select
+                    <SearchableSelect
                       required
                       value={visitSelectedCustomer}
-                      onChange={(e) => {
-                        if (e.target.value === "__add_new_customer__") {
+                      placeholder="Select customer"
+                      searchPlaceholder="Search customer..."
+                      emptyText="No matching customers"
+                      onChange={(val) => {
+                        if (val === "__add_new_customer__") {
                           setVisitSelectedCustomer("");
                           navigateToAddCustomer();
                           return;
                         }
-                        setVisitSelectedCustomer(e.target.value);
+                        setVisitSelectedCustomer(val);
                       }}
-                      className="w-full text-xs font-semibold h-10 px-3 rounded-lg border border-border bg-background cursor-pointer"
-                    >
-                      <option value="">Select customer</option>
-                      <option value="__add_new_customer__">+ Add new customer</option>
-                      {dbCustomers
-                        .filter((c) => c.company_id === visitFirm)
-                        .map((c) => (
-                          <option key={c.id || c.name} value={c.name}>
-                            {c.name} {c.contact_person ? `(${c.contact_person})` : ""}{" "}
-                            {c.city ? `· ${c.city}` : ""}
-                          </option>
-                        ))}
-                    </select>
+                      options={[
+                        {
+                          value: "__add_new_customer__",
+                          label: "+ Add new customer",
+                          keywords: "add new customer create",
+                        },
+                        ...dbCustomers
+                          .filter((c) => c.company_id === visitFirm)
+                          .map((c) => ({
+                            value: c.name,
+                            label: `${c.name}${c.contact_person ? ` (${c.contact_person})` : ""}${c.city ? ` · ${c.city}` : ""}`,
+                            keywords: `${c.name} ${c.contact_person || ""} ${c.city || ""}`,
+                          })),
+                      ]}
+                    />
                     {dbCustomers.filter((c) => c.company_id === visitFirm).length === 0 && (
                       <p className="mt-1 text-[11px] text-muted-foreground">
                         No customers for this company yet
@@ -9424,25 +9549,28 @@ export function ModuleWorkspace({
             </SheetDescription>
           </SheetHeader>
           <form onSubmit={handleInboundStock} className="mt-6 space-y-4 pb-12">
-            <label className="drawer-field">
-              Select Product <span className="text-destructive">*</span>
-              <select
+            <div className="drawer-field">
+              <span>
+                Select Product <span className="text-destructive">*</span>
+              </span>
+              <SearchableSelect
+                required
                 value={inboundProductId}
-                onChange={(e) => {
-                  setInboundProductId(e.target.value);
-                  const p = dbProducts.find((x) => x.id === e.target.value);
+                placeholder="-- Choose Product --"
+                searchPlaceholder="Search product by name or code..."
+                emptyText="No matching products"
+                onChange={(val) => {
+                  setInboundProductId(val);
+                  const p = dbProducts.find((x) => x.id === val);
                   if (p) setInboundReorder(String(p.reorder_level || 20));
                 }}
-                required
-              >
-                <option value="">-- Choose Product --</option>
-                {dbProducts.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.code}) · Current On-Hand: {p.on_hand} {p.unit}
-                  </option>
-                ))}
-              </select>
-            </label>
+                options={dbProducts.map((p) => ({
+                  value: p.id || "",
+                  label: `${p.name} (${p.code}) · Current On-Hand: ${p.on_hand} ${p.unit}`,
+                  keywords: `${p.name} ${p.code} ${p.category} ${p.unit}`,
+                }))}
+              />
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <label className="drawer-field">
                 Inbound Quantity Received <span className="text-destructive">*</span>
@@ -11509,7 +11637,7 @@ export function ModuleWorkspace({
               Sales Invoice {viewingInvoice?.id || ""}
             </SheetTitle>
             <SheetDescription>
-              Raised by Accounts · travels with Order #{viewingOrder?.id} for the logistics driver
+              Raised by Accounts · travels with Order #{viewingOrder?.id} for the warehouse supervisor
             </SheetDescription>
           </SheetHeader>
 
@@ -11687,7 +11815,7 @@ export function ModuleWorkspace({
                 {raisingInvoice ? "Raising sales invoice..." : "Confirm & Raise Sales Invoice"}
               </Button>
               <p className="text-[11px] text-muted-foreground text-center">
-                This sales invoice is attached to the order and shown to the logistics driver after
+                This sales invoice is attached to the order and shown to the warehouse supervisor after
                 Order Desk assigns the trip.
               </p>
             </div>

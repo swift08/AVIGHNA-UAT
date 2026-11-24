@@ -83,6 +83,7 @@ export const navigation = [
     items: [
       { name: "Overview", url: "/", icon: LayoutDashboard },
       { name: "My work", url: "/tasks", icon: ListTodo, perm: "tasks.view" },
+      { name: "Documents", url: "/documents", icon: FileText },
     ],
   },
   {
