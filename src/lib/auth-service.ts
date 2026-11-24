@@ -168,11 +168,29 @@ export function featureLabel(featureIds: string[]) {
   return names.join(", ");
 }
 
-/** Logistics-only IDs stay scoped to work assigned to that person. */
+/** Map feature packs to a primary role when the set matches a known job. */
 export function roleForFeatures(featureIds: string[]): RoleType {
   const features = parseFeatureIds(featureIds);
-  if (features.length > 0 && features.every((id) => id === "logistics" || id === "tasks")) {
+  if (!features.length) return "custom";
+  // Logistics-only IDs stay scoped to work assigned to that person.
+  if (features.every((id) => id === "logistics" || id === "tasks")) {
     return "logistics";
+  }
+  // Sales-shaped packs (field visits / CRM / orders) — used by the Field app gate.
+  const salesFeatures = new Set([
+    "leads",
+    "customers",
+    "field_visits",
+    "orders",
+    "collections",
+    "tasks",
+    "inventory",
+  ]);
+  if (
+    features.every((id) => salesFeatures.has(id)) &&
+    features.some((id) => id === "field_visits" || id === "leads" || id === "orders")
+  ) {
+    return "sales";
   }
   return "custom";
 }

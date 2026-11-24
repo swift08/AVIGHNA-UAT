@@ -16,7 +16,7 @@ import {
   isDemoAuthEnabled,
   setDemoActor,
 } from "@/lib/security";
-import { FIELD_APP_LOGIN_ERROR, isFieldApp, isFieldRole } from "@/lib/field-app";
+import { FIELD_APP_LOGIN_ERROR, canUseFieldApp, isFieldApp } from "@/lib/field-app";
 
 interface WorkspaceContextType {
   company: CompanyId;
@@ -75,7 +75,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       .getSession()
       .then(async ({ data }) => {
         const profile = data.session?.user ? profileFromAuth(data.session.user) : null;
-        if (profile && isFieldApp() && !isFieldRole(profile.role)) {
+        if (profile && isFieldApp() && !canUseFieldApp(profile)) {
           await supabase.auth.signOut();
           setCurrentUser(null);
           return;
@@ -89,7 +89,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
       const profile = session?.user ? profileFromAuth(session.user) : null;
-      if (profile && isFieldApp() && !isFieldRole(profile.role)) {
+      if (profile && isFieldApp() && !canUseFieldApp(profile)) {
         void supabase.auth.signOut();
         setCurrentUser(null);
         return;
@@ -154,7 +154,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
             error: "This login is waiting for Super Admin approval.",
           };
         }
-        if (isFieldApp() && !isFieldRole(profile.role)) {
+        if (isFieldApp() && !canUseFieldApp(profile)) {
           await supabase.auth.signOut();
           return { success: false, error: FIELD_APP_LOGIN_ERROR };
         }
@@ -177,7 +177,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     if (!res.user) {
       return { success: false, error: res.error || "Authentication failed" };
     }
-    if (isFieldApp() && !isFieldRole(res.user.role)) {
+    if (isFieldApp() && !canUseFieldApp(res.user)) {
       return { success: false, error: FIELD_APP_LOGIN_ERROR };
     }
 
@@ -194,7 +194,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
   const loginAsRole = (role: RoleType) => {
     if (!isDemoAuthEnabled()) return;
-    if (isFieldApp() && !isFieldRole(role)) return;
+    if (isFieldApp() && role !== "sales" && role !== "logistics" && role !== "super_admin") return;
     const res = authenticateAsRole(role);
     if (res.user) {
       void supabase.auth.signOut();

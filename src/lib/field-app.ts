@@ -1,3 +1,5 @@
+import { hasUserPermission, type UserProfile } from "./auth-service";
+
 /**
  * Field Android app roles.
  * Detected via Capacitor native shell or `?app=field` on the hosted web URL.
@@ -20,6 +22,21 @@ export function isFieldApp(): boolean {
 
 export function isFieldRole(role: string | undefined | null): role is FieldRole {
   return role === "sales" || role === "logistics" || role === "super_admin";
+}
+
+/**
+ * Field app access: known field roles, or custom feature packs that include
+ * field visit logging / logistics delivery work.
+ */
+export function canUseFieldApp(profile: UserProfile | null | undefined): boolean {
+  if (!profile) return false;
+  if (isFieldRole(profile.role)) return true;
+  return (
+    hasUserPermission(profile, "field_visits.conduct") ||
+    hasUserPermission(profile, "field_visits.schedule") ||
+    hasUserPermission(profile, "logistics.deliver") ||
+    hasUserPermission(profile, "logistics.dispatch")
+  );
 }
 
 /**
