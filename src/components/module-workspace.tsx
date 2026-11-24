@@ -273,6 +273,24 @@ export function ModuleWorkspace({
     }
   };
 
+  const navigateToAddCustomer = () => {
+    if (typeof window !== "undefined") {
+      try {
+        sessionStorage.setItem("open_add_customer", "true");
+      } catch {
+        // Ignore session storage errors
+      }
+    }
+    try {
+      navigate({
+        to: "/customers",
+        search: { openAdd: "true" } as unknown as Record<string, string>,
+      });
+    } catch {
+      window.location.assign("/customers?openAdd=true");
+    }
+  };
+
   // Live state from Supabase
   const [dbOrders, setDbOrders] = useState<DBOrder[]>([]);
   const [dbProducts, setDbProducts] = useState<DBProduct[]>([]);
@@ -366,6 +384,26 @@ export function ModuleWorkspace({
 
   // Customer modal state (All 11 user fields)
   const [custModal, setCustModal] = useState(false);
+
+  useEffect(() => {
+    if (module !== "customers" || !hasPermission("customers.manage")) return;
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get("openAdd") === "true";
+    let fromStorage = false;
+    try {
+      fromStorage = sessionStorage.getItem("open_add_customer") === "true";
+      if (fromStorage) sessionStorage.removeItem("open_add_customer");
+    } catch {
+      // Ignore session storage errors
+    }
+    if (fromQuery || fromStorage) {
+      setCustModal(true);
+      if (fromQuery) {
+        window.history.replaceState({}, "", "/customers");
+      }
+    }
+  }, [module, hasPermission]);
   const [custCompany, setCustCompany] = useState("asian");
   const [custLegalName, setCustLegalName] = useState("");
   const [custTradeName, setCustTradeName] = useState("");
@@ -6974,11 +7012,11 @@ export function ModuleWorkspace({
                 </div>
               )}
 
-              {/* 1. Company & Client */}
+              {/* 1. Company & Customer */}
               <div className="space-y-3">
                 <label className="text-xs font-bold text-foreground flex items-center gap-2">
                   <Building2 className="size-3.5 text-primary" />
-                  <span>Company & Client</span>
+                  <span>Company & Customer</span>
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
@@ -7002,15 +7040,23 @@ export function ModuleWorkspace({
                   </div>
                   <div>
                     <label className="text-[11px] font-semibold text-muted-foreground block mb-1">
-                      Client <span className="text-destructive">*</span>
+                      Customer <span className="text-destructive">*</span>
                     </label>
                     <select
                       required
                       value={visitSelectedCustomer}
-                      onChange={(e) => setVisitSelectedCustomer(e.target.value)}
+                      onChange={(e) => {
+                        if (e.target.value === "__add_new_customer__") {
+                          setVisitSelectedCustomer("");
+                          navigateToAddCustomer();
+                          return;
+                        }
+                        setVisitSelectedCustomer(e.target.value);
+                      }}
                       className="w-full text-xs font-semibold h-10 px-3 rounded-lg border border-border bg-background cursor-pointer"
                     >
-                      <option value="">Select client</option>
+                      <option value="">Select customer</option>
+                      <option value="__add_new_customer__">+ Add new customer</option>
                       {dbCustomers
                         .filter((c) => c.company_id === visitFirm || company === "all")
                         .map((c) => (
