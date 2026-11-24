@@ -591,25 +591,45 @@ ALTER TABLE public.tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.audit_logs ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "Public read companies" ON public.companies;
 CREATE POLICY "Public read companies" ON public.companies FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Public read user_profiles" ON public.user_profiles;
 CREATE POLICY "Public read user_profiles" ON public.user_profiles FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Public read roles" ON public.roles;
 CREATE POLICY "Public read roles" ON public.roles FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Public read permissions" ON public.permissions;
 CREATE POLICY "Public read permissions" ON public.permissions FOR SELECT USING (true);
+DROP POLICY IF EXISTS "Public read customers" ON public.customers;
 CREATE POLICY "Public read customers" ON public.customers FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read leads" ON public.leads;
 CREATE POLICY "Public read leads" ON public.leads FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read products" ON public.products;
 CREATE POLICY "Public read products" ON public.products FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read inventory_logs" ON public.inventory_logs;
 CREATE POLICY "Public read inventory_logs" ON public.inventory_logs FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read orders" ON public.orders;
 CREATE POLICY "Public read orders" ON public.orders FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read order_items" ON public.order_items;
 CREATE POLICY "Public read order_items" ON public.order_items FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read invoices" ON public.invoices;
 CREATE POLICY "Public read invoices" ON public.invoices FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read payments" ON public.payments;
 CREATE POLICY "Public read payments" ON public.payments FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read deliveries" ON public.deliveries;
 CREATE POLICY "Public read deliveries" ON public.deliveries FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read purchase_orders" ON public.purchase_orders;
 CREATE POLICY "Public read purchase_orders" ON public.purchase_orders FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read field_visits" ON public.field_visits;
 CREATE POLICY "Public read field_visits" ON public.field_visits FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read tasks" ON public.tasks;
 CREATE POLICY "Public read tasks" ON public.tasks FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read notifications" ON public.notifications;
 CREATE POLICY "Public read notifications" ON public.notifications FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read audit_logs" ON public.audit_logs;
 CREATE POLICY "Public read audit_logs" ON public.audit_logs FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read user_company_access" ON public.user_company_access;
 CREATE POLICY "Public read user_company_access" ON public.user_company_access FOR ALL USING (true);
+DROP POLICY IF EXISTS "Public read user_permissions" ON public.user_permissions;
 CREATE POLICY "Public read user_permissions" ON public.user_permissions FOR ALL USING (true);
 
 -- ------------------------------------------------------------------------
@@ -635,6 +655,7 @@ CREATE TABLE IF NOT EXISTS public.credit_notes (
 );
 
 ALTER TABLE public.credit_notes ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public read credit_notes" ON public.credit_notes;
 CREATE POLICY "Public read credit_notes" ON public.credit_notes FOR ALL USING (true);
 
 -- ------------------------------------------------------------------------
@@ -661,6 +682,7 @@ CREATE TABLE IF NOT EXISTS public.vehicles (
 );
 
 ALTER TABLE public.vehicles ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public read vehicles" ON public.vehicles;
 CREATE POLICY "Public read vehicles" ON public.vehicles FOR ALL USING (true);
 
 INSERT INTO public.vehicles (id, name, plate_number, status, driver_name, driver_phone, capacity) VALUES
