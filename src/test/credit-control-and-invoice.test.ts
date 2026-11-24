@@ -9,6 +9,8 @@ import {
   fetchCustomers,
   invoiceDueDate,
   creditFromNotes,
+  computeDealCost,
+  salesPriceAndQtyFromOrder,
 } from "@/lib/erp-service";
 import { QueryClient } from "@tanstack/react-query";
 import { createRouter, rootRouteId } from "@tanstack/react-router";
@@ -99,6 +101,36 @@ describe("Credit Control & Invoicing Suite", () => {
 
     const notesAfter = await fetchCreditNotes("asian");
     expect(notesAfter.some((n) => n.id === note.id)).toBe(false);
+  });
+
+  it("prorates deal goods cost to sold qty and computes margin", () => {
+    // 25,000 kg inbound @ ₹40; sell 5,000 kg @ ₹55; owner charges on both sides.
+    const result = computeDealCost({
+      purchaseUnitPrice: 40,
+      salesUnitPrice: 55,
+      salesQuantity: 5000,
+      buyTransport: 2000,
+      buyLabor: 1500,
+      buyMisc: 500,
+      sellHandling: 800,
+      sellMisc: 200,
+      sellTransport: 1000,
+    });
+    expect(result.buyGoods).toBe(40 * 5000); // not 40 * 25000
+    expect(result.sellGoods).toBe(55 * 5000);
+    expect(result.buyTotal).toBe(200000 + 2000 + 1500 + 500);
+    expect(result.sellTotal).toBe(275000 + 800 + 200 + 1000);
+    expect(result.margin).toBe(result.sellTotal - result.buyTotal);
+  });
+
+  it("derives sales unit price and qty from an order items summary", () => {
+    const prefill = salesPriceAndQtyFromOrder({
+      subtotal: 275000,
+      total_amount: 280000,
+      items_summary: "Malto Dextrin Powder · 5000 kg · PO Ref: GI/PO/55/26-27",
+    });
+    expect(prefill.quantity).toBe(5000);
+    expect(prefill.unitPrice).toBe(55);
   });
 
   it("verifies invoice records have remaining balance and due date for credit computation", async () => {

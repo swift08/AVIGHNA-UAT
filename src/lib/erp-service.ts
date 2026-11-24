@@ -3192,6 +3192,202 @@ export async function deleteCreditNote(noteId: string, adminName: string = "Supe
   return { success: true };
 }
 
+// ----------------------------------------------------------------------------
+// DEAL COST (credit control margin sheet)
+// ----------------------------------------------------------------------------
+
+export interface DBDealCostEntry {
+  id: string;
+  company_id: string;
+  purchase_order_id: string;
+  order_id: string;
+  purchase_unit_price: number;
+  purchase_quantity: number;
+  sales_unit_price: number;
+  sales_quantity: number;
+  buy_transport: number;
+  buy_labor: number;
+  buy_misc: number;
+  sell_handling: number;
+  sell_misc: number;
+  sell_transport: number;
+  buy_total: number;
+  sell_total: number;
+  margin: number;
+  created_by?: string | undefined;
+  created_at?: string | undefined;
+}
+
+export type DealCostInput = {
+  purchaseUnitPrice: number;
+  salesUnitPrice: number;
+  salesQuantity: number;
+  buyTransport?: number;
+  buyLabor?: number;
+  buyMisc?: number;
+  sellHandling?: number;
+  sellMisc?: number;
+  sellTransport?: number;
+};
+
+/** Goods cost uses sold qty (prorate), not full PO qty. */
+export function computeDealCost(input: DealCostInput) {
+  const purchaseUnitPrice = Number(input.purchaseUnitPrice) || 0;
+  const salesUnitPrice = Number(input.salesUnitPrice) || 0;
+  const salesQuantity = Number(input.salesQuantity) || 0;
+  const buyTransport = Number(input.buyTransport) || 0;
+  const buyLabor = Number(input.buyLabor) || 0;
+  const buyMisc = Number(input.buyMisc) || 0;
+  const sellHandling = Number(input.sellHandling) || 0;
+  const sellMisc = Number(input.sellMisc) || 0;
+  const sellTransport = Number(input.sellTransport) || 0;
+
+  const buyGoods = purchaseUnitPrice * salesQuantity;
+  const sellGoods = salesUnitPrice * salesQuantity;
+  const buyTotal = buyGoods + buyTransport + buyLabor + buyMisc;
+  const sellTotal = sellGoods + sellHandling + sellMisc + sellTransport;
+  return {
+    buyGoods,
+    sellGoods,
+    buyTotal,
+    sellTotal,
+    margin: sellTotal - buyTotal,
+  };
+}
+
+/** Prefill sales unit price + qty from an order (items summary + subtotal). */
+export function salesPriceAndQtyFromOrder(order: Pick<DBOrder, "subtotal" | "total_amount" | "items_summary">): {
+  unitPrice: number;
+  quantity: number;
+} {
+  const parsed = parseOrderItemsSummary(order.items_summary);
+  const quantity = parsed?.quantity || 0;
+  if (quantity <= 0) return { unitPrice: 0, quantity: 0 };
+  const base = Number(order.subtotal) || Number(order.total_amount) || 0;
+  return { unitPrice: base / quantity, quantity };
+}
+
+const fallbackDealCostEntries: DBDealCostEntry[] = [];
+
+export async function fetchDealCostEntries(companyId: CompanyId): Promise<DBDealCostEntry[]> {
+  if (missingTables.has("deal_cost_entries")) {
+    return companyId === "all"
+      ? [...fallbackDealCostEntries]
+      : fallbackDealCostEntries.filter((e) => e.company_id === companyId);
+  }
+  try {
+    let query = supabase
+      .from("deal_cost_entries")
+      .select("*")
+      .order("created_at", { ascending: false });
+    if (companyId !== "all") query = query.eq("company_id", companyId);
+    const { data, error } = await query;
+    if (error || !data) {
+      if (tableMissing(error)) missingTables.add("deal_cost_entries");
+      throw error;
+    }
+    return data as DBDealCostEntry[];
+  } catch {
+    return companyId === "all"
+      ? [...fallbackDealCostEntries]
+      : fallbackDealCostEntries.filter((e) => e.company_id === companyId);
+  }
+}
+
+export async function createDealCostEntry(payload: {
+  companyId: string;
+  purchaseOrderId: string;
+  orderId: string;
+  purchaseUnitPrice: number;
+  purchaseQuantity: number;
+  salesUnitPrice: number;
+  salesQuantity: number;
+  buyTransport?: number;
+  buyLabor?: number;
+  buyMisc?: number;
+  sellHandling?: number;
+  sellMisc?: number;
+  sellTransport?: number;
+  userName: string;
+}): Promise<DBDealCostEntry> {
+  const actor = await requireSuperAdmin();
+  const totals = computeDealCost({
+    purchaseUnitPrice: payload.purchaseUnitPrice,
+    salesUnitPrice: payload.salesUnitPrice,
+    salesQuantity: payload.salesQuantity,
+    buyTransport: payload.buyTransport,
+    buyLabor: payload.buyLabor,
+    buyMisc: payload.buyMisc,
+    sellHandling: payload.sellHandling,
+    sellMisc: payload.sellMisc,
+    sellTransport: payload.sellTransport,
+  });
+  const id = `DC-${Math.floor(1000 + Math.random() * 9000)}`;
+  const row: DBDealCostEntry = {
+    id,
+    company_id: payload.companyId,
+    purchase_order_id: payload.purchaseOrderId,
+    order_id: payload.orderId,
+    purchase_unit_price: payload.purchaseUnitPrice,
+    purchase_quantity: payload.purchaseQuantity,
+    sales_unit_price: payload.salesUnitPrice,
+    sales_quantity: payload.salesQuantity,
+    buy_transport: Number(payload.buyTransport) || 0,
+    buy_labor: Number(payload.buyLabor) || 0,
+    buy_misc: Number(payload.buyMisc) || 0,
+    sell_handling: Number(payload.sellHandling) || 0,
+    sell_misc: Number(payload.sellMisc) || 0,
+    sell_transport: Number(payload.sellTransport) || 0,
+    buy_total: totals.buyTotal,
+    sell_total: totals.sellTotal,
+    margin: totals.margin,
+    created_by: actor.name || payload.userName,
+    created_at: new Date().toISOString(),
+  };
+
+  try {
+    const { data, error } = await supabase.from("deal_cost_entries").insert(row).select().single();
+    if (!error && data) {
+      await logAudit({
+        userName: row.created_by || payload.userName,
+        companyId: payload.companyId,
+        module: "credit_control",
+        action: "deal_cost_created",
+        recordId: id,
+        description: `${row.created_by} saved deal cost ${id} (PO ${payload.purchaseOrderId} → order ${payload.orderId}, margin ₹${totals.margin.toLocaleString("en-IN")})`,
+      });
+      return data as DBDealCostEntry;
+    }
+    if (tableMissing(error)) missingTables.add("deal_cost_entries");
+  } catch (err) {
+    console.warn("Supabase deal cost insert notice:", err);
+  }
+
+  fallbackDealCostEntries.unshift(row);
+  return row;
+}
+
+export async function deleteDealCostEntry(entryId: string, adminName: string = "Super Admin") {
+  const actor = await requireSuperAdmin();
+  adminName = actor.name || adminName;
+  try {
+    await supabase.from("deal_cost_entries").delete().eq("id", entryId);
+  } catch (err) {
+    console.warn("Supabase deal cost delete notice:", err);
+  }
+  const idx = fallbackDealCostEntries.findIndex((e) => e.id === entryId);
+  if (idx !== -1) fallbackDealCostEntries.splice(idx, 1);
+  await logAudit({
+    userName: adminName,
+    companyId: "all",
+    module: "credit_control",
+    action: "deal_cost_deleted",
+    recordId: entryId,
+    description: `${adminName} deleted deal cost entry ${entryId}`,
+  });
+  return { success: true };
+}
+
 export async function updateCustomerCreditLimit(
   customerId: string,
   creditLimit: number,

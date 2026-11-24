@@ -659,6 +659,33 @@ ALTER TABLE public.credit_notes ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Public read credit_notes" ON public.credit_notes;
 CREATE POLICY "Public read credit_notes" ON public.credit_notes FOR ALL USING (true);
 
+-- Deal cost sheet: link one PO + one sales order; owner enters charge lines.
+CREATE TABLE IF NOT EXISTS public.deal_cost_entries (
+  id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL REFERENCES public.companies(id),
+  purchase_order_id TEXT NOT NULL REFERENCES public.purchase_orders(id),
+  order_id TEXT NOT NULL REFERENCES public.orders(id),
+  purchase_unit_price NUMERIC NOT NULL DEFAULT 0,
+  purchase_quantity NUMERIC NOT NULL DEFAULT 0,
+  sales_unit_price NUMERIC NOT NULL DEFAULT 0,
+  sales_quantity NUMERIC NOT NULL DEFAULT 0,
+  buy_transport NUMERIC NOT NULL DEFAULT 0,
+  buy_labor NUMERIC NOT NULL DEFAULT 0,
+  buy_misc NUMERIC NOT NULL DEFAULT 0,
+  sell_handling NUMERIC NOT NULL DEFAULT 0,
+  sell_misc NUMERIC NOT NULL DEFAULT 0,
+  sell_transport NUMERIC NOT NULL DEFAULT 0,
+  buy_total NUMERIC NOT NULL DEFAULT 0,
+  sell_total NUMERIC NOT NULL DEFAULT 0,
+  margin NUMERIC NOT NULL DEFAULT 0,
+  created_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.deal_cost_entries ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Public read deal_cost_entries" ON public.deal_cost_entries;
+CREATE POLICY "Public read deal_cost_entries" ON public.deal_cost_entries FOR ALL USING (true);
+
 -- ------------------------------------------------------------------------
 -- 13. VEHICLES & TRANSPORT WORKFLOW
 -- ------------------------------------------------------------------------

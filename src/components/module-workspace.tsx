@@ -72,7 +72,7 @@ import {
   ConversionFunnelBarChart,
   ProductCategoryCharts,
 } from "./analytics-charts";
-import { companies, money as moneyFormat } from "@/lib/workspace-data";
+import { companies, money as moneyFormat, type CompanyId } from "@/lib/workspace-data";
 import { SYSTEM_USERS } from "@/lib/auth-service";
 import { scopeForDriver } from "@/lib/driver-scope";
 import { isFieldApp } from "@/lib/field-app";
@@ -142,6 +142,11 @@ import {
   createCreditNote,
   deleteCreditNote,
   updateCustomerCreditLimit,
+  fetchDealCostEntries,
+  createDealCostEntry,
+  deleteDealCostEntry,
+  computeDealCost,
+  salesPriceAndQtyFromOrder,
   fetchVehicles,
   createVehicle,
   updateVehicle,
@@ -162,6 +167,7 @@ import {
   type DBDelivery,
   type DBPayment,
   type DBCreditNote,
+  type DBDealCostEntry,
   type DBVehicle,
   type VehicleStatus,
 } from "@/lib/erp-service";
@@ -673,6 +679,18 @@ export function ModuleWorkspace({
   const [editCreditDays, setEditCreditDays] = useState("");
   const [savingCreditLimit, setSavingCreditLimit] = useState(false);
 
+  // Deal cost sheet (PO ↔ sales order margin)
+  const [dbDealCosts, setDbDealCosts] = useState<DBDealCostEntry[]>([]);
+  const [dealPoId, setDealPoId] = useState("");
+  const [dealOrderId, setDealOrderId] = useState("");
+  const [dealBuyTransport, setDealBuyTransport] = useState("");
+  const [dealBuyLabor, setDealBuyLabor] = useState("");
+  const [dealBuyMisc, setDealBuyMisc] = useState("");
+  const [dealSellHandling, setDealSellHandling] = useState("");
+  const [dealSellMisc, setDealSellMisc] = useState("");
+  const [dealSellTransport, setDealSellTransport] = useState("");
+  const [savingDealCost, setSavingDealCost] = useState(false);
+
   // Invoices & accounts desk states
   const [invoiceSearch, setInvoiceSearch] = useState("");
   const [invoiceStatusFilter, setInvoiceStatusFilter] = useState("All statuses");
@@ -753,6 +771,11 @@ export function ModuleWorkspace({
   useEffect(() => {
     reloadData();
   }, [reloadData, module]);
+
+  useEffect(() => {
+    if (module !== "credit") return;
+    void fetchDealCostEntries(company).then(setDbDealCosts).catch(() => setDbDealCosts([]));
+  }, [module, company]);
 
   useEffect(() => {
     if (currentUser?.role !== "super_admin" && currentUser?.role !== "supervisor") return;
@@ -1100,9 +1123,11 @@ export function ModuleWorkspace({
       toast.error("Required fields missing", { description: requiredError });
       return;
     }
+    const createdName = custLegalName.trim();
+    const createdCompany = custCompany || visitFirm || "asian";
     await createCustomer({
-      companyId: custCompany || "asian",
-      name: custLegalName.trim(),
+      companyId: createdCompany,
+      name: createdName,
       tradeName: custTradeName,
       phone: custPhone.trim(),
       email: custEmail,
@@ -1113,7 +1138,7 @@ export function ModuleWorkspace({
       contactPerson: custContact.trim(),
       creditLimit: parseFloat(custCreditLimit) || 0,
       creditDays: parseInt(custCreditDays) || 30,
-      creatorName: "Ravi Kumar",
+      creatorName: currentUser?.name || "Sales",
     });
     setCustModal(false);
     setCustLegalName("");
@@ -1127,6 +1152,12 @@ export function ModuleWorkspace({
     setCustContact("");
     setCustCreditLimit("0");
     setCustCreditDays("30");
+    // Visit log: keep company + auto-select the client just created.
+    if (module === "field-visits") {
+      setVisitFirm(createdCompany);
+      setVisitSelectedCustomer(createdName);
+      toast.success(`${createdName} added — selected for this visit.`);
+    }
     reloadData();
   };
 
@@ -2780,6 +2811,91 @@ export function ModuleWorkspace({
     });
   }, [creditPositions, creditSearch, creditStatusFilter, creditBalanceFilter]);
 
+  const dealSelectedPo = useMemo(
+    () => dbPOs.find((p) => p.id === dealPoId) || null,
+    [dbPOs, dealPoId],
+  );
+  const dealSelectedOrder = useMemo(
+    () => dbOrders.find((o) => o.id === dealOrderId) || null,
+    [dbOrders, dealOrderId],
+  );
+  const dealSalesPrefill = useMemo(
+    () =>
+      dealSelectedOrder
+        ? salesPriceAndQtyFromOrder(dealSelectedOrder)
+        : { unitPrice: 0, quantity: 0 },
+    [dealSelectedOrder],
+  );
+  const dealLiveTotals = useMemo(
+    () =>
+      computeDealCost({
+        purchaseUnitPrice: dealSelectedPo?.unit_price || 0,
+        salesUnitPrice: dealSalesPrefill.unitPrice,
+        salesQuantity: dealSalesPrefill.quantity,
+        buyTransport: parseFloat(dealBuyTransport) || 0,
+        buyLabor: parseFloat(dealBuyLabor) || 0,
+        buyMisc: parseFloat(dealBuyMisc) || 0,
+        sellHandling: parseFloat(dealSellHandling) || 0,
+        sellMisc: parseFloat(dealSellMisc) || 0,
+        sellTransport: parseFloat(dealSellTransport) || 0,
+      }),
+    [
+      dealSelectedPo,
+      dealSalesPrefill,
+      dealBuyTransport,
+      dealBuyLabor,
+      dealBuyMisc,
+      dealSellHandling,
+      dealSellMisc,
+      dealSellTransport,
+    ],
+  );
+
+  const handleSaveDealCost = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!dealSelectedPo || !dealSelectedOrder) {
+      toast.error("Select a purchase order and a sales order.");
+      return;
+    }
+    if (dealSalesPrefill.quantity <= 0 || dealSalesPrefill.unitPrice <= 0) {
+      toast.error("Sales order is missing quantity or price.");
+      return;
+    }
+    setSavingDealCost(true);
+    try {
+      const entry = await createDealCostEntry({
+        companyId: dealSelectedPo.company_id || dealSelectedOrder.company_id,
+        purchaseOrderId: dealSelectedPo.id,
+        orderId: dealSelectedOrder.id,
+        purchaseUnitPrice: Number(dealSelectedPo.unit_price) || 0,
+        purchaseQuantity: Number(dealSelectedPo.quantity) || 0,
+        salesUnitPrice: dealSalesPrefill.unitPrice,
+        salesQuantity: dealSalesPrefill.quantity,
+        buyTransport: parseFloat(dealBuyTransport) || 0,
+        buyLabor: parseFloat(dealBuyLabor) || 0,
+        buyMisc: parseFloat(dealBuyMisc) || 0,
+        sellHandling: parseFloat(dealSellHandling) || 0,
+        sellMisc: parseFloat(dealSellMisc) || 0,
+        sellTransport: parseFloat(dealSellTransport) || 0,
+        userName: currentUser?.name || "Super Admin",
+      });
+      setDbDealCosts((prev) => [entry, ...prev]);
+      setDealPoId("");
+      setDealOrderId("");
+      setDealBuyTransport("");
+      setDealBuyLabor("");
+      setDealBuyMisc("");
+      setDealSellHandling("");
+      setDealSellMisc("");
+      setDealSellTransport("");
+      toast.success(`Deal cost saved — margin ${money(entry.margin)}.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save deal cost.");
+    } finally {
+      setSavingDealCost(false);
+    }
+  };
+
   const handlePostCreditNote = async (e: React.FormEvent) => {
     e.preventDefault();
     const parsedAmount = parseFloat(noteAmount);
@@ -3063,6 +3179,23 @@ export function ModuleWorkspace({
     if (prefillCustomer) setVisitSelectedCustomer(prefillCustomer);
     if (shouldLog && canLogFieldVisit) setTab("Log a visit");
   }, [module, routerSearch, canLogFieldVisit]);
+
+  // Visit log client list must match the selected company (workspace filter may differ).
+  useEffect(() => {
+    if (module !== "field-visits" || !visitFirm) return;
+    let cancelled = false;
+    void fetchCustomers(visitFirm as CompanyId).then((rows) => {
+      if (cancelled) return;
+      setDbCustomers((prev) => {
+        const byId = new Map(prev.map((c) => [c.id, c]));
+        for (const row of rows) byId.set(row.id, row);
+        return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [module, visitFirm]);
 
   const handleOpenRaiseInvoiceModal = (o: DBOrder) => {
     setSelectedOrderForInvoice(o);
@@ -5119,6 +5252,277 @@ export function ModuleWorkspace({
               )}
             </div>
           </section>
+
+          {/* SECTION 3: DEAL COST SHEET */}
+          <section className="panel mb-6">
+            <div className="panel-head flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
+              <div>
+                <h2 className="panel-title text-base font-bold">Deal cost</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Link a purchase order and sales order. Prices and quantities fill automatically;
+                  enter transport, labor, and miscellaneous charges. Goods cost uses sold qty.
+                </p>
+              </div>
+            </div>
+
+            <form
+              onSubmit={handleSaveDealCost}
+              className="p-4 border-b border-border bg-muted/10 space-y-4"
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block mb-1">
+                    Purchase order <span className="text-destructive">*</span>
+                  </label>
+                  <select
+                    required
+                    value={dealPoId}
+                    onChange={(e) => setDealPoId(e.target.value)}
+                    className="w-full h-9 px-2 text-xs rounded-lg border border-border bg-card"
+                  >
+                    <option value="">Select PO / inbound</option>
+                    {dbPOs.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        #{p.id} · {p.product_name} · {p.quantity} {p.unit} @ {money(p.unit_price)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block mb-1">
+                    Sales order <span className="text-destructive">*</span>
+                  </label>
+                  <select
+                    required
+                    value={dealOrderId}
+                    onChange={(e) => setDealOrderId(e.target.value)}
+                    className="w-full h-9 px-2 text-xs rounded-lg border border-border bg-card"
+                  >
+                    <option value="">Select sales order</option>
+                    {dbOrders.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        #{o.id} · {o.customer_name}
+                        {o.items_summary ? ` · ${o.items_summary}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">
+                    Purchase price
+                  </p>
+                  <p className="mt-1 text-sm font-bold">
+                    {dealSelectedPo ? money(dealSelectedPo.unit_price) : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">
+                    PO quantity
+                  </p>
+                  <p className="mt-1 text-sm font-bold">
+                    {dealSelectedPo
+                      ? `${dealSelectedPo.quantity} ${dealSelectedPo.unit}`
+                      : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">
+                    Sales price
+                  </p>
+                  <p className="mt-1 text-sm font-bold">
+                    {dealSelectedOrder ? money(dealSalesPrefill.unitPrice) : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">
+                    Sales quantity
+                  </p>
+                  <p className="mt-1 text-sm font-bold">
+                    {dealSelectedOrder ? dealSalesPrefill.quantity : "—"}
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-[11px] font-bold text-foreground mb-2">
+                  Purchase charges (owner)
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <label className="drawer-field !gap-1">
+                    Transportation
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={dealBuyTransport}
+                      onChange={(e) => setDealBuyTransport(e.target.value)}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="drawer-field !gap-1">
+                    Labor / handling
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={dealBuyLabor}
+                      onChange={(e) => setDealBuyLabor(e.target.value)}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="drawer-field !gap-1">
+                    Miscellaneous
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={dealBuyMisc}
+                      onChange={(e) => setDealBuyMisc(e.target.value)}
+                      placeholder="0"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-[11px] font-bold text-foreground mb-2">Sales charges (owner)</p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <label className="drawer-field !gap-1">
+                    Handling
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={dealSellHandling}
+                      onChange={(e) => setDealSellHandling(e.target.value)}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="drawer-field !gap-1">
+                    Miscellaneous
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={dealSellMisc}
+                      onChange={(e) => setDealSellMisc(e.target.value)}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="drawer-field !gap-1">
+                    Transportation
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={dealSellTransport}
+                      onChange={(e) => setDealSellTransport(e.target.value)}
+                      placeholder="0"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">Buy total</p>
+                  <p className="mt-1 text-lg font-extrabold">{money(dealLiveTotals.buyTotal)}</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Goods {money(dealLiveTotals.buyGoods)} (price × sold qty)
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">
+                    Sell total
+                  </p>
+                  <p className="mt-1 text-lg font-extrabold">{money(dealLiveTotals.sellTotal)}</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Goods {money(dealLiveTotals.sellGoods)}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">Margin</p>
+                  <p
+                    className={`mt-1 text-lg font-extrabold ${
+                      dealLiveTotals.margin >= 0
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : "text-destructive"
+                    }`}
+                  >
+                    {money(dealLiveTotals.margin)}
+                  </p>
+                </div>
+              </div>
+
+              <Button
+                type="submit"
+                disabled={savingDealCost || !dealPoId || !dealOrderId}
+                className="h-9 text-xs font-semibold"
+              >
+                {savingDealCost ? "Saving…" : "Save deal cost"}
+              </Button>
+            </form>
+
+            <div className="table-scroll">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>PURCHASE ORDER</th>
+                    <th>SALES ORDER</th>
+                    <th>SOLD QTY</th>
+                    <th>BUY TOTAL</th>
+                    <th>SELL TOTAL</th>
+                    <th>MARGIN</th>
+                    <th>ACTION</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dbDealCosts.map((entry) => (
+                    <tr key={entry.id}>
+                      <td className="font-mono text-xs font-semibold">{entry.id}</td>
+                      <td className="font-mono text-xs">#{entry.purchase_order_id}</td>
+                      <td className="font-mono text-xs">#{entry.order_id}</td>
+                      <td>{entry.sales_quantity}</td>
+                      <td className="font-semibold">{money(entry.buy_total)}</td>
+                      <td className="font-semibold">{money(entry.sell_total)}</td>
+                      <td
+                        className={`font-bold ${
+                          entry.margin >= 0
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : "text-destructive"
+                        }`}
+                      >
+                        {money(entry.margin)}
+                      </td>
+                      <td>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="size-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                          title="Delete deal cost"
+                          onClick={async () => {
+                            await deleteDealCostEntry(entry.id, currentUser?.name);
+                            setDbDealCosts((prev) => prev.filter((e) => e.id !== entry.id));
+                          }}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {dbDealCosts.length === 0 && (
+                <div className="p-8 text-center text-muted-foreground">
+                  <p className="text-sm font-medium">No deal cost entries yet.</p>
+                </div>
+              )}
+            </div>
+          </section>
         </>
       ) : module === "analytics" ? (
         isSupervisor ? (
@@ -7058,7 +7462,7 @@ export function ModuleWorkspace({
                       <option value="">Select customer</option>
                       <option value="__add_new_customer__">+ Add new customer</option>
                       {dbCustomers
-                        .filter((c) => c.company_id === visitFirm || company === "all")
+                        .filter((c) => c.company_id === visitFirm)
                         .map((c) => (
                           <option key={c.id || c.name} value={c.name}>
                             {c.name} {c.contact_person ? `(${c.contact_person})` : ""}{" "}
@@ -7066,6 +7470,14 @@ export function ModuleWorkspace({
                           </option>
                         ))}
                     </select>
+                    {dbCustomers.filter((c) => c.company_id === visitFirm).length === 0 && (
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        No customers for this company yet
+                        {hasPermission("customers.manage")
+                          ? " — use + Add new customer."
+                          : "."}
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -8395,6 +8807,19 @@ export function ModuleWorkspace({
             <SheetDescription>Create customer profile directly</SheetDescription>
           </SheetHeader>
           <form onSubmit={handleCreateCustomer} className="mt-6 space-y-4">
+            <label className="drawer-field">
+              Company
+              <select
+                value={custCompany}
+                onChange={(e) => setCustCompany(e.target.value)}
+              >
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="drawer-field">
               Legal name <span className="text-destructive">*</span>
               <input
