@@ -94,7 +94,7 @@ import { missingPhone, missingRequired } from "@/lib/form-required";
 import { listStaffLogins } from "@/lib/login-admin";
 import { TeamLogins } from "./team-logins";
 import { CoaImportButton, ProductBatchesPanel } from "./coa-import";
-import { listProductBatches } from "@/lib/coa-service";
+import { getBatchCoaAccess, listProductBatches } from "@/lib/coa-service";
 import {
   fetchOrders,
   createOrder,
@@ -462,6 +462,11 @@ export function ModuleWorkspace({
   const [poSupplier, setPoSupplier] = useState("");
   const [poProductId, setPoProductId] = useState("");
   const [poProduct, setPoProduct] = useState("");
+  const [poProductPdfs, setPoProductPdfs] = useState<
+    Array<{ id: string; batch_number: string; coa_file_name: string | null; has_coa: boolean }>
+  >([]);
+  const [poProductPdfsLoading, setPoProductPdfsLoading] = useState(false);
+  const [poPdfBusyId, setPoPdfBusyId] = useState<string | null>(null);
   const [poQuantity, setPoQuantity] = useState("100");
   const [poUnit, setPoUnit] = useState("kg");
   const [isCustomPoUnit, setIsCustomPoUnit] = useState(false);
@@ -469,7 +474,6 @@ export function ModuleWorkspace({
   const [poPrice, setPoPrice] = useState("250");
   const [poCompany, setPoCompany] = useState("asian");
   const [poRemark, setPoRemark] = useState("GST Extra");
-  const [poPdfFile, setPoPdfFile] = useState<File | null>(null);
   const [poDocTick, setPoDocTick] = useState(0);
 
   // Purchase Order Edit modal state (Super Admin and Supervisor)
@@ -1838,31 +1842,16 @@ export function ModuleWorkspace({
       notes: encodePoNotes({
         text: poRemark,
         remark: poRemark,
-        documentName: poPdfFile?.name,
-        documentKey: poPdfFile ? poId : undefined,
-        documentType: poPdfFile ? "supplier_invoice" : undefined,
         itemName: productName,
       }),
       creatorName: currentUser?.name || "Suresh Rao (Accounts)",
     });
-    if (poPdfFile) {
-      try {
-        await savePurchaseOrderDocument(created.id, poPdfFile, {
-          itemName: productName,
-          documentType: "supplier_invoice",
-        });
-      } catch (err) {
-        toast.error(
-          err instanceof Error ? err.message : "Item saved, but supplier invoice PDF upload failed.",
-        );
-      }
-    }
     setPoModal(false);
     setPoSupplier("");
     setPoProductId("");
     setPoProduct("");
+    setPoProductPdfs([]);
     setPoRemark("GST Extra");
-    setPoPdfFile(null);
     setIsCustomPoUnit(false);
     setCustomPoUnit("");
     setPoDocTick((n) => n + 1);
@@ -3069,6 +3058,61 @@ export function ModuleWorkspace({
       console.error(err);
     } finally {
       setRaisingInvoice(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!poModal || !poProductId) {
+      setPoProductPdfs([]);
+      setPoProductPdfsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setPoProductPdfsLoading(true);
+    void listProductBatches({ data: { productId: poProductId } })
+      .then((res) => {
+        if (cancelled) return;
+        if (!res.ok) {
+          setPoProductPdfs([]);
+          return;
+        }
+        setPoProductPdfs(
+          (res.batches || [])
+            .filter((b) => b.has_coa)
+            .map((b) => ({
+              id: String(b.id),
+              batch_number: String(b.batch_number || ""),
+              coa_file_name: b.coa_file_name ? String(b.coa_file_name) : null,
+              has_coa: true,
+            })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setPoProductPdfs([]);
+      })
+      .finally(() => {
+        if (!cancelled) setPoProductPdfsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [poModal, poProductId]);
+
+  const openPoProductPdf = async (batchId: string) => {
+    setPoPdfBusyId(batchId);
+    try {
+      const res = await getBatchCoaAccess({
+        data: { batchId, ...(poProduct ? { productName: poProduct } : {}) },
+      });
+      if (!res.ok) {
+        toast.error(res.error || "Could not open PDF.");
+        return;
+      }
+      window.open(res.viewUrl || res.downloadUrl, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not open PDF.");
+    } finally {
+      setPoPdfBusyId(null);
     }
   };
 
@@ -10368,7 +10412,7 @@ export function ModuleWorkspace({
               )}
             </label>
             <label className="drawer-field">
-              Catalog product <span className="text-destructive">*</span>
+              Product / Description of Goods <span className="text-destructive">*</span>
               <select
                 required
                 value={poProductId}
@@ -10380,12 +10424,20 @@ export function ModuleWorkspace({
                     setPoProduct(matched.name);
                     if (!isCustomPoUnit) setPoUnit(matched.unit || "kg");
                     if (matched.unit_price > 0) setPoPrice(String(matched.unit_price));
+                  } else {
+                    setPoProduct("");
+                    setPoProductPdfs([]);
                   }
                 }}
               >
-                <option value="">Select inventory product…</option>
+                <option value="">Select product description…</option>
                 {dbProducts
-                  .filter((p) => poCompany === "all" || p.company_id === poCompany || p.company_id === "all")
+                  .filter(
+                    (p) =>
+                      poCompany === "all" ||
+                      p.company_id === poCompany ||
+                      p.company_id === "all",
+                  )
                   .map((p) => (
                     <option key={p.id || p.code} value={p.id || ""}>
                       {p.name} · {p.code}
@@ -10393,17 +10445,49 @@ export function ModuleWorkspace({
                   ))}
               </select>
               <span className="mt-1 block text-[11px] text-muted-foreground">
-                Required so Logistics can add stock to inventory when goods arrive.
+                Select the catalog product. Linked analysis / COA PDFs appear below.
               </span>
-            </label>
-            <label className="drawer-field">
-              Product / Description of Goods <span className="text-destructive">*</span>
-              <input
-                required
-                value={poProduct}
-                onChange={(e) => setPoProduct(e.target.value)}
-                placeholder="e.g. Malto Dextrin Powder"
-              />
+              {poProductId && (
+                <div className="mt-2 rounded-lg border border-border bg-muted/20 px-3 py-2 space-y-2">
+                  <p className="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">
+                    Product PDFs
+                  </p>
+                  {poProductPdfsLoading ? (
+                    <p className="text-[11px] text-muted-foreground">Loading PDFs…</p>
+                  ) : poProductPdfs.length === 0 ? (
+                    <p className="text-[11px] text-muted-foreground">
+                      No analysis / COA PDF linked to this product yet.
+                    </p>
+                  ) : (
+                    <ul className="space-y-1.5">
+                      {poProductPdfs.map((pdf) => (
+                        <li
+                          key={pdf.id}
+                          className="flex flex-wrap items-center justify-between gap-2 text-[11px]"
+                        >
+                          <span className="min-w-0 truncate font-semibold text-foreground">
+                            {pdf.coa_file_name || `COA · ${pdf.batch_number}`}
+                            <span className="ml-1 font-normal text-muted-foreground">
+                              · batch {pdf.batch_number}
+                            </span>
+                          </span>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 gap-1 px-2 text-[10px] shrink-0"
+                            disabled={poPdfBusyId === pdf.id}
+                            onClick={() => void openPoProductPdf(pdf.id)}
+                          >
+                            <Eye className="size-3" />
+                            Open PDF
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </label>
             <div className="grid grid-cols-3 gap-3">
               <label className="drawer-field">
@@ -10480,23 +10564,6 @@ export function ModuleWorkspace({
                 onChange={(e) => setPoRemark(e.target.value)}
                 placeholder="GST Extra"
               />
-            </label>
-            <label className="drawer-field">
-              Optional PDF attachment
-              <input
-                type="file"
-                accept="application/pdf,.pdf"
-                onChange={(e) => setPoPdfFile(e.target.files?.[0] || null)}
-              />
-              <span className="mt-1 block text-[11px] text-muted-foreground">
-                Optional. You can also download/print the generated PO PDF after saving and send it
-                to the supplier manually.
-              </span>
-              {poPdfFile && (
-                <span className="mt-1 block text-[11px] font-semibold text-primary">
-                  Selected for {poProduct || "this item"}: {poPdfFile.name}
-                </span>
-              )}
             </label>
             <Button type="submit" className="w-full mt-6">
               Create purchase order
