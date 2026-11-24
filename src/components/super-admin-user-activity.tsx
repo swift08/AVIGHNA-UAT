@@ -16,7 +16,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
-import { ROLE_NAMES, SYSTEM_USERS, type RoleType } from "@/lib/auth-service";
+import { ROLE_NAMES, type RoleType } from "@/lib/auth-service";
 import { fetchAuditLogs, type DBAuditLog } from "@/lib/erp-service";
 import { listStaffLogins, type StaffLogin } from "@/lib/login-admin";
 import { companies } from "@/lib/workspace-data";
@@ -98,6 +98,7 @@ export function SuperAdminUserActivityButton() {
     Promise.all([listStaffLogins(), fetchAuditLogs("all")])
       .then(([staffRes, audit]) => {
         if (!active) return;
+        // Production: only real Auth users — never merge demo SYSTEM_USERS.
         const fromStaff: DirectoryUser[] = (staffRes.users || []).map((u: StaffLogin) => ({
           id: u.id,
           name: u.name,
@@ -110,46 +111,16 @@ export function SuperAdminUserActivityButton() {
           source: "staff",
         }));
 
-        const staffEmails = new Set(fromStaff.map((u) => u.email.toLowerCase()));
-        const fromDemo: DirectoryUser[] = SYSTEM_USERS.filter(
-          (u) => !staffEmails.has(u.email.toLowerCase()),
-        ).map((u) => ({
-          id: u.id,
-          name: u.name,
-          email: u.email,
-          role: u.role,
-          roleName: u.roleName,
-          phone: u.phone,
-          status: "Active",
-          initials: u.initials,
-          source: "demo",
-        }));
-
-        const merged = [...fromStaff, ...fromDemo].sort((a, b) =>
-          a.name.localeCompare(b.name),
-        );
-        setUsers(merged);
+        setUsers(fromStaff.sort((a, b) => a.name.localeCompare(b.name)));
         setLogs(audit || []);
-        if (!staffRes.ok && fromStaff.length === 0) {
-          setError(staffRes.error || "Could not load hosted staff logins. Showing demo users.");
+        if (!staffRes.ok) {
+          setError(staffRes.error || "Could not load users.");
         }
       })
       .catch((err) => {
         if (!active) return;
         setError(err instanceof Error ? err.message : "Could not load users.");
-        setUsers(
-          SYSTEM_USERS.map((u) => ({
-            id: u.id,
-            name: u.name,
-            email: u.email,
-            role: u.role,
-            roleName: u.roleName,
-            phone: u.phone,
-            status: "Active" as const,
-            initials: u.initials,
-            source: "demo" as const,
-          })),
-        );
+        setUsers([]);
       })
       .finally(() => {
         if (active) setLoading(false);
