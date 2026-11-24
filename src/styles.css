@@ -648,10 +648,19 @@
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
 }
 .drawer-field {
-  display: grid;
-  gap: 8px;
+  display: block;
+  width: 100%;
   font-size: 13px;
-  margin-top: 20px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.drawer-field > input,
+.drawer-field > select,
+.drawer-field > textarea,
+.drawer-field > div {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
 }
 .module-grid {
   display: grid;
@@ -2258,9 +2267,7 @@ html.field-native .app-sheet .drawer-field,
 html.driver-mobile .app-sheet .drawer-field,
 html.field-native [role="dialog"] .drawer-field,
 html.driver-mobile [role="dialog"] .drawer-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+  display: block;
   min-width: 0;
   max-width: 100%;
   margin-top: 0 !important;

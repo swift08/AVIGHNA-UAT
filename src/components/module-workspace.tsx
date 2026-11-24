@@ -466,8 +466,8 @@ export function ModuleWorkspace({
   // Inventory list search + product detail drawer
   const [inventorySearch, setInventorySearch] = useState("");
   const [inventoryStockFilter, setInventoryStockFilter] = useState<
-    "all" | "low" | "reorder" | "out"
-  >("all");
+    "in_stock" | "all" | "low" | "reorder" | "out"
+  >("in_stock");
   const [selectedInventoryProduct, setSelectedInventoryProduct] = useState<DBProduct | null>(null);
 
   // Product modal state
@@ -604,14 +604,9 @@ export function ModuleWorkspace({
   );
   const [dispatchTimeWindow, setDispatchTimeWindow] = useState("Morning (09:00 - 13:00)");
   const [vehicleNo, setVehicleNo] = useState("KA 01 AB 1024");
-  const [driverName, setDriverName] = useState("Mahesh Patel");
-  const [driverChoices, setDriverChoices] = useState<{ name: string; phone: string }[]>(
-    SYSTEM_USERS.filter((user) => user.role === "logistics").map((user) => ({
-      name: user.name,
-      phone: user.phone,
-    })),
-  );
-  const [driverPhone, setDriverPhone] = useState("+91 98450 33445");
+  const [driverName, setDriverName] = useState("");
+  const [driverChoices, setDriverChoices] = useState<{ name: string; phone: string }[]>([]);
+  const [driverPhone, setDriverPhone] = useState("");
 
   // Invoice viewer modal state
   const [invoiceViewModal, setInvoiceViewModal] = useState(false);
@@ -3813,6 +3808,7 @@ export function ModuleWorkspace({
                     .includes(inventoryQuery),
                 );
           const filteredMetrics = searchedMetrics.filter((m) => {
+            if (inventoryStockFilter === "in_stock") return !m.outOfStock;
             if (inventoryStockFilter === "low") return m.lowStock;
             if (inventoryStockFilter === "reorder") return m.needsReorder;
             if (inventoryStockFilter === "out") return m.outOfStock;
@@ -3983,6 +3979,7 @@ export function ModuleWorkspace({
                   <div className="inv-dash-segments" role="tablist" aria-label="Stock filters">
                     {(
                       [
+                        { id: "in_stock" as const, label: "In Stock", count: kpiInStock },
                         { id: "all" as const, label: "All Products", count: kpiTotal },
                         { id: "low" as const, label: "Low Stock", count: kpiLow },
                         { id: "reorder" as const, label: "To Reorder", count: kpiReorder },

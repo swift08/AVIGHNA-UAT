@@ -364,8 +364,8 @@ export async function createOrder(payload: {
   quantity: number;
   unit?: string | undefined;
   unitPrice: number;
-  /** Purchase reference number required for every product line (e.g. GI/PO/55/26-27). */
-  purchaseReference: string;
+  /** Optional purchase reference number for the product line (e.g. GI/PO/55/26-27). */
+  purchaseReference?: string | undefined;
   catalogPrice?: number | undefined;
   wholesalePrice?: number | undefined;
   discount?: number | undefined;
@@ -389,13 +389,7 @@ export async function createOrder(payload: {
   error?: string;
 }> {
   try {
-    const purchaseRef = payload.purchaseReference?.trim();
-    if (!purchaseRef) {
-      return {
-        success: false,
-        error: "Purchase reference number is required for every product in the order.",
-      };
-    }
+    const purchaseRef = payload.purchaseReference?.trim() || undefined;
 
     const actor = await requirePermission("orders.create");
     const creatorIsSuperAdmin =

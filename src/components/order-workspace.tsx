@@ -981,6 +981,27 @@ export function OrderDetail({
   );
 }
 
+function normalizeMeasureUnit(raw: string): "kg" | "g" | "l" | "ml" | null {
+  const u = raw.trim().toLowerCase();
+  if (u === "kg" || u === "kgs" || u === "kilogram" || u === "kilograms") return "kg";
+  if (u === "g" || u === "gm" || u === "gms" || u === "gram" || u === "grams") return "g";
+  if (u === "l" || u === "ltr" || u === "ltrs" || u === "liter" || u === "liters" || u === "litre" || u === "litres") return "l";
+  if (u === "ml" || u === "milliliter" || u === "milliliters" || u === "millilitre" || u === "millilitres") return "ml";
+  return null;
+}
+
+/** Multiplier to convert a quantity in `orderUnit` into `productBaseUnit` (e.g. g -> kg = 0.001). */
+function unitConversionFactor(orderUnit: string, productBaseUnit: string): number {
+  const from = normalizeMeasureUnit(orderUnit);
+  const to = normalizeMeasureUnit(productBaseUnit);
+  if (!from || !to || from === to) return 1;
+  if (from === "g" && to === "kg") return 0.001;
+  if (from === "kg" && to === "g") return 1000;
+  if (from === "ml" && to === "l") return 0.001;
+  if (from === "l" && to === "ml") return 1000;
+  return 1;
+}
+
 export function OrderTable({
   rows,
   compact = false,
@@ -1015,6 +1036,10 @@ export function OrderTable({
   const [customUnit, setCustomUnit] = useState("");
   const [unitPrice, setUnitPrice] = useState("300");
   const [deliveryAddress, setDeliveryAddress] = useState("");
+  const [gstRate, setGstRate] = useState("18");
+  const [isInterstate, setIsInterstate] = useState(false);
+  const [dispatchDetails, setDispatchDetails] = useState("");
+  const [termsAndConditions, setTermsAndConditions] = useState("");
   const [notes, setNotes] = useState("");
   const [shortageNotice, setShortageNotice] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1134,9 +1159,14 @@ export function OrderTable({
     return Math.max(0, Number(selectedProduct.on_hand) - Number(selectedProduct.reserved || 0));
   }, [selectedProduct]);
 
+  const activeOrderUnit = isCustomUnit ? customUnit.trim() || "units" : unit;
+  const qtyConversionFactor = selectedProduct
+    ? unitConversionFactor(activeOrderUnit, selectedProduct.unit)
+    : 1;
   const requestedQty = parseFloat(quantity) || 0;
+  const requestedQtyInBaseUnit = requestedQty * qtyConversionFactor;
   const exceedsAvailable =
-    availableStock !== null && requestedQty > 0 && requestedQty > availableStock;
+    availableStock !== null && requestedQty > 0 && requestedQtyInBaseUnit > availableStock;
 
   const handleCreateOrder = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1147,7 +1177,6 @@ export function OrderTable({
       missingRequired([
         { label: "Customer name", value: customerName },
         { label: "Inventory item", value: selectedProduct?.id || productName },
-        { label: "Purchase reference number", value: purchaseRef },
         { label: "Unit", value: finalUnit },
       ]) ||
       (!Number.isFinite(qty) || qty <= 0
@@ -1162,9 +1191,11 @@ export function OrderTable({
       0,
       Number(selectedProduct.on_hand) - Number(selectedProduct.reserved || 0),
     );
+    const factor = unitConversionFactor(finalUnit, selectedProduct.unit);
+    const qtyInBaseUnit = qty * factor;
 
-    if (qty > available) {
-      const msg = `Insufficient stock. Only ${available} ${finalUnit} available. Reduce quantity to ${available} or less.`;
+    if (qtyInBaseUnit > available) {
+      const msg = `Insufficient stock. Only ${available} ${selectedProduct.unit} available, but order requests ${qty} ${finalUnit}${factor !== 1 ? ` (${qtyInBaseUnit} ${selectedProduct.unit})` : ""}.`;
       setShortageNotice(msg);
       toast.error("Order blocked — not enough stock", { description: msg });
       return;
@@ -1174,8 +1205,29 @@ export function OrderTable({
     setShortageNotice(null);
 
     const price = parseFloat(unitPrice) || 100;
-    const catalogPrice = selectedProduct ? Number(selectedProduct.unit_price) : undefined;
-    const wholesalePrice = selectedProduct ? Number(selectedProduct.wholesale_price) : undefined;
+    const effectiveUnitPrice = price * factor;
+    const gstPct = Math.max(0, parseFloat(gstRate) || 0);
+    const subtotalVal = qtyInBaseUnit * price;
+    const taxAmount = Math.round(((subtotalVal * gstPct) / 100) * 100) / 100;
+    const catalogPrice = selectedProduct ? Number(selectedProduct.unit_price) * factor : undefined;
+    const wholesalePrice = selectedProduct
+      ? Number(selectedProduct.wholesale_price) * factor
+      : undefined;
+
+    const noteParts: string[] = [];
+    if (notes.trim()) noteParts.push(notes.trim());
+    if (isInterstate) {
+      noteParts.push(`[IGST: ${gstPct}% (₹${taxAmount.toFixed(2)})]`);
+    } else {
+      const halfPct = gstPct / 2;
+      const halfAmt = Math.round((taxAmount / 2) * 100) / 100;
+      noteParts.push(
+        `[CGST: ${halfPct}% (₹${halfAmt.toFixed(2)}) + SGST: ${halfPct}% (₹${halfAmt.toFixed(2)})]`,
+      );
+    }
+    if (dispatchDetails.trim()) noteParts.push(`[Dispatch: ${dispatchDetails.trim()}]`);
+    if (termsAndConditions.trim()) noteParts.push(`[Terms: ${termsAndConditions.trim()}]`);
+    const combinedNotes = noteParts.join(" · ");
 
     const createPayload: {
       companyId: string;
@@ -1185,7 +1237,8 @@ export function OrderTable({
       quantity: number;
       unit: string;
       unitPrice: number;
-      purchaseReference: string;
+      tax?: number;
+      purchaseReference?: string;
       catalogPrice?: number;
       wholesalePrice?: number;
       deliveryAddress?: string;
@@ -1201,16 +1254,17 @@ export function OrderTable({
       productName,
       quantity: qty,
       unit: finalUnit,
-      unitPrice: price,
+      unitPrice: effectiveUnitPrice,
+      tax: taxAmount,
       purchaseReference: purchaseRef,
-      creatorName: currentUser?.name || "Ravi Kumar",
+      creatorName: currentUser?.name || "Sales Executive",
       transportMode: createTransportMode,
     };
     if (selectedProduct?.id) createPayload.productId = selectedProduct.id;
     if (catalogPrice !== undefined) createPayload.catalogPrice = catalogPrice;
     if (wholesalePrice !== undefined) createPayload.wholesalePrice = wholesalePrice;
     if (deliveryAddress) createPayload.deliveryAddress = deliveryAddress;
-    if (notes) createPayload.notes = notes;
+    if (combinedNotes) createPayload.notes = combinedNotes;
 
     if (createTransportMode === "Manufacturer Vehicle") {
       if (createDriverName) createPayload.assignedDriver = createDriverName;
@@ -1243,6 +1297,11 @@ export function OrderTable({
     setCreateOpen(false);
     setCustomerName("");
     setDeliveryAddress("");
+    setGstRate("18");
+    setIsInterstate(false);
+    setDispatchDetails("");
+    setTermsAndConditions("");
+    setNotes("");
     setIsCustomUnit(false);
     setCustomUnit("");
     setShortageNotice(null);
@@ -1569,61 +1628,6 @@ export function OrderTable({
                 </div>
               )}
             </label>
-            <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
-              <label className="drawer-field">
-                Purchase Reference Number <span className="text-destructive">*</span>
-                <span className="ml-1 text-[10px] font-medium text-muted-foreground">
-                  (required for every product)
-                </span>
-                {purchaseRefMode === "select" ? (
-                  <select
-                    required
-                    value={purchaseReference}
-                    onChange={(e) => {
-                      if (e.target.value === "__manual__") {
-                        setPurchaseRefMode("manual");
-                        setPurchaseReference("");
-                        return;
-                      }
-                      setPurchaseReference(e.target.value);
-                    }}
-                  >
-                    <option value="">Select purchase reference…</option>
-                    {matchingPurchaseOrders.map((po) => (
-                      <option key={po.id} value={po.id}>
-                        {po.id} · {po.product_name} · {po.supplier_name}
-                      </option>
-                    ))}
-                    <option value="__manual__">Enter reference manually…</option>
-                  </select>
-                ) : (
-                  <div className="space-y-1.5">
-                    <input
-                      required
-                      value={purchaseReference}
-                      onChange={(e) => setPurchaseReference(e.target.value)}
-                      placeholder="e.g. GI/PO/55/26-27"
-                      className="font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPurchaseRefMode("select");
-                        setPurchaseReference("");
-                      }}
-                      className="text-[10px] font-bold text-muted-foreground hover:text-foreground underline-offset-2 hover:underline cursor-pointer"
-                    >
-                      Choose from purchase orders
-                    </button>
-                  </div>
-                )}
-              </label>
-              {!purchaseReference.trim() && (
-                <p className="text-[11px] text-amber-800 dark:text-amber-300">
-                  Link this product line to a purchase reference (PO number) before submitting.
-                </p>
-              )}
-            </div>
             <div className="grid grid-cols-2 gap-3">
               <label className="drawer-field">
                 Quantity <span className="text-destructive">*</span>
@@ -1635,8 +1639,13 @@ export function OrderTable({
                 <input
                   type="number"
                   required
-                  min="1"
-                  max={availableStock ?? undefined}
+                  min="0.001"
+                  step="any"
+                  max={
+                    availableStock !== null && qtyConversionFactor > 0
+                      ? availableStock / qtyConversionFactor
+                      : undefined
+                  }
                   value={quantity}
                   onChange={(e) => {
                     setQuantity(e.target.value);
@@ -1738,11 +1747,26 @@ export function OrderTable({
                   Fulfillment & Transport Mode
                 </span>
                 <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Choose whether manufacturer collects or company arranges delivery.
+                  Choose whether company vehicle delivers or other transport means are used.
                 </p>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCreateTransportMode("Logistics / Assigned Vehicle")}
+                  className={`text-left p-2.5 rounded-md border text-xs cursor-pointer transition-all ${
+                    createTransportMode === "Logistics / Assigned Vehicle"
+                      ? "border-primary bg-primary/5 ring-1 ring-primary font-semibold"
+                      : "border-border bg-background hover:bg-muted/40"
+                  }`}
+                >
+                  <p className="font-semibold text-foreground text-[11px]">1. Company Vehicle</p>
+                  <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
+                    Assign company vehicle & driver from godown.
+                  </p>
+                </button>
+
                 <button
                   type="button"
                   onClick={() => {
@@ -1755,26 +1779,9 @@ export function OrderTable({
                       : "border-border bg-background hover:bg-muted/40"
                   }`}
                 >
-                  <p className="font-semibold text-foreground text-[11px]">
-                    1. Manufacturer Vehicle
-                  </p>
+                  <p className="font-semibold text-foreground text-[11px]">2. Other Means</p>
                   <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
-                    Direct collection by manufacturer. No company vehicle.
-                  </p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setCreateTransportMode("Logistics / Assigned Vehicle")}
-                  className={`text-left p-2.5 rounded-md border text-xs cursor-pointer transition-all ${
-                    createTransportMode === "Logistics / Assigned Vehicle"
-                      ? "border-primary bg-primary/5 ring-1 ring-primary font-semibold"
-                      : "border-border bg-background hover:bg-muted/40"
-                  }`}
-                >
-                  <p className="font-semibold text-foreground text-[11px]">2. Company Logistics</p>
-                  <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
-                    Assign company vehicle & driver from godown.
+                    Direct collection or third-party transport. No company vehicle.
                   </p>
                 </button>
               </div>
@@ -1782,7 +1789,7 @@ export function OrderTable({
               {createTransportMode === "Manufacturer Vehicle" ? (
                 <div className="space-y-2.5 rounded border border-blue-500/20 bg-blue-500/5 p-2.5">
                   <p className="text-[11px] text-muted-foreground">
-                    Tracked as <strong>Manufacturer-Arranged Transport</strong>. No company fleet
+                    Tracked as <strong>Other Means / Third-Party Transport</strong>. No company fleet
                     required.
                   </p>
                   <div className="grid grid-cols-2 gap-2">
@@ -1875,6 +1882,99 @@ export function OrderTable({
                 </div>
               )}
             </div>
+
+            <div className="space-y-2.5 rounded-lg border border-border bg-muted/20 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-bold text-foreground">GST Tax Breakdown</span>
+                <label className="inline-flex items-center gap-2 text-xs font-semibold text-foreground cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={isInterstate}
+                    onChange={(e) => setIsInterstate(e.target.checked)}
+                    className="size-4 !w-4 !h-4 accent-primary cursor-pointer"
+                  />
+                  <span>Interstate supply (IGST)</span>
+                </label>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                <label className="drawer-field">
+                  GST (%)
+                  <select value={gstRate} onChange={(e) => setGstRate(e.target.value)}>
+                    <option value="0">0% (Exempt / Nil)</option>
+                    <option value="5">5% GST</option>
+                    <option value="12">12% GST</option>
+                    <option value="18">18% GST</option>
+                    <option value="28">28% GST</option>
+                  </select>
+                </label>
+                <div className="rounded-lg border border-border bg-background px-3 py-2 text-xs space-y-1">
+                  {(() => {
+                    const sub = requestedQtyInBaseUnit * (parseFloat(unitPrice) || 0);
+                    const pct = Math.max(0, parseFloat(gstRate) || 0);
+                    const gstAmt = (sub * pct) / 100;
+                    const halfPct = pct / 2;
+                    const halfAmt = gstAmt / 2;
+                    return (
+                      <>
+                        {qtyConversionFactor !== 1 && selectedProduct && (
+                          <div className="flex justify-between text-[11px] text-primary font-medium">
+                            <span>Converted qty</span>
+                            <span>
+                              {requestedQtyInBaseUnit} {selectedProduct.unit}
+                            </span>
+                          </div>
+                        )}
+                        <div className="flex justify-between text-muted-foreground">
+                          <span>Subtotal</span>
+                          <span>{money(sub)}</span>
+                        </div>
+                        {isInterstate ? (
+                          <div className="flex justify-between text-muted-foreground">
+                            <span>IGST ({pct}%)</span>
+                            <span>{money(gstAmt)}</span>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="flex justify-between text-muted-foreground">
+                              <span>CGST ({halfPct}%)</span>
+                              <span>{money(halfAmt)}</span>
+                            </div>
+                            <div className="flex justify-between text-muted-foreground">
+                              <span>SGST ({halfPct}%)</span>
+                              <span>{money(halfAmt)}</span>
+                            </div>
+                          </>
+                        )}
+                        <div className="flex justify-between font-bold text-foreground pt-1 border-t border-border/60">
+                          <span>Total incl. GST</span>
+                          <span>{money(sub + gstAmt)}</span>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </div>
+              </div>
+            </div>
+
+            <label className="drawer-field">
+              Dispatch Details
+              <input
+                value={dispatchDetails}
+                onChange={(e) => setDispatchDetails(e.target.value)}
+                placeholder="e.g. Dispatch from Bangalore godown, LR / packaging / schedule"
+              />
+            </label>
+
+            <label className="drawer-field">
+              Terms & Conditions
+              <textarea
+                rows={2}
+                value={termsAndConditions}
+                onChange={(e) => setTermsAndConditions(e.target.value)}
+                placeholder="e.g. Payment within 30 days. Goods once sold will not be taken back."
+                className="w-full rounded-lg border border-border bg-background px-3 py-2 text-xs font-medium text-foreground focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
+              />
+            </label>
 
             <label className="drawer-field">
               Notes

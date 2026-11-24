@@ -18,34 +18,50 @@ import {
   taskAssignerName,
   type DBTask,
 } from "@/lib/erp-service";
-import { ROLE_NAMES, SYSTEM_USERS } from "@/lib/auth-service";
+import { ROLE_NAMES, type RoleType } from "@/lib/auth-service";
+import { listStaffLogins, type StaffLoginSummary } from "@/lib/login-admin";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import { scopeForDriver } from "@/lib/driver-scope";
 import { missingRequired } from "@/lib/form-required";
 import { toast } from "sonner";
-
-function roleLabelForName(name: string) {
-  const user = SYSTEM_USERS.find(
-    (u) =>
-      u.name.toLowerCase() === name.toLowerCase() ||
-      u.name.toLowerCase().includes(name.toLowerCase().split(" (")[0] || "") ||
-      name.toLowerCase().includes(u.name.toLowerCase().split(" (")[0] || ""),
-  );
-  if (!user) return "";
-  return user.roleName || ROLE_NAMES[user.role] || user.role;
-}
 
 export function TaskWorkspace({ compact = false }: { compact?: boolean }) {
   const { company, currentUser, hasPermission } = useWorkspace();
   const isSuperAdmin =
     currentUser?.role === "super_admin" || currentUser?.permissions?.includes("*");
   const [tasks, setTasks] = useState<DBTask[]>([]);
+  const [staffUsers, setStaffUsers] = useState<StaffLoginSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
   const [taskCompany, setTaskCompany] = useState("asian");
-  const [person, setPerson] = useState("Ravi Kumar");
+  const [person, setPerson] = useState("");
   const [due, setDue] = useState(() => new Date().toISOString().slice(0, 10));
   const [priority, setPriority] = useState<"High" | "Medium" | "Low">("Medium");
+
+  useEffect(() => {
+    let active = true;
+    listStaffLogins()
+      .then((res) => {
+        if (!active || !res.ok) return;
+        const activeStaff = res.users.filter((u) => u.status === "Active");
+        setStaffUsers(activeStaff);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const roleLabelForName = (personName: string) => {
+    const match = staffUsers.find(
+      (u) =>
+        u.name.toLowerCase() === personName.toLowerCase() ||
+        u.name.toLowerCase().includes(personName.toLowerCase().split(" (")[0] || ""),
+    );
+    if (!match) return "";
+    return ROLE_NAMES[match.role as RoleType] || match.role;
+  };
 
   useEffect(() => {
     let active = true;
@@ -88,12 +104,31 @@ export function TaskWorkspace({ compact = false }: { compact?: boolean }) {
   const doneCount = visible.filter((t) => t.done).length;
 
   const assigneeOptions = useMemo(() => {
-    const base = SYSTEM_USERS.filter((u) => u.role !== "super_admin" || isSuperAdmin);
-    return base.map((u) => ({
-      value: u.name.split(" (")[0] || u.name,
-      label: `${u.name.split(" (")[0] || u.name} · ${u.roleName}`,
-    }));
-  }, [isSuperAdmin]);
+    const list = staffUsers.filter((u) => u.role !== "super_admin" || isSuperAdmin);
+    if (list.length === 0 && currentUser) {
+      return [
+        {
+          value: currentUser.name,
+          label: `${currentUser.name} · ${ROLE_NAMES[currentUser.role] || currentUser.role}`,
+          keywords: `${currentUser.name} ${currentUser.email} ${currentUser.role}`,
+        },
+      ];
+    }
+    return list.map((u) => {
+      const roleLabel = ROLE_NAMES[u.role as RoleType] || u.role;
+      return {
+        value: u.name,
+        label: `${u.name} · ${roleLabel}`,
+        keywords: `${u.name} ${u.email} ${roleLabel}`,
+      };
+    });
+  }, [staffUsers, isSuperAdmin, currentUser]);
+
+  useEffect(() => {
+    if (!person && assigneeOptions.length > 0 && assigneeOptions[0]) {
+      setPerson(assigneeOptions[0].value);
+    }
+  }, [person, assigneeOptions]);
 
   const handleToggle = async (t: DBTask) => {
     const updatedDone = !t.done;
@@ -349,16 +384,20 @@ export function TaskWorkspace({ compact = false }: { compact?: boolean }) {
                 ))}
               </select>
             </label>
-            <label className="drawer-field">
-              Assigned to <span className="text-destructive">*</span>
-              <select required value={person} onChange={(e) => setPerson(e.target.value)}>
-                {assigneeOptions.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    {opt.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="drawer-field">
+              <span>
+                Assigned to <span className="text-destructive">*</span>
+              </span>
+              <SearchableSelect
+                required
+                value={person}
+                onChange={setPerson}
+                options={assigneeOptions}
+                placeholder="Select user"
+                searchPlaceholder="Search user by name or role..."
+                emptyText="No matching active users"
+              />
+            </div>
             <label className="drawer-field">
               Due date <span className="text-destructive">*</span>
               <input type="date" required value={due} onChange={(e) => setDue(e.target.value)} />
