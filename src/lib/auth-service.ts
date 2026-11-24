@@ -340,6 +340,7 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "finance.view_amounts",
     "purchases.view",
     "purchases.create",
+    "inventory.view",
     "suppliers.view",
     "suppliers.manage",
   ],

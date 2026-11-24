@@ -3774,7 +3774,8 @@ export function ModuleWorkspace({
         )
       ) : module === "inventory" ? (
         (() => {
-          const inventoryDashboard = isSuperAdmin || isSupervisor;
+          const inventoryDashboard =
+            isSuperAdmin || isSupervisor || currentUser?.role === "accounts";
           const cleanInventoryCategory = (raw: string | undefined) =>
             String(raw || "")
               .replace(/\s*#ws:.*$/i, "")
