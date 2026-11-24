@@ -3799,6 +3799,7 @@ export function ModuleWorkspace({
           const kpiHealthy = productMetrics.filter((m) => m.healthy).length;
           const kpiReorder = productMetrics.filter((m) => m.needsReorder).length;
           const kpiOut = productMetrics.filter((m) => m.outOfStock).length;
+          const kpiInStock = productMetrics.filter((m) => !m.outOfStock).length;
           const searchedMetrics =
             inventoryQuery === ""
               ? productMetrics

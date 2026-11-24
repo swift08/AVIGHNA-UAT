@@ -19,7 +19,7 @@ import {
   type DBTask,
 } from "@/lib/erp-service";
 import { ROLE_NAMES, type RoleType } from "@/lib/auth-service";
-import { listStaffLogins, type StaffLoginSummary } from "@/lib/login-admin";
+import { listStaffLogins, type StaffLogin } from "@/lib/login-admin";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { scopeForDriver } from "@/lib/driver-scope";
 import { missingRequired } from "@/lib/form-required";
@@ -30,7 +30,7 @@ export function TaskWorkspace({ compact = false }: { compact?: boolean }) {
   const isSuperAdmin =
     currentUser?.role === "super_admin" || currentUser?.permissions?.includes("*");
   const [tasks, setTasks] = useState<DBTask[]>([]);
-  const [staffUsers, setStaffUsers] = useState<StaffLoginSummary[]>([]);
+  const [staffUsers, setStaffUsers] = useState<StaffLogin[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
