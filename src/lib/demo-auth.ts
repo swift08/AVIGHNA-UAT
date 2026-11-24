@@ -1,4 +1,7 @@
-/** Demo/local password login — never in production builds; on for tests unless production. */
+/**
+ * Demo/local password login gate.
+ * Production builds always return false; Vitest keeps demo actors for unit tests.
+ */
 export function isDemoAuthEnabled(): boolean {
   const env =
     typeof import.meta !== "undefined" && import.meta.env
