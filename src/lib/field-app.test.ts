@@ -21,7 +21,7 @@ describe("field-app roles", () => {
     expect(isFieldRole("logistics")).toBe(true);
     expect(isFieldRole("super_admin")).toBe(true);
     expect(isFieldRole("accounts")).toBe(false);
-    expect(FIELD_ROLES).toEqual(["sales", "logistics", "super_admin"]);
+    expect(FIELD_ROLES).toEqual(["sales", "logistics", "supervisor", "super_admin"]);
   });
 
   it("allows custom users with field visit or logistics permissions", () => {

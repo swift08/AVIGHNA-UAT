@@ -3,9 +3,11 @@ import { rolesCreatorCanAssign } from "@/lib/auth-service";
 import { scopeForDriver } from "@/lib/driver-scope";
 
 describe("driver logins", () => {
-  it("lets only the owner create accounts", () => {
-    expect(rolesCreatorCanAssign("supervisor")).toEqual([]);
+  it("lets owner and supervisor assign fixed staff roles", () => {
     expect(rolesCreatorCanAssign("accounts")).toEqual([]);
+    expect(rolesCreatorCanAssign("supervisor")).toEqual(
+      expect.arrayContaining(["sales", "logistics", "accounts"]),
+    );
     expect(rolesCreatorCanAssign("super_admin")).toContain("supervisor");
     expect(rolesCreatorCanAssign("super_admin")).toEqual(
       expect.arrayContaining(["sales", "logistics", "accounts"]),

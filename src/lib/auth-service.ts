@@ -168,29 +168,64 @@ export function featureLabel(featureIds: string[]) {
   return names.join(", ");
 }
 
-/** Map feature packs to a primary role when the set matches a known job. */
+/** Fixed staff roles — never rewrite these to "custom" when editing the permission matrix. */
+export const FIXED_STAFF_ROLES: RoleType[] = [
+  "super_admin",
+  "sales",
+  "supervisor",
+  "accounts",
+  "logistics",
+];
+
+export function isFixedStaffRole(role: string | undefined | null): role is RoleType {
+  return typeof role === "string" && FIXED_STAFF_ROLES.includes(role as RoleType);
+}
+
+/** Default feature matrix for a base role (editable without changing the role). */
+export function defaultFeaturesForRole(role: RoleType): string[] {
+  switch (role) {
+    case "sales":
+      return ["leads", "customers", "field_visits", "orders", "collections", "tasks", "inventory"];
+    case "logistics":
+      return ["logistics", "tasks"];
+    case "accounts":
+      return ["invoices", "suppliers", "purchases", "orders", "customers"];
+    case "supervisor":
+      return [
+        "orders",
+        "order_approval",
+        "inventory",
+        "leads",
+        "customers",
+        "field_visits",
+        "tasks",
+        "logistics",
+      ];
+    case "super_admin":
+      return ACCESS_FEATURES.map((f) => f.id);
+    default:
+      return [];
+  }
+}
+
+/**
+ * Legacy helper: infer a role from features only when metadata has no fixed role.
+ * Prefer keeping an explicit sales/logistics/accounts/supervisor/super_admin label.
+ */
 export function roleForFeatures(featureIds: string[]): RoleType {
   const features = parseFeatureIds(featureIds);
   if (!features.length) return "custom";
-  // Logistics-only IDs stay scoped to work assigned to that person.
-  if (features.every((id) => id === "logistics" || id === "tasks")) {
-    return "logistics";
-  }
-  // Sales-shaped packs (field visits / CRM / orders) — used by the Field app gate.
-  const salesFeatures = new Set([
-    "leads",
-    "customers",
-    "field_visits",
-    "orders",
-    "collections",
-    "tasks",
-    "inventory",
-  ]);
+  if (features.every((id) => id === "logistics" || id === "tasks")) return "logistics";
+  const salesFeatures = new Set(defaultFeaturesForRole("sales"));
   if (
     features.every((id) => salesFeatures.has(id)) &&
     features.some((id) => id === "field_visits" || id === "leads" || id === "orders")
   ) {
     return "sales";
+  }
+  const accountsFeatures = new Set(defaultFeaturesForRole("accounts"));
+  if (features.every((id) => accountsFeatures.has(id)) && features.includes("invoices")) {
+    return "accounts";
   }
   return "custom";
 }
@@ -210,6 +245,10 @@ export function rolesCreatorCanAssign(role: RoleType | undefined): RoleType[] {
   if (role === "super_admin") {
     return ["super_admin", "sales", "supervisor", "accounts", "logistics"];
   }
+  // Supervisors may propose fixed job roles; Super Admin still must approve.
+  if (role === "supervisor") {
+    return ["sales", "logistics", "accounts", "supervisor"];
+  }
   return [];
 }
 
@@ -218,13 +257,15 @@ export function profileFromAuth(user: {
   email?: string | null;
   user_metadata?: Record<string, unknown>;
 }): UserProfile | null {
-  const role = user.user_metadata?.["role"];
+  const rawRole = user.user_metadata?.["role"];
   const features = parseFeatureIds(user.user_metadata?.["features"]);
-  const typed =
-    typeof role === "string" && role in ROLE_PERMISSIONS
-      ? (role as RoleType)
-      : features.length
-        ? roleForFeatures(features)
+  // Sticky base role: never demote sales/logistics/… to custom just because features changed.
+  const typed: RoleType | null = isFixedStaffRole(typeof rawRole === "string" ? rawRole : null)
+    ? (rawRole as RoleType)
+    : features.length
+      ? roleForFeatures(features)
+      : typeof rawRole === "string" && rawRole in ROLE_PERMISSIONS
+        ? (rawRole as RoleType)
         : null;
   if (!typed) return null;
   const name = String(user.user_metadata?.["full_name"] || user.email || "User");
@@ -240,11 +281,14 @@ export function profileFromAuth(user: {
     name,
     email: user.email || "",
     phone: String(user.user_metadata?.["phone"] || ""),
-    role: features.length ? roleForFeatures(features) : typed,
-    roleName: features.length ? featureLabel(features) : ROLE_NAMES[typed],
+    role: typed,
+    roleName: ROLE_NAMES[typed],
     initials,
     company: String(user.user_metadata?.["company"] || "all"),
-    permissions: features.length ? permissionsForFeatures(features) : [...ROLE_PERMISSIONS[typed]],
+    // Feature matrix overlays permissions; role label stays fixed.
+    permissions: features.length
+      ? permissionsForFeatures(features)
+      : [...ROLE_PERMISSIONS[typed]],
   };
 }
 

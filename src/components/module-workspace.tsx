@@ -5856,7 +5856,7 @@ export function ModuleWorkspace({
             </div>
           )}
           <p className="mt-6 text-xs text-muted-foreground">
-            Each login ID opens only the features you tick when you create it.
+            Each login keeps a fixed job role; the feature matrix only adjusts permissions.
           </p>
         </>
         )

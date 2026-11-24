@@ -233,31 +233,45 @@ describe("Avighna One — Authentication, Security & Granular Permissions Audit"
       expect(hasUserPermission(supervisor, "purchases.approve")).toBe(false);
     });
 
-    it("builds a login from the features that were ticked, not from a role", () => {
+    it("keeps a sticky base role while features overlay permissions", () => {
       expect(permissionsForFeatures(["leads", "invoices"])).toEqual(
         expect.arrayContaining(["leads.manage", "invoices.generate", "payments.record"]),
       );
       expect(permissionsForFeatures(["leads"])).not.toContain("invoices.generate");
       expect(roleForFeatures(["logistics"])).toBe("logistics");
-      expect(roleForFeatures(["leads", "orders"])).toBe("custom");
+      expect(roleForFeatures(["leads", "orders"])).toBe("sales");
       expect(featuresCreatorCanAssign("supervisor").length).toBeGreaterThan(0);
       expect(featuresCreatorCanAssign("supervisor")).not.toContain("administration");
       expect(featuresCreatorCanAssign("super_admin")).toContain("administration");
 
-      const profile = profileFromAuth({
+      // Extra features must not demote Sales → Custom.
+      const salesWithExtra = profileFromAuth({
         id: "user-1",
         email: "neha@avighna.com",
         user_metadata: {
           full_name: "Neha Rao",
-          role: "custom",
-          features: ["leads", "orders"],
+          role: "sales",
+          features: ["leads", "orders", "invoices"],
         },
       });
-      expect(profile?.roleName).toBe("Leads, Orders");
-      expect(hasUserPermission(profile, "leads.manage")).toBe(true);
-      expect(hasUserPermission(profile, "orders.create")).toBe(true);
-      expect(hasUserPermission(profile, "invoices.generate")).toBe(false);
-      expect(hasUserPermission(profile, "admin.manage")).toBe(false);
+      expect(salesWithExtra?.role).toBe("sales");
+      expect(salesWithExtra?.roleName).toBe("Sales Executive");
+      expect(hasUserPermission(salesWithExtra, "leads.manage")).toBe(true);
+      expect(hasUserPermission(salesWithExtra, "orders.create")).toBe(true);
+      expect(hasUserPermission(salesWithExtra, "invoices.generate")).toBe(true);
+      expect(hasUserPermission(salesWithExtra, "admin.manage")).toBe(false);
+
+      // Legacy custom metadata still resolves via features when no fixed role.
+      const legacy = profileFromAuth({
+        id: "user-2",
+        email: "legacy@avighna.com",
+        user_metadata: {
+          full_name: "Legacy",
+          role: "custom",
+          features: ["logistics", "tasks"],
+        },
+      });
+      expect(legacy?.role).toBe("logistics");
     });
 
     it("enforces effective permissions with individual user overrides (can helper)", () => {

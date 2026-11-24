@@ -1,9 +1,11 @@
 import { createServerFn } from "@tanstack/react-start";
 import { createClient } from "@supabase/supabase-js";
 import {
+  defaultFeaturesForRole,
   featuresCreatorCanAssign,
+  isFixedStaffRole,
   parseFeatureIds,
-  roleForFeatures,
+  rolesCreatorCanAssign,
   type RoleType,
 } from "./auth-service";
 
@@ -30,6 +32,8 @@ export const createStaffLogin = createServerFn({ method: "POST" })
       email: string;
       password: string;
       phone?: string;
+      /** Sticky base role — never rewritten to custom when features change. */
+      role: RoleType;
       features: string[];
       companyId?: string;
     }) => input,
@@ -38,8 +42,14 @@ export const createStaffLogin = createServerFn({ method: "POST" })
     if (!canProposeStaff(data.creatorRole) && !canManageStaff(data.creatorRole)) {
       return { ok: false as const, error: "You cannot create team logins." };
     }
+    const assignable = new Set(rolesCreatorCanAssign(data.creatorRole));
+    if (!isFixedStaffRole(data.role) || !assignable.has(data.role)) {
+      return { ok: false as const, error: "Choose a valid staff role (sales, logistics, accounts, …)." };
+    }
     const allowed = new Set(featuresCreatorCanAssign(data.creatorRole));
-    const features = parseFeatureIds(data.features);
+    const features = parseFeatureIds(
+      data.features.length ? data.features : defaultFeaturesForRole(data.role),
+    );
     if (!features.length || features.some((feature) => !allowed.has(feature))) {
       return { ok: false as const, error: "Choose one or more features you are allowed to grant." };
     }
@@ -54,7 +64,7 @@ export const createStaffLogin = createServerFn({ method: "POST" })
 
     const needsApproval = data.creatorRole === "supervisor";
     const status: StaffStatus = needsApproval ? "Pending approval" : "Active";
-    const role = roleForFeatures(features);
+    const role = data.role;
     const admin = adminClient();
     const { data: created, error } = await admin.auth.admin.createUser({
       email,
@@ -235,6 +245,8 @@ export const updateStaffLogin = createServerFn({ method: "POST" })
     (input: {
       actorRole: RoleType;
       userId: string;
+      /** Optional sticky role fix (e.g. migrate legacy "custom" → sales). */
+      role?: RoleType;
       features?: string[];
       password?: string;
       status?: StaffStatus;
@@ -244,8 +256,11 @@ export const updateStaffLogin = createServerFn({ method: "POST" })
     const denied = ownerGate(data.actorRole);
     if (denied) return denied;
     const features = data.features ? parseFeatureIds(data.features) : undefined;
-    if (!data.password && !features && !data.status) {
+    if (!data.password && !features && !data.status && !data.role) {
       return { ok: false as const, error: "Nothing to update." };
+    }
+    if (data.role && !isFixedStaffRole(data.role)) {
+      return { ok: false as const, error: "Role must be a fixed staff role." };
     }
     if (data.password !== undefined && data.password.length < 6) {
       return { ok: false as const, error: "Password must be at least 6 characters." };
@@ -271,7 +286,10 @@ export const updateStaffLogin = createServerFn({ method: "POST" })
     const meta = { ...(existing.data.user.user_metadata || {}) };
     if (features) {
       meta["features"] = features;
-      meta["role"] = roleForFeatures(features);
+      // Sticky: never rewrite role from the feature matrix.
+    }
+    if (data.role && isFixedStaffRole(data.role)) {
+      meta["role"] = data.role;
     }
     if (data.status) meta["status"] = data.status;
 
@@ -320,7 +338,9 @@ export const updateStaffLogin = createServerFn({ method: "POST" })
     }
 
     const profilePatch: Record<string, unknown> = {};
-    if (features) profilePatch["role_id"] = roleForFeatures(features);
+    if (data.role || (features && isFixedStaffRole(String(meta["role"])))) {
+      profilePatch["role_id"] = meta["role"];
+    }
     if (data.status) profilePatch["is_active"] = data.status === "Active";
     if (Object.keys(profilePatch).length > 0) {
       await admin.from("user_profiles").update(profilePatch).eq("id", data.userId);

@@ -4,7 +4,8 @@ import { hasUserPermission, type UserProfile } from "./auth-service";
  * Field Android app roles.
  * Detected via Capacitor native shell or `?app=field` on the hosted web URL.
  */
-export const FIELD_ROLES = ["sales", "logistics", "super_admin"] as const;
+/** Field app: Sales, Logistics, Supervisor (support manager), Super Admin. */
+export const FIELD_ROLES = ["sales", "logistics", "supervisor", "super_admin"] as const;
 
 export type FieldRole = (typeof FIELD_ROLES)[number];
 
@@ -21,12 +22,17 @@ export function isFieldApp(): boolean {
 }
 
 export function isFieldRole(role: string | undefined | null): role is FieldRole {
-  return role === "sales" || role === "logistics" || role === "super_admin";
+  return (
+    role === "sales" ||
+    role === "logistics" ||
+    role === "supervisor" ||
+    role === "super_admin"
+  );
 }
 
 /**
- * Field app access: known field roles, or custom feature packs that include
- * field visit logging / logistics delivery work.
+ * Field app access by sticky base role.
+ * (Legacy custom packs with field/logistics perms still allowed until migrated.)
  */
 export function canUseFieldApp(profile: UserProfile | null | undefined): boolean {
   if (!profile) return false;
@@ -55,4 +61,4 @@ export function isFieldAdminNavUrl(url: string): boolean {
 }
 
 export const FIELD_APP_LOGIN_ERROR =
-  "Access denied. Only Sales, Logistics, and Super Admin can use this app.";
+  "Access denied. Only Sales, Logistics, Supervisor, and Super Admin can use this app.";
