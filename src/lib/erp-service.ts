@@ -1918,7 +1918,53 @@ export async function fetchPurchaseOrders(companyId: CompanyId): Promise<DBPurch
   }
 }
 
-export async function receivePurchaseGoods(poId: string, companyId: string, receiverName: string) {
+export async function markPurchaseOrderSent(
+  poId: string,
+  companyId: string,
+  senderName: string,
+): Promise<DBPurchaseOrder> {
+  const { data, error } = await supabase
+    .from("purchase_orders")
+    .update({ status: "In transit", updated_at: new Date().toISOString() })
+    .eq("id", poId)
+    .select()
+    .single();
+
+  if (error) throw error;
+
+  await logAudit({
+    userName: senderName,
+    companyId,
+    module: "procurement",
+    action: "po_sent",
+    recordId: poId,
+    description: `${senderName} marked PO #${poId} as sent to supplier (In transit)`,
+  });
+
+  return data as DBPurchaseOrder;
+}
+
+export async function receivePurchaseGoods(
+  poId: string,
+  companyId: string,
+  receiverName: string,
+  options?: { requireProductId?: boolean; productId?: string | null },
+) {
+  const requireProductId = options?.requireProductId !== false;
+  if (requireProductId && !options?.productId) {
+    const { data: existing, error: fetchError } = await supabase
+      .from("purchase_orders")
+      .select("product_id")
+      .eq("id", poId)
+      .maybeSingle();
+    if (fetchError) throw fetchError;
+    if (!existing?.product_id) {
+      throw new Error(
+        "This purchase order is not linked to a catalog product, so stock cannot be updated. Ask Accounts to recreate it with a product selected.",
+      );
+    }
+  }
+
   const { error } = await supabase
     .from("purchase_orders")
     .update({ status: "Received" })
@@ -1932,7 +1978,7 @@ export async function receivePurchaseGoods(poId: string, companyId: string, rece
     module: "procurement",
     action: "goods_received",
     recordId: poId,
-    description: `${receiverName} confirmed Goods Received for PO #${poId} (Inventory inbound updated)`,
+    description: `${receiverName} verified arrival for PO #${poId} (Inventory inbound updated)`,
   });
 }
 
@@ -2899,9 +2945,11 @@ export async function updatePurchaseOrder(payload: {
   id: string;
   supplierName?: string | undefined;
   productName?: string | undefined;
+  productId?: string | undefined;
   quantity?: number | undefined;
   unit?: string | undefined;
   unitPrice?: number | undefined;
+  status?: DBPurchaseOrder["status"] | undefined;
   companyId?: string | undefined;
   updaterName?: string | undefined;
 }) {
@@ -2910,9 +2958,11 @@ export async function updatePurchaseOrder(payload: {
   };
   if (payload.supplierName !== undefined) updates["supplier_name"] = payload.supplierName;
   if (payload.productName !== undefined) updates["product_name"] = payload.productName;
+  if (payload.productId !== undefined) updates["product_id"] = payload.productId;
   if (payload.quantity !== undefined) updates["quantity"] = payload.quantity;
   if (payload.unit !== undefined) updates["unit"] = payload.unit;
   if (payload.unitPrice !== undefined) updates["unit_price"] = payload.unitPrice;
+  if (payload.status !== undefined) updates["status"] = payload.status;
   if (payload.quantity !== undefined && payload.unitPrice !== undefined) {
     updates["total_amount"] = payload.quantity * payload.unitPrice;
   }

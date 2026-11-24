@@ -94,7 +94,7 @@ export const ACCESS_FEATURES: AccessFeature[] = [
   {
     id: "logistics",
     name: "Logistics",
-    description: "Deliveries, dispatch, and proof of delivery",
+    description: "Deliveries, dispatch, inbound PO arrival verification, and proof of delivery",
     permissions: [
       "logistics.view",
       "logistics.dispatch",
@@ -102,6 +102,8 @@ export const ACCESS_FEATURES: AccessFeature[] = [
       "orders.view",
       "tasks.view",
       "customers.view",
+      "purchases.view",
+      "purchases.receive",
     ],
   },
   {
@@ -287,6 +289,8 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "tasks.view",
     "customers.view",
     "purchases.view",
+    // Arrival verification for inbound POs → inventory
+    "purchases.receive",
   ],
   custom: [],
 };

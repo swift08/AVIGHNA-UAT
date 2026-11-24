@@ -120,13 +120,16 @@ describe("Avighna One — Authentication, Security & Granular Permissions Audit"
       expect(hasUserPermission(logistics, "finance.view_amounts")).toBe(false);
     });
 
-    it("logistics role can view deliveries, dispatch vehicles, and deliver goods, but cannot alter financials or approve stock", () => {
+    it("logistics role can view deliveries, dispatch vehicles, deliver goods, and verify inbound PO arrivals", () => {
       const logistics = SYSTEM_USERS.find((u) => u.role === "logistics")!;
       expect(hasUserPermission(logistics, "logistics.view")).toBe(true);
       expect(hasUserPermission(logistics, "logistics.dispatch")).toBe(true);
       expect(hasUserPermission(logistics, "logistics.deliver")).toBe(true);
+      expect(hasUserPermission(logistics, "purchases.view")).toBe(true);
+      expect(hasUserPermission(logistics, "purchases.receive")).toBe(true);
 
-      // Must NOT have accounts or order approval actions
+      // Must NOT create POs or alter financials / approve orders
+      expect(hasUserPermission(logistics, "purchases.create")).toBe(false);
       expect(hasUserPermission(logistics, "invoices.generate")).toBe(false);
       expect(hasUserPermission(logistics, "payments.record")).toBe(false);
       expect(hasUserPermission(logistics, "orders.approve")).toBe(false);

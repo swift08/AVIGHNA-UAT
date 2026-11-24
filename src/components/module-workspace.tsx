@@ -111,6 +111,7 @@ import {
   fetchPurchaseOrders,
   createPurchaseOrder,
   updatePurchaseOrder,
+  markPurchaseOrderSent,
   receivePurchaseGoods,
   updateFieldVisit,
   fetchInvoices,
@@ -459,6 +460,7 @@ export function ModuleWorkspace({
   // Purchase Order modal state
   const [poModal, setPoModal] = useState(false);
   const [poSupplier, setPoSupplier] = useState("");
+  const [poProductId, setPoProductId] = useState("");
   const [poProduct, setPoProduct] = useState("");
   const [poQuantity, setPoQuantity] = useState("100");
   const [poUnit, setPoUnit] = useState("kg");
@@ -1794,13 +1796,20 @@ export function ModuleWorkspace({
       toast.error("Supervisors do not create purchase orders.");
       return;
     }
-    const finalPoUnit = isCustomPoUnit ? customPoUnit.trim() : poUnit;
+    const selectedCatalogProduct = dbProducts.find((p) => p.id === poProductId);
+    const finalPoUnit = isCustomPoUnit
+      ? customPoUnit.trim()
+      : poUnit || selectedCatalogProduct?.unit || "kg";
     const qty = parseFloat(poQuantity);
     const rate = parseFloat(poPrice);
     const requiredError =
       missingRequired([
         { label: "Supplier", value: poSupplier },
-        { label: "Product / description", value: poProduct },
+        { label: "Catalog product", value: poProductId },
+        {
+          label: "Product / description",
+          value: poProduct || selectedCatalogProduct?.name || "",
+        },
         { label: "Unit", value: finalPoUnit },
       ]) ||
       (!Number.isFinite(qty) || qty <= 0 ? "Quantity is required (must be greater than 0)." : null) ||
@@ -1811,11 +1820,17 @@ export function ModuleWorkspace({
       toast.error("Required fields missing", { description: requiredError });
       return;
     }
+    if (!selectedCatalogProduct?.id) {
+      toast.error("Select a catalog product so Logistics can add stock on arrival.");
+      return;
+    }
+    const productName = (poProduct.trim() || selectedCatalogProduct.name).trim();
     const poId = suggestPurchaseOrderNumber(poCompany, String(Date.now()).slice(-2));
     const created = await createPurchaseOrder({
       companyId: poCompany === "all" ? "ganesh" : poCompany,
       supplierName: poSupplier.trim(),
-      productName: poProduct.trim(),
+      productId: selectedCatalogProduct.id,
+      productName,
       quantity: qty,
       unit: finalPoUnit || "units",
       unitPrice: rate,
@@ -1826,14 +1841,14 @@ export function ModuleWorkspace({
         documentName: poPdfFile?.name,
         documentKey: poPdfFile ? poId : undefined,
         documentType: poPdfFile ? "supplier_invoice" : undefined,
-        itemName: poProduct,
+        itemName: productName,
       }),
       creatorName: currentUser?.name || "Suresh Rao (Accounts)",
     });
     if (poPdfFile) {
       try {
         await savePurchaseOrderDocument(created.id, poPdfFile, {
-          itemName: poProduct,
+          itemName: productName,
           documentType: "supplier_invoice",
         });
       } catch (err) {
@@ -1844,13 +1859,33 @@ export function ModuleWorkspace({
     }
     setPoModal(false);
     setPoSupplier("");
+    setPoProductId("");
     setPoProduct("");
     setPoRemark("GST Extra");
     setPoPdfFile(null);
     setIsCustomPoUnit(false);
     setCustomPoUnit("");
     setPoDocTick((n) => n + 1);
+    toast.success("Purchase order created. Download/print the PDF, then mark it as sent.");
     reloadData();
+  };
+
+  const handleMarkPoSent = async (po: DBPurchaseOrder) => {
+    if (!hasPermission("purchases.create") && !isSuperAdmin) {
+      toast.error("Only Accounts can mark a purchase order as sent.");
+      return;
+    }
+    if (po.status !== "Requested") {
+      toast.error("Only Requested purchase orders can be marked as sent.");
+      return;
+    }
+    try {
+      await markPurchaseOrderSent(po.id, po.company_id, currentUser?.name || "Accounts");
+      toast.success("Marked as sent — Logistics can verify arrival when stock lands.");
+      reloadData();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not mark purchase order as sent.");
+    }
   };
 
   const handleScheduleVisit = async (e: React.FormEvent) => {
@@ -1896,11 +1931,28 @@ export function ModuleWorkspace({
 
   const handleReceiveGoods = async (po: DBPurchaseOrder) => {
     if (isSupervisor || !hasPermission("purchases.receive")) {
-      toast.error("Supervisors do not receive purchase orders here.");
+      toast.error("You do not have permission to verify purchase arrivals.");
       return;
     }
-    await receivePurchaseGoods(po.id, po.company_id, currentUser?.name || "Warehouse");
-    reloadData();
+    if (po.status !== "In transit" && !isSuperAdmin) {
+      toast.error("Only In transit purchase orders can be verified into inventory.");
+      return;
+    }
+    if (!po.product_id) {
+      toast.error(
+        "This PO is not linked to a catalog product. Ask Accounts to recreate it with a product selected.",
+      );
+      return;
+    }
+    try {
+      await receivePurchaseGoods(po.id, po.company_id, currentUser?.name || "Logistics", {
+        productId: po.product_id,
+      });
+      toast.success("Arrival verified — stock added to inventory.");
+      reloadData();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not verify arrival.");
+    }
   };
 
   const openEditPo = (po: DBPurchaseOrder) => {
@@ -1964,6 +2016,7 @@ export function ModuleWorkspace({
         quantity: qty,
         unit: finalUnit,
         unitPrice: unitRate,
+        status: editPoStatus,
         updaterName: currentUser?.name || "Admin",
       });
 
@@ -6241,54 +6294,99 @@ export function ModuleWorkspace({
                   </div>
                 )}
 
-                {/* Accounts-uploaded purchase orders visible to logistics */}
-                {hasPermission("purchases.view") && dbPOs.length > 0 && (
+                {/* Inbound POs: Logistics verifies arrival into inventory */}
+                {hasPermission("purchases.view") && (
                   <section className="rounded-xl border border-border bg-card p-4 space-y-3">
                     <div className="flex items-center justify-between gap-3">
                       <div>
                         <h3 className="text-sm font-bold text-foreground">
-                          Item purchase documents from Accounts
+                          Inbound purchase orders
                         </h3>
                         <p className="text-[11px] text-muted-foreground mt-0.5">
-                          Supplier tax invoices uploaded for each purchased item (e.g. Maize Starch).
+                          When goods arrive, verify In transit POs to add stock to inventory.
                         </p>
                       </div>
                       <span className="text-[11px] font-bold text-muted-foreground">
-                        {dbPOs.length} item{dbPOs.length === 1 ? "" : "s"}
+                        {
+                          dbPOs.filter((p) => p.status === "In transit").length
+                        }{" "}
+                        awaiting verification
                       </span>
                     </div>
-                    <div className="space-y-2">
-                      {dbPOs.slice(0, isDriver ? 6 : 8).map((p) => {
-                        const uploaded = getPurchaseOrderDocument(p.id);
+                    {(() => {
+                      const inboundPos = dbPOs
+                        .filter((p) => p.status === "In transit" || p.status === "Requested")
+                        .sort((a, b) => {
+                          if (a.status === b.status) return 0;
+                          return a.status === "In transit" ? -1 : 1;
+                        });
+                      const visible = inboundPos.slice(0, isDriver ? 8 : 12);
+                      if (visible.length === 0) {
                         return (
-                          <div
-                            key={`logistics-po-${p.id}-${poDocTick}`}
-                            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5"
-                          >
-                            <div className="min-w-0">
-                              <p className="text-xs font-bold text-foreground truncate">
-                                {p.product_name}
-                              </p>
-                              <p className="text-[10px] text-muted-foreground mt-0.5">
-                                #{p.id} · {p.supplier_name} · {p.quantity} {p.unit}
-                                {uploaded
-                                  ? ` · Supplier invoice: ${uploaded.name}`
-                                  : " · No supplier invoice uploaded yet"}
-                              </p>
-                            </div>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs font-semibold gap-1.5 shrink-0"
-                              onClick={() => handleViewPurchaseOrder(p)}
-                            >
-                              <FileText className="size-3.5" />
-                              {uploaded ? "Open item invoice" : "View PO"}
-                            </Button>
-                          </div>
+                          <p className="text-[11px] text-muted-foreground py-2">
+                            No inbound purchase orders waiting. Accounts marks a PO as sent after
+                            downloading the PDF for the supplier.
+                          </p>
                         );
-                      })}
-                    </div>
+                      }
+                      return (
+                        <div className="space-y-2">
+                          {visible.map((p) => {
+                            const uploaded = getPurchaseOrderDocument(p.id);
+                            const canVerify =
+                              p.status === "In transit" && hasPermission("purchases.receive");
+                            return (
+                              <div
+                                key={`logistics-po-${p.id}-${poDocTick}`}
+                                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5"
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-xs font-bold text-foreground truncate">
+                                      {p.product_name}
+                                    </p>
+                                    <span
+                                      className={`status ${
+                                        p.status === "In transit" ? "warning" : "brand"
+                                      }`}
+                                    >
+                                      {p.status === "In transit"
+                                        ? "Awaiting arrival"
+                                        : p.status}
+                                    </span>
+                                  </div>
+                                  <p className="text-[10px] text-muted-foreground mt-0.5">
+                                    #{p.id} · {p.supplier_name} · {p.quantity} {p.unit}
+                                    {uploaded ? ` · PDF: ${uploaded.name}` : ""}
+                                    {!p.product_id ? " · Catalog link missing" : ""}
+                                  </p>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs font-semibold gap-1.5"
+                                    onClick={() => handleViewPurchaseOrder(p)}
+                                  >
+                                    <FileText className="size-3.5" />
+                                    {uploaded ? "Open PDF" : "View PO"}
+                                  </Button>
+                                  {canVerify && (
+                                    <Button
+                                      size="sm"
+                                      className="h-7 text-xs font-semibold"
+                                      onClick={() => void handleReceiveGoods(p)}
+                                    >
+                                      Verify arrival &amp; add to inventory
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
                   </section>
                 )}
 
@@ -7637,7 +7735,8 @@ export function ModuleWorkspace({
             <div>
               <h2 className="panel-title">Procurement overview</h2>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                Accounts uploads the supplier invoice PDF for each item · logistics can open it
+                Create PO → download/print PDF for the supplier → mark sent → Logistics verifies
+                arrival into inventory
               </p>
             </div>
             {hasPermission("purchases.create") && (
@@ -7647,13 +7746,19 @@ export function ModuleWorkspace({
                 onClick={() => setPoModal(true)}
               >
                 <Plus className="size-3.5" />
-                Add item + supplier invoice
+                Create purchase order
               </Button>
             )}
           </div>
           {dbPOs.map((p) => {
             const uploaded = getPurchaseOrderDocument(p.id);
             const meta = parsePoNotes(p.notes);
+            const statusClass =
+              p.status === "Received"
+                ? "success"
+                : p.status === "In transit"
+                  ? "warning"
+                  : "brand";
             return (
               <div
                 className="flex flex-wrap items-center justify-between gap-4 border-t border-border px-6 py-5"
@@ -7667,18 +7772,17 @@ export function ModuleWorkspace({
                       #{p.id} · {p.quantity} {p.unit} ·{" "}
                       {companies.find((c) => c.id === p.company_id)?.short} · Supplier:{" "}
                       {p.supplier_name}
+                      {p.product_id ? "" : " · No catalog product linked"}
                     </p>
                     {(uploaded || meta.documentName) && (
                       <p className="mt-1 text-[10px] font-semibold text-primary">
-                        Supplier invoice for this item: {uploaded?.name || meta.documentName}
+                        Attached PDF: {uploaded?.name || meta.documentName}
                       </p>
                     )}
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className={`status ${p.status === "Received" ? "success" : "brand"}`}>
-                    {p.status}
-                  </span>
+                  <span className={`status ${statusClass}`}>{p.status}</span>
                   <Button
                     size="sm"
                     variant="outline"
@@ -7686,12 +7790,12 @@ export function ModuleWorkspace({
                     onClick={() => handleViewPurchaseOrder(p)}
                   >
                     <Eye className="size-3.5" />
-                    {uploaded ? "Open item invoice" : "View PO"}
+                    {uploaded ? "Download / Print PDF" : "Download / Print PO"}
                   </Button>
                   {hasPermission("purchases.create") && (
                     <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2 text-xs font-semibold cursor-pointer hover:bg-muted/50">
                       <FileText className="size-3.5" />
-                      {uploaded ? "Replace item PDF" : "Upload item PDF"}
+                      {uploaded ? "Replace PDF" : "Attach PDF"}
                       <input
                         type="file"
                         accept="application/pdf,.pdf"
@@ -7704,14 +7808,24 @@ export function ModuleWorkspace({
                       />
                     </label>
                   )}
-                  {p.status !== "Received" && hasPermission("purchases.receive") && (
+                  {p.status === "Requested" &&
+                    (hasPermission("purchases.create") || isSuperAdmin) && (
+                      <Button
+                        size="sm"
+                        className="h-7 text-xs font-semibold"
+                        onClick={() => void handleMarkPoSent(p)}
+                      >
+                        Mark sent to supplier
+                      </Button>
+                    )}
+                  {isSuperAdmin && p.status === "In transit" && hasPermission("purchases.receive") && (
                     <Button
                       size="sm"
                       variant="outline"
                       className="h-7 text-xs"
-                      onClick={() => handleReceiveGoods(p)}
+                      onClick={() => void handleReceiveGoods(p)}
                     >
-                      Receive Goods
+                      Verify arrival
                     </Button>
                   )}
                   {isSuperAdmin && (
@@ -7752,8 +7866,8 @@ export function ModuleWorkspace({
           })}
           {dbPOs.length === 0 && (
             <p className="p-8 text-center text-muted-foreground">
-              No purchased items yet. Accounts can add an item and upload its supplier invoice PDF
-              (e.g. Ambuja tax invoice for Maize Starch) for logistics to open.
+              No purchase orders yet. Create a PO linked to a catalog product, download/print the
+              PDF for the supplier, then mark it sent for Logistics to verify on arrival.
             </p>
           )}
         </section>
@@ -10181,10 +10295,10 @@ export function ModuleWorkspace({
       <Sheet open={poModal} onOpenChange={setPoModal}>
         <SheetContent className="overflow-y-auto max-h-[100dvh] w-full sm:max-w-lg pb-16">
           <SheetHeader>
-            <SheetTitle>Add purchased item + supplier invoice</SheetTitle>
+            <SheetTitle>Create purchase order</SheetTitle>
             <SheetDescription>
-              Accounts uploads the supplier tax invoice PDF for that particular item. Logistics can
-              open the same file.
+              Link a catalog product, download/print the PO PDF for the supplier, then mark it sent.
+              Logistics verifies arrival into inventory.
             </SheetDescription>
           </SheetHeader>
           <form onSubmit={handleCreatePO} className="mt-6 space-y-4 pb-12">
@@ -10252,6 +10366,35 @@ export function ModuleWorkspace({
                   Manage supplier profiles →
                 </button>
               )}
+            </label>
+            <label className="drawer-field">
+              Catalog product <span className="text-destructive">*</span>
+              <select
+                required
+                value={poProductId}
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  setPoProductId(nextId);
+                  const matched = dbProducts.find((p) => p.id === nextId);
+                  if (matched) {
+                    setPoProduct(matched.name);
+                    if (!isCustomPoUnit) setPoUnit(matched.unit || "kg");
+                    if (matched.unit_price > 0) setPoPrice(String(matched.unit_price));
+                  }
+                }}
+              >
+                <option value="">Select inventory product…</option>
+                {dbProducts
+                  .filter((p) => poCompany === "all" || p.company_id === poCompany || p.company_id === "all")
+                  .map((p) => (
+                    <option key={p.id || p.code} value={p.id || ""}>
+                      {p.name} · {p.code}
+                    </option>
+                  ))}
+              </select>
+              <span className="mt-1 block text-[11px] text-muted-foreground">
+                Required so Logistics can add stock to inventory when goods arrive.
+              </span>
             </label>
             <label className="drawer-field">
               Product / Description of Goods <span className="text-destructive">*</span>
@@ -10339,15 +10482,15 @@ export function ModuleWorkspace({
               />
             </label>
             <label className="drawer-field">
-              Supplier invoice PDF for this item
+              Optional PDF attachment
               <input
                 type="file"
                 accept="application/pdf,.pdf"
                 onChange={(e) => setPoPdfFile(e.target.files?.[0] || null)}
               />
               <span className="mt-1 block text-[11px] text-muted-foreground">
-                Upload the supplier tax invoice for this product (e.g. Gujarat Ambuja invoice for
-                Maize Starch). Logistics will open this file for this item.
+                Optional. You can also download/print the generated PO PDF after saving and send it
+                to the supplier manually.
               </span>
               {poPdfFile && (
                 <span className="mt-1 block text-[11px] font-semibold text-primary">
@@ -10356,7 +10499,7 @@ export function ModuleWorkspace({
               )}
             </label>
             <Button type="submit" className="w-full mt-6">
-              Save item document for Logistics
+              Create purchase order
             </Button>
           </form>
         </SheetContent>
