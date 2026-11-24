@@ -2284,20 +2284,26 @@ export async function updateSupplier(payload: {
   return data as DBSupplier;
 }
 
-export async function deleteSupplier(supplierId: string, adminName: string = "Super Admin") {
-  const actor = await requireSuperAdmin();
-  adminName = actor.name || adminName;
+export async function deleteSupplier(supplierId: string, actorName: string = "Accounts") {
+  const actor = await requirePermission("suppliers.manage");
+  actorName = actor.name || actorName;
+
+  const { data: existing } = await supabase
+    .from("suppliers")
+    .select("id, name, company_id")
+    .eq("id", supplierId)
+    .maybeSingle();
 
   const { error } = await supabase.from("suppliers").delete().eq("id", supplierId);
   if (error) throw error;
 
   await logAudit({
-    userName: adminName,
-    companyId: "asian",
+    userName: actorName,
+    companyId: existing?.company_id || "asian",
     module: "procurement",
     action: "supplier_deleted",
     recordId: supplierId,
-    description: `${adminName} permanently deleted Supplier #${supplierId}`,
+    description: `${actorName} permanently deleted Supplier ${existing?.name || supplierId}`,
   });
   return { success: true };
 }

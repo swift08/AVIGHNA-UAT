@@ -49,4 +49,4 @@ CREATE POLICY auth_insert_suppliers ON public.suppliers
 CREATE POLICY auth_update_suppliers ON public.suppliers
   FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
 CREATE POLICY auth_delete_suppliers ON public.suppliers
-  FOR DELETE TO authenticated USING (public.is_super_admin());
+  FOR DELETE TO authenticated USING (true);

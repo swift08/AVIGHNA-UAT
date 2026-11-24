@@ -36,7 +36,6 @@ import {
 export function SuppliersWorkspace({ supplierId }: { supplierId?: string }) {
   const navigate = useNavigate();
   const { company, currentUser, hasPermission } = useWorkspace();
-  const isSuperAdmin = currentUser?.role === "super_admin" || hasPermission("*");
   const canManage = hasPermission("suppliers.manage");
 
   const [loading, setLoading] = useState(true);
@@ -290,13 +289,22 @@ export function SuppliersWorkspace({ supplierId }: { supplierId?: string }) {
               New purchase order
             </Button>
           )}
-          {isSuperAdmin && selected.id && (
+        </div>
+
+        {canManage && selected.id ? (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 space-y-2 mb-4">
+            <h3 className="text-sm font-bold text-destructive">Danger zone</h3>
+            <p className="text-xs text-muted-foreground">
+              Permanently removes this supplier profile. Linked purchase orders keep the supplier
+              name as text.
+            </p>
             <Button
               size="sm"
-              variant="ghost"
-              className="h-9 px-3 text-xs font-semibold text-destructive hover:bg-destructive/10 ml-auto gap-1.5"
+              variant="outline"
+              className="h-9 px-3.5 text-xs font-semibold gap-1.5 border-destructive/40 text-destructive hover:bg-destructive/10"
               onClick={async () => {
-                if (!window.confirm(`Delete supplier ${selected.name}?`)) return;
+                if (!window.confirm(`Delete supplier "${selected.name}"? This cannot be undone.`))
+                  return;
                 try {
                   await deleteSupplier(selected.id!, currentUser?.name);
                   toast.success("Supplier deleted");
@@ -309,10 +317,10 @@ export function SuppliersWorkspace({ supplierId }: { supplierId?: string }) {
               }}
             >
               <Trash2 className="size-3.5" />
-              Delete
+              Delete supplier
             </Button>
-          )}
-        </div>
+          </div>
+        ) : null}
 
         <div className="customer-dossier-body grid gap-4">
           <div className="rounded-xl border border-border bg-card p-4 space-y-3">
@@ -524,6 +532,7 @@ export function SuppliersWorkspace({ supplierId }: { supplierId?: string }) {
                     variant="ghost"
                     className="size-7 text-muted-foreground hover:text-primary hover:bg-primary/10 cursor-pointer"
                     title="Edit Supplier"
+                    aria-label="Edit supplier"
                     onClick={(e) => {
                       e.stopPropagation();
                       openEdit(s);
@@ -531,6 +540,31 @@ export function SuppliersWorkspace({ supplierId }: { supplierId?: string }) {
                   >
                     <Pencil className="size-3.5" />
                   </Button>
+                  {s.id ? (
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      className="size-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                      title="Delete supplier"
+                      aria-label="Delete supplier"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        if (!window.confirm(`Delete supplier "${s.name}"? This cannot be undone.`))
+                          return;
+                        try {
+                          await deleteSupplier(s.id!, currentUser?.name);
+                          toast.success("Supplier deleted");
+                          reload();
+                        } catch (err: unknown) {
+                          toast.error("Delete failed", {
+                            description: err instanceof Error ? err.message : "Error",
+                          });
+                        }
+                      }}
+                    >
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  ) : null}
                 </div>
               )}
             </div>
