@@ -1682,7 +1682,9 @@ export function ModuleWorkspace({
       visitPurpose === "Custom" ? visitCustomPurpose.trim() || "Client Meeting" : visitPurpose;
 
     const shouldCreateInlineOrder =
-      visitPurpose === "Order booking" && visitOrderProductId.trim().length > 0;
+      currentUser?.role !== "sales" &&
+      visitPurpose === "Order booking" &&
+      visitOrderProductId.trim().length > 0;
     const selectedOrderProduct = shouldCreateInlineOrder
       ? dbProducts.find((p) => p.id === visitOrderProductId)
       : undefined;
@@ -7880,7 +7882,20 @@ export function ModuleWorkspace({
                   </div>
                 )}
 
-                {visitPurpose === "Order booking" && (() => {
+                {visitPurpose === "Order booking" && currentUser?.role === "sales" && (
+                  <div className="mt-2 p-3 rounded-xl border border-primary/25 bg-primary/[0.04] text-xs space-y-1.5 animate-in fade-in">
+                    <p className="font-bold text-foreground flex items-center gap-1.5">
+                      <ShoppingBag className="size-3.5 text-primary" />
+                      Book order after visit
+                    </p>
+                    <p className="text-[11px] text-muted-foreground leading-relaxed">
+                      Save this visit, then tap <strong>Create Order</strong> — only customer,
+                      product and quantity. Vehicle is assigned later.
+                    </p>
+                  </div>
+                )}
+
+                {visitPurpose === "Order booking" && currentUser?.role !== "sales" && (() => {
                   const firmProducts = dbProducts.filter(
                     (p): p is typeof p & { id: string } =>
                       Boolean(p.id) && (p.company_id === visitFirm || !visitFirm),
@@ -8372,17 +8387,25 @@ export function ModuleWorkspace({
                   <Check className="size-3.5 mr-1.5" />
                   {visitOrderSubmitting
                     ? "Saving..."
-                    : visitPurpose === "Order booking" && visitOrderProductId
+                    : currentUser?.role !== "sales" &&
+                        visitPurpose === "Order booking" &&
+                        visitOrderProductId
                       ? "Save Visit & Book Order"
                       : "Save"}
                 </Button>
                 <Button
                   onClick={handleCreateOrderFromVisit}
-                  variant="outline"
+                  variant={
+                    currentUser?.role === "sales" && visitPurpose === "Order booking"
+                      ? "default"
+                      : "outline"
+                  }
                   className="w-full h-11 font-bold text-xs cursor-pointer"
                 >
                   <ShoppingBag className="size-3.5 mr-1.5" />
-                  Create Order
+                  {currentUser?.role === "sales" && visitPurpose === "Order booking"
+                    ? "Save visit & create order"
+                    : "Create Order"}
                 </Button>
                 <Button
                   variant="ghost"
@@ -9480,19 +9503,21 @@ export function ModuleWorkspace({
             </SheetDescription>
           </SheetHeader>
           <form onSubmit={handleCreateCustomer} className="mt-6 space-y-4">
-            <label className="drawer-field">
-              Company
-              <select
-                value={custCompany}
-                onChange={(e) => setCustCompany(e.target.value)}
-              >
-                {companies.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {currentUser?.role !== "sales" && (
+              <label className="drawer-field">
+                Company
+                <select
+                  value={custCompany}
+                  onChange={(e) => setCustCompany(e.target.value)}
+                >
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="drawer-field">
               Legal name <span className="text-destructive">*</span>
               <input

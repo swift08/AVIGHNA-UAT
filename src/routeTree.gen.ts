@@ -15,6 +15,7 @@ import { Route as AdministrationRouteImport } from './routes/administration'
 import { Route as AnalyticsRouteImport } from './routes/analytics'
 import { Route as CreditRouteImport } from './routes/credit'
 import { Route as CustomersRouteImport } from './routes/customers'
+import { Route as DocumentsRouteImport } from './routes/documents'
 import { Route as FieldVisitsRouteImport } from './routes/field-visits'
 import { Route as InventoryRouteImport } from './routes/inventory'
 import { Route as InvoicesRouteImport } from './routes/invoices'
@@ -57,6 +58,11 @@ const CreditRoute = CreditRouteImport.update({
 const CustomersRoute = CustomersRouteImport.update({
   id: '/customers',
   path: '/customers',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DocumentsRoute = DocumentsRouteImport.update({
+  id: '/documents',
+  path: '/documents',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FieldVisitsRoute = FieldVisitsRouteImport.update({
@@ -132,6 +138,7 @@ export interface FileRoutesByFullPath {
   '/analytics': typeof AnalyticsRoute
   '/credit': typeof CreditRoute
   '/customers': typeof CustomersRouteWithChildren
+  '/documents': typeof DocumentsRoute
   '/field-visits': typeof FieldVisitsRoute
   '/inventory': typeof InventoryRoute
   '/invoices': typeof InvoicesRoute
@@ -152,6 +159,7 @@ export interface FileRoutesByTo {
   '/administration': typeof AdministrationRoute
   '/analytics': typeof AnalyticsRoute
   '/credit': typeof CreditRoute
+  '/documents': typeof DocumentsRoute
   '/field-visits': typeof FieldVisitsRoute
   '/inventory': typeof InventoryRoute
   '/invoices': typeof InvoicesRoute
@@ -173,6 +181,7 @@ export interface FileRoutesById {
   '/analytics': typeof AnalyticsRoute
   '/credit': typeof CreditRoute
   '/customers': typeof CustomersRouteWithChildren
+  '/documents': typeof DocumentsRoute
   '/field-visits': typeof FieldVisitsRoute
   '/inventory': typeof InventoryRoute
   '/invoices': typeof InvoicesRoute
@@ -196,6 +205,7 @@ export interface FileRouteTypes {
     | '/analytics'
     | '/credit'
     | '/customers'
+    | '/documents'
     | '/field-visits'
     | '/inventory'
     | '/invoices'
@@ -216,6 +226,7 @@ export interface FileRouteTypes {
     | '/administration'
     | '/analytics'
     | '/credit'
+    | '/documents'
     | '/field-visits'
     | '/inventory'
     | '/invoices'
@@ -236,6 +247,7 @@ export interface FileRouteTypes {
     | '/analytics'
     | '/credit'
     | '/customers'
+    | '/documents'
     | '/field-visits'
     | '/inventory'
     | '/invoices'
@@ -258,6 +270,7 @@ export interface RootRouteChildren {
   AnalyticsRoute: typeof AnalyticsRoute
   CreditRoute: typeof CreditRoute
   CustomersRoute: typeof CustomersRouteWithChildren
+  DocumentsRoute: typeof DocumentsRoute
   FieldVisitsRoute: typeof FieldVisitsRoute
   InventoryRoute: typeof InventoryRoute
   InvoicesRoute: typeof InvoicesRoute
@@ -311,6 +324,13 @@ declare module '@tanstack/react-router' {
       path: '/customers'
       fullPath: '/customers'
       preLoaderRoute: typeof CustomersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/documents': {
+      id: '/documents'
+      path: '/documents'
+      fullPath: '/documents'
+      preLoaderRoute: typeof DocumentsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/field-visits': {
@@ -442,6 +462,7 @@ const rootRouteChildren: RootRouteChildren = {
   AnalyticsRoute: AnalyticsRoute,
   CreditRoute: CreditRoute,
   CustomersRoute: CustomersRouteWithChildren,
+  DocumentsRoute: DocumentsRoute,
   FieldVisitsRoute: FieldVisitsRoute,
   InventoryRoute: InventoryRoute,
   InvoicesRoute: InvoicesRoute,

@@ -1019,7 +1019,7 @@ export function OrderTable({
   initialNotes?: string | undefined;
   openCreateOnMount?: boolean | undefined;
 }) {
-  const { hasPermission, currentUser } = useWorkspace();
+  const { hasPermission, currentUser, company } = useWorkspace();
   const canViewAmounts = hasPermission("finance.view_amounts");
   const isSales = currentUser?.role === "sales";
   const money = (value: number) => (canViewAmounts ? moneyFormat(value) : "—");
@@ -1102,6 +1102,8 @@ export function OrderTable({
     }
     if (targetCompany) {
       setCompanyId(targetCompany);
+    } else if (isSales && company && company !== "all") {
+      setCompanyId(company);
     }
     if (targetNotes) {
       setNotes(targetNotes);
@@ -1109,7 +1111,12 @@ export function OrderTable({
     if (shouldOpen) {
       setCreateOpen(true);
     }
-  }, [initialCustomerName, initialCompanyId, initialNotes, openCreateOnMount]);
+  }, [initialCustomerName, initialCompanyId, initialNotes, openCreateOnMount, isSales, company]);
+
+  useEffect(() => {
+    if (!createOpen || !isSales) return;
+    if (company && company !== "all") setCompanyId(company);
+  }, [createOpen, isSales, company]);
 
   useEffect(() => {
     if (createOpen) {
