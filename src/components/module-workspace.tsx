@@ -391,6 +391,8 @@ export function ModuleWorkspace({
   const [leadGstin, setLeadGstin] = useState("");
   const [leadCity, setLeadCity] = useState("");
   const [leadProductInterest, setLeadProductInterest] = useState("");
+  const [leadRequiredQty, setLeadRequiredQty] = useState("");
+  const [leadRequiredUnit, setLeadRequiredUnit] = useState("kg");
   const [leadEstimatedValue, setLeadEstimatedValue] = useState("");
   const [leadSource, setLeadSource] = useState("WhatsApp");
   const [leadReferrer, setLeadReferrer] = useState("");
@@ -925,6 +927,8 @@ export function ModuleWorkspace({
     setLeadGstin("");
     setLeadCity("");
     setLeadProductInterest("");
+    setLeadRequiredQty("");
+    setLeadRequiredUnit("kg");
     setLeadEstimatedValue("");
     setLeadSource("WhatsApp");
     setLeadReferrer("");
@@ -984,7 +988,11 @@ export function ModuleWorkspace({
       email: leadEmail,
       gstin: leadGstin,
       city: leadCity,
-      productInterest: leadProductInterest,
+      productInterest: leadRequiredQty.trim()
+        ? leadProductInterest
+          ? `${leadProductInterest} (Qty: ${leadRequiredQty.trim()} ${leadRequiredUnit})`
+          : `Qty: ${leadRequiredQty.trim()} ${leadRequiredUnit}`
+        : leadProductInterest,
       estimatedValue: parseFloat(leadEstimatedValue) || undefined,
       source: leadSource,
       leadType: leadType,
@@ -3607,7 +3615,19 @@ export function ModuleWorkspace({
       {!(module === "inventory" && (isSuperAdmin || isSupervisor)) &&
         !(module === "field-visits" && tab === "Log a visit") && (
         <>
-          <h1 className="page-heading">{titles[module]}</h1>
+          <div className="flex items-center justify-between gap-3">
+            <h1 className="page-heading">{titles[module]}</h1>
+            {module === "leads" && (
+              <Button
+                size="sm"
+                onClick={() => setLeadModal(true)}
+                className="h-9 gap-2 px-4 text-xs font-bold shrink-0 shadow-xs cursor-pointer"
+              >
+                <Plus className="size-3.5" />
+                Add Lead
+              </Button>
+            )}
+          </div>
           {currentUser?.role !== "sales" && currentUser?.role !== "logistics" && (
             <p className="mt-2 text-xs text-muted-foreground">{subtitle[module]}</p>
           )}
@@ -3618,6 +3638,7 @@ export function ModuleWorkspace({
       module !== "customers" &&
       module !== "suppliers" &&
       module !== "field-visits" &&
+      module !== "leads" &&
       !(module === "inventory" && (isSuperAdmin || isSupervisor)) ? (
         <div className="flex items-center justify-between gap-4 flex-wrap my-6 pb-3 border-b border-border/60">
           <div className="flex items-center gap-3 flex-wrap">
@@ -3739,18 +3760,11 @@ export function ModuleWorkspace({
               );
             })}
           </div>
-          {module === "leads" && (
-            <Button
-              size="sm"
-              onClick={() => setLeadModal(true)}
-              className="h-9 gap-2 px-4 text-xs font-bold shrink-0 shadow-xs cursor-pointer"
-            >
-              <Plus className="size-3.5" />
-              Add Lead
-            </Button>
-          )}
         </div>
-      ) : module === "customers" || module === "suppliers" || module === "field-visits" ? (
+      ) : module === "customers" ||
+        module === "suppliers" ||
+        module === "field-visits" ||
+        module === "leads" ? (
         <div className="mt-4" />
       ) : (
         <div className="mt-6" />
@@ -6698,121 +6712,41 @@ export function ModuleWorkspace({
         )
       ) : module === "leads" ? (
         <>
-          {/* TOP KPI METRICS RIBBON */}
-          <div className="leads-kpi-grid">
-            <div className="leads-kpi-card">
-              <div className="flex items-center justify-between gap-2 text-muted-foreground mb-1.5 min-w-0">
-                <span className="text-[11px] font-bold uppercase tracking-wider truncate">
-                  Active Deals
-                </span>
-                <Users className="size-4 text-primary shrink-0" />
-              </div>
-              <p className="leads-kpi-value text-2xl font-black text-foreground">
-                {dbLeads.length}
-              </p>
-              <span className="text-[11px] font-medium text-muted-foreground mt-0.5 block">
-                Commercial prospects
-              </span>
-            </div>
-
-            <div className="leads-kpi-card">
-              <div className="flex items-center justify-between gap-2 text-muted-foreground mb-1.5 min-w-0">
-                <span className="text-[11px] font-bold uppercase tracking-wider truncate">
-                  Pipeline Value
-                </span>
-                <TrendingUp className="size-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
-              </div>
-              <p className="leads-kpi-value text-2xl font-black text-emerald-600 dark:text-emerald-400">
-                {money(dbLeads.reduce((sum, l) => sum + (Number(l.estimated_value) || 0), 0))}
-              </p>
-              <span className="text-[11px] font-medium text-muted-foreground mt-0.5 block">
-                Estimated potential
-              </span>
-            </div>
-
-            <div className="leads-kpi-card">
-              <div className="flex items-center justify-between gap-2 text-muted-foreground mb-1.5 min-w-0">
-                <span className="text-[11px] font-bold uppercase tracking-wider truncate">
-                  In Qualification
-                </span>
-                <Target className="size-4 text-amber-500 shrink-0" />
-              </div>
-              <p className="leads-kpi-value text-2xl font-black text-foreground">
-                {dbLeads.filter((l) => l.stage === "Qualified" || l.stage === "Follow-up").length}
-              </p>
-              <span className="text-[11px] font-medium text-muted-foreground mt-0.5 block">
-                Qualified & follow-ups
-              </span>
-            </div>
-
-            <div className="leads-kpi-card">
-              <div className="flex items-center justify-between gap-2 text-muted-foreground mb-1.5 min-w-0">
-                <span className="text-[11px] font-bold uppercase tracking-wider truncate">
-                  Converted
-                </span>
-                <UserCheck className="size-4 text-primary shrink-0" />
-              </div>
-              <div className="flex flex-wrap items-baseline gap-2 min-w-0">
-                <p className="leads-kpi-value text-2xl font-black text-foreground">
-                  {dbLeads.filter((l) => l.stage === "Converted").length}
-                </p>
-                <span className="text-xs font-bold text-primary">
-                  (
-                  {dbLeads.length > 0
-                    ? Math.round(
-                        (dbLeads.filter((l) => l.stage === "Converted").length / dbLeads.length) *
-                          100,
-                      )
-                    : 0}
-                  %)
-                </span>
-              </div>
-              <span className="text-[11px] font-medium text-muted-foreground mt-0.5 block">
-                Active customers
-              </span>
-            </div>
-          </div>
-
           {/* SEARCH, FILTER & ACTION CONTROLS */}
-          <div className="leads-toolbar mb-6 flex flex-wrap items-center justify-between gap-3 p-3 sm:p-3.5 rounded-2xl border border-border bg-card shadow-2xs">
-            <div className="flex flex-wrap items-center gap-2 sm:gap-3 flex-1 min-w-0 w-full">
-              <div className="relative flex-1 min-w-0 w-full sm:max-w-md">
-                <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground" />
-                <input
-                  type="text"
-                  placeholder="Search leads…"
-                  value={leadSearchQuery}
-                  onChange={(e) => setLeadSearchQuery(e.target.value)}
-                  className="w-full text-xs font-medium pl-9 pr-8 h-9 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
-                />
-                {leadSearchQuery && (
-                  <button
-                    type="button"
-                    onClick={() => setLeadSearchQuery("")}
-                    className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                )}
-              </div>
-
-              <div className="flex items-center gap-1.5 min-w-0">
-                <Filter className="size-3.5 text-muted-foreground shrink-0" />
-                <select
-                  value={leadPriorityFilter}
-                  onChange={(e) => setLeadPriorityFilter(e.target.value)}
-                  className="text-xs font-medium h-9 px-2.5 rounded-lg border border-border bg-background max-w-full"
+          <div className="leads-toolbar mb-4 flex flex-wrap items-center gap-2.5 p-3 rounded-2xl border border-border bg-card shadow-2xs">
+            <div className="relative flex-1 min-w-[160px]">
+              <Search className="absolute left-3 top-2.5 size-4 text-muted-foreground pointer-events-none" />
+              <input
+                type="text"
+                placeholder="Search leads…"
+                value={leadSearchQuery}
+                onChange={(e) => setLeadSearchQuery(e.target.value)}
+                className="w-full text-xs font-medium pl-9 pr-8 h-9 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
+              />
+              {leadSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setLeadSearchQuery("")}
+                  className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
                 >
-                  <option value="All">All Priorities</option>
-                  <option value="High">High Priority</option>
-                  <option value="Medium">Medium Priority</option>
-                  <option value="Low">Low Priority</option>
-                </select>
-              </div>
+                  <X className="size-3.5" />
+                </button>
+              )}
             </div>
 
-            <div className="flex items-center gap-2.5 w-full sm:w-auto justify-between sm:justify-end min-w-0">
-              <span className="text-xs text-muted-foreground font-medium truncate">
+            <div className="flex items-center gap-2 shrink-0">
+              <select
+                aria-label="Filter by priority"
+                value={leadPriorityFilter}
+                onChange={(e) => setLeadPriorityFilter(e.target.value)}
+                className="text-xs font-medium h-9 px-2.5 rounded-lg border border-border bg-background"
+              >
+                <option value="All">All Priorities</option>
+                <option value="High">High Priority</option>
+                <option value="Medium">Medium Priority</option>
+                <option value="Low">Low Priority</option>
+              </select>
+              <span className="text-xs text-muted-foreground font-medium whitespace-nowrap">
                 {
                   dbLeads.filter((l) => {
                     const matchesSearch =
@@ -6825,187 +6759,78 @@ export function ModuleWorkspace({
                     return matchesSearch && matchesPriority;
                   }).length
                 }{" "}
-                leads found
+                leads
               </span>
-              <Button
-                size="sm"
-                className="h-9 px-3 sm:px-4 text-xs font-semibold shrink-0"
-                onClick={() => setLeadModal(true)}
-              >
-                <Plus className="size-4 mr-1" />
-                Add lead
-              </Button>
             </div>
           </div>
 
-          {/* EMPTY LEADS PROMPT BANNER — only after leads finished loading */}
-          {!loading && dbLeads.length === 0 && (
-            <div className="p-8 mb-6 text-center rounded-2xl border border-dashed border-border bg-card/60 space-y-3">
-              <Users className="size-10 mx-auto text-muted-foreground opacity-50" />
-              <div>
-                <h3 className="font-bold text-sm text-foreground">No Leads in Pipeline</h3>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Start by capturing prospective customer inquiries and commercial demands.
-                </p>
-              </div>
-              <Button size="sm" onClick={() => setLeadModal(true)} className="h-9 px-4 text-xs">
-                <Plus className="size-4 mr-1.5" />
-                Add Your First Lead
-              </Button>
-            </div>
-          )}
+          {/* SIMPLE LEADS LIST */}
+          {(() => {
+            const visibleLeads = dbLeads.filter((l) => {
+              const matchesSearch =
+                !leadSearchQuery ||
+                `${l.business_name} ${l.contact_person} ${l.phone} ${l.city} ${l.product_interest} ${l.requirement || ""}`
+                  .toLowerCase()
+                  .includes(leadSearchQuery.toLowerCase());
+              const matchesPriority =
+                leadPriorityFilter === "All" || l.priority === leadPriorityFilter;
+              return matchesSearch && matchesPriority;
+            });
 
-          {/* MOBILE / FIELD STAGE FILTER PILLS */}
-          <div className="leads-stage-pills flex md:hidden items-center gap-1.5 overflow-x-auto pb-2 mb-4 scrollbar-none">
-            {["All", "New", "Qualified", "Follow-up", "Converted"].map((stage) => {
-              const count =
-                stage === "All" ? dbLeads.length : dbLeads.filter((l) => l.stage === stage).length;
-              const isSelected = leadMobileStageFilter === stage;
+            if (!loading && visibleLeads.length === 0) {
               return (
-                <button
-                  key={stage}
-                  type="button"
-                  onClick={() => setLeadMobileStageFilter(stage)}
-                  className={`px-3 py-1.5 rounded-full text-xs font-bold whitespace-nowrap transition-all ${
-                    isSelected
-                      ? "bg-primary text-primary-foreground shadow-xs"
-                      : "bg-muted text-muted-foreground hover:bg-muted/80"
-                  }`}
-                >
-                  {stage} ({count})
-                </button>
+                <div className="p-8 text-center rounded-2xl border border-dashed border-border bg-card/60 space-y-2">
+                  <Users className="size-10 mx-auto text-muted-foreground opacity-50" />
+                  <h3 className="font-bold text-sm text-foreground">
+                    {dbLeads.length === 0 ? "No leads yet" : "No matching leads"}
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    {dbLeads.length === 0
+                      ? "Use Add Lead above to track a new lead."
+                      : "Try clearing your search or priority filter."}
+                  </p>
+                </div>
               );
-            })}
-          </div>
+            }
 
-          {/* PIPELINE KANBAN VIEW — always for leads (ignore stale tabs from other modules) */}
-          <div className="leads-pipeline-grid">
-              {["New", "Qualified", "Follow-up", "Converted"]
-                .filter(
-                  (stage) => leadMobileStageFilter === "All" || leadMobileStageFilter === stage,
-                )
-                .map((stage) => {
-                  const stageLeads = dbLeads.filter((l) => {
-                    const matchesStage = l.stage === stage;
-                    const matchesSearch =
-                      !leadSearchQuery ||
-                      `${l.business_name} ${l.contact_person} ${l.phone} ${l.city} ${l.product_interest} ${l.requirement || ""}`
-                        .toLowerCase()
-                        .includes(leadSearchQuery.toLowerCase());
-                    const matchesPriority =
-                      leadPriorityFilter === "All" || l.priority === leadPriorityFilter;
-                    return matchesStage && matchesSearch && matchesPriority;
-                  });
-
-                  const stageTotalVal = stageLeads.reduce(
-                    (sum, l) => sum + (Number(l.estimated_value) || 0),
-                    0,
-                  );
-
-                  const stageTone =
-                    stage === "New"
-                      ? "tone-new"
-                      : stage === "Qualified"
-                        ? "tone-qualified"
-                        : stage === "Follow-up"
-                          ? "tone-followup"
-                          : "tone-converted";
-
-                  return (
-                    <div key={stage} className={`lead-column ${stageTone}`}>
-                      <div
-                        className={`lead-column-header ${
-                          leadMobileStageFilter === stage ? "is-active" : ""
+            return (
+              <section className="panel">
+                <div className="divide-y divide-border">
+                  {visibleLeads.map((l) => (
+                    <div
+                      key={l.id || l.business_name}
+                      onClick={() => setSelectedLeadDetails(l)}
+                      className="flex items-center justify-between gap-3 px-4 sm:px-[23px] py-3.5 cursor-pointer hover:bg-muted/40 transition-colors"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-foreground truncate">
+                          {l.business_name}
+                        </p>
+                        <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                          {l.contact_person}
+                          {l.city ? ` · ${l.city}` : ""}
+                          {Number(l.estimated_value) > 0
+                            ? ` · ${money(l.estimated_value || 0)}`
+                            : ""}
+                        </p>
+                      </div>
+                      <span
+                        className={`status shrink-0 ${
+                          l.stage === "Converted"
+                            ? "success"
+                            : l.stage === "Follow-up" || l.stage === "Qualified"
+                              ? "warning"
+                              : "brand"
                         }`}
-                        onClick={() =>
-                          setLeadMobileStageFilter(leadMobileStageFilter === stage ? "All" : stage)
-                        }
-                        title={`Click to filter by ${stage}`}
                       >
-                        <div className="lead-column-title">
-                          <span className="lead-column-dot" />
-                          <h3>{stage}</h3>
-                          <span className="lead-column-count">{stageLeads.length}</span>
-                        </div>
-                        <span className="lead-column-value">{money(stageTotalVal)}</span>
-                      </div>
-
-                      <div className="lead-column-body">
-                        {stageLeads.map((l) => {
-                          const priorityClass =
-                            l.priority === "High" || l.priority === "Urgent"
-                              ? "lead-priority-high"
-                              : l.priority === "Medium"
-                                ? "lead-priority-medium"
-                                : "lead-priority-low";
-
-                          return (
-                            <div
-                              key={l.id || l.business_name}
-                              className="lead-card lead-card-summary cursor-pointer hover:border-primary/50 hover:shadow-md transition-all"
-                              onClick={() => setSelectedLeadDetails(l)}
-                              title="Click to view full lead details"
-                            >
-                              <div className="flex items-center justify-between gap-2">
-                                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-muted-foreground uppercase tracking-wider bg-muted/60 px-2 py-0.5 rounded-md">
-                                  <Building2 className="size-3 text-primary" />
-                                  {companies.find((c) => c.id === l.company_id)?.short || "Firm"}
-                                </span>
-                                <span className={`lead-priority-badge ${priorityClass}`}>
-                                  {l.priority || "Medium"}
-                                </span>
-                              </div>
-
-                              <div>
-                                <h4 className="text-sm font-extrabold text-foreground tracking-tight leading-snug">
-                                  {l.business_name}
-                                </h4>
-                                <p className="text-xs text-muted-foreground mt-0.5 font-medium truncate">
-                                  {l.contact_person}
-                                  {l.city ? ` · ${l.city}` : ""}
-                                </p>
-                              </div>
-
-                              <div className="flex items-end justify-between gap-2 border-t border-border pt-2">
-                                <div className="min-w-0">
-                                  <span className="text-[10px] text-muted-foreground uppercase font-bold block">
-                                    Deal value
-                                  </span>
-                                  <span className="text-sm font-black text-foreground">
-                                    {money(l.estimated_value || 0)}
-                                  </span>
-                                </div>
-                                {l.stage === "Converted" ? (
-                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
-                                    <Check className="size-3" />
-                                    Converted
-                                  </span>
-                                ) : (
-                                  <span className="text-[10px] font-semibold text-muted-foreground">
-                                    View details →
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-
-                        {stageLeads.length === 0 && (
-                          <button
-                            type="button"
-                            onClick={() => setLeadModal(true)}
-                            className="lead-empty"
-                            title={`Add a lead in ${stage}`}
-                          >
-                            <Plus className="size-4" />
-                            <span>Add {stage.toLowerCase()} lead</span>
-                          </button>
-                        )}
-                      </div>
+                        {l.stage || "New"}
+                      </span>
                     </div>
-                  );
-                })}
-          </div>
+                  ))}
+                </div>
+              </section>
+            );
+          })()}
         </>
       ) : module === "logistics" ? (
         <>
@@ -9462,15 +9287,6 @@ export function ModuleWorkspace({
                   </label>
                 )}
                 <label className="drawer-field">
-                  Email
-                  <input
-                    type="email"
-                    value={leadEmail}
-                    onChange={(e) => setLeadEmail(e.target.value)}
-                    placeholder="contact@business.com"
-                  />
-                </label>
-                <label className="drawer-field">
                   GSTIN
                   <input
                     value={leadGstin}
@@ -9478,80 +9294,79 @@ export function ModuleWorkspace({
                     placeholder="29AAAAA0000A1Z5"
                   />
                 </label>
-                <label className="drawer-field">
-                  City
-                  <input
-                    value={leadCity}
-                    onChange={(e) => setLeadCity(e.target.value)}
-                    placeholder="Bengaluru"
-                  />
-                </label>
-                <label className="drawer-field">
-                  Product interest
-                  <input
-                    value={leadProductInterest}
-                    onChange={(e) => setLeadProductInterest(e.target.value)}
-                    placeholder="e.g. Skimmed Milk Powder"
-                  />
-                </label>
-                <label className="drawer-field">
-                  Estimated value (₹)
-                  <input
-                    type="number"
-                    value={leadEstimatedValue}
-                    onChange={(e) => setLeadEstimatedValue(e.target.value)}
-                    placeholder="50000"
-                  />
-                </label>
-                <label className="drawer-field">
-                  Source
-                  <select value={leadSource} onChange={(e) => setLeadSource(e.target.value)}>
-                    <option value="WhatsApp">WhatsApp</option>
-                    <option value="Referral">Referral</option>
-                    <option value="Field Visit">Field Visit</option>
-                    <option value="Cold Call">Cold Call</option>
-                    <option value="Website">Website</option>
-                    <option value="Exhibition">Exhibition</option>
-                    <option value="Direct Inquiry">Direct Inquiry</option>
-                  </select>
-                </label>
-                {leadSource === "Referral" && (
-                  <label className="drawer-field">
-                    Referred by <span className="text-destructive">*</span>
+                <div className="grid grid-cols-[1fr_90px_86px] gap-2.5">
+                  <div className="drawer-field min-w-0">
+                    <span>Product interest</span>
+                    <SearchableSelect
+                      value={leadProductInterest}
+                      placeholder="Select product"
+                      searchPlaceholder="Search inventory..."
+                      emptyText="No matching products"
+                      onChange={(val) => {
+                        setLeadProductInterest(val);
+                        const prod = dbProducts.find((p) => p.name === val);
+                        if (prod?.unit) setLeadRequiredUnit(prod.unit);
+                      }}
+                      options={dbProducts.map((p) => ({
+                        value: p.name,
+                        label: p.name,
+                        sublabel: [p.sku, p.category].filter(Boolean).join(" \u00b7 ") || undefined,
+                        keywords: `${p.name} ${p.sku || ""} ${p.category || ""}`,
+                      }))}
+                    />
+                  </div>
+                  <label className="drawer-field min-w-0">
+                    Req. qty
                     <input
-                      required
-                      value={leadReferrer}
-                      onChange={(e) => setLeadReferrer(e.target.value)}
-                      placeholder="Who referred this lead"
+                      type="number"
+                      min={1}
+                      value={leadRequiredQty}
+                      onChange={(e) => setLeadRequiredQty(e.target.value)}
+                      placeholder="50"
                     />
                   </label>
-                )}
-                <label className="drawer-field">
-                  Type
-                  <select value={leadType} onChange={(e) => setLeadType(e.target.value)}>
-                    <option value="Wholesale">Wholesale</option>
-                    <option value="Retailer">Retailer</option>
-                    <option value="Distributor">Distributor</option>
-                    <option value="Manufacturer">Manufacturer</option>
-                    <option value="Institutional">Institutional</option>
-                  </select>
-                </label>
-                <label className="drawer-field">
-                  Priority
-                  <select value={leadPriority} onChange={(e) => setLeadPriority(e.target.value)}>
-                    <option value="Low">Low</option>
-                    <option value="Medium">Medium</option>
-                    <option value="High">High</option>
-                    <option value="Urgent">Urgent</option>
-                  </select>
-                </label>
+                  <label className="drawer-field min-w-0">
+                    Unit
+                    <select
+                      value={leadRequiredUnit}
+                      onChange={(e) => setLeadRequiredUnit(e.target.value)}
+                    >
+                      <option value="kg">kg</option>
+                      <option value="L">L</option>
+                      <option value="pcs">pcs</option>
+                      <option value="box">box</option>
+                      <option value="bag">bag</option>
+                      <option value="MT">MT</option>
+                      <option value="pack">pack</option>
+                    </select>
+                  </label>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="drawer-field min-w-0">
+                    City
+                    <input
+                      value={leadCity}
+                      onChange={(e) => setLeadCity(e.target.value)}
+                      placeholder="Bengaluru"
+                    />
+                  </label>
+                  <label className="drawer-field min-w-0">
+                    Estimated value (₹)
+                    <input
+                      type="number"
+                      value={leadEstimatedValue}
+                      onChange={(e) => setLeadEstimatedValue(e.target.value)}
+                      placeholder="50000"
+                    />
+                  </label>
+                </div>
                 <label className="drawer-field">
                   Notes
                   <textarea
                     rows={3}
                     value={leadNotes}
                     onChange={(e) => setLeadNotes(e.target.value)}
-                    placeholder="Optional notes"
+                    placeholder="Additional notes or conversation summary..."
                   />
                 </label>
               </>

@@ -13,7 +13,11 @@ import {
   Package,
   ShoppingBag,
   SlidersHorizontal,
+  Target,
+  TrendingUp,
   Truck,
+  UserCheck,
+  Users,
   Wallet,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -42,6 +46,7 @@ import {
   fetchProducts,
   fetchDeliveries,
   fetchPurchaseOrders,
+  fetchLeads,
   availableFromStock,
   outboundOrderedQuantity,
   poPaymentRemaining,
@@ -50,6 +55,7 @@ import {
   type DBInvoice,
   type DBProduct,
   type DBPurchaseOrder,
+  type DBLead,
 } from "@/lib/erp-service";
 
 function orderDayKey(order: DBOrder) {
@@ -120,6 +126,7 @@ function Overview() {
   const [dbInvoices, setDbInvoices] = useState<DBInvoice[]>([]);
   const [dbProducts, setDbProducts] = useState<DBProduct[]>([]);
   const [dbPOs, setDbPOs] = useState<DBPurchaseOrder[]>([]);
+  const [dbLeads, setDbLeads] = useState<DBLead[]>([]);
 
   const reloadOverview = useCallback(() => {
     Promise.all([
@@ -128,18 +135,21 @@ function Overview() {
       fetchProducts(company),
       fetchDeliveries(company),
       fetchPurchaseOrders(company),
-    ]).then(([orders, invoices, products, deliveries, purchaseOrders]) => {
+      fetchLeads(company),
+    ]).then(([orders, invoices, products, deliveries, purchaseOrders, leads]) => {
       const scoped = scopeForDriver(currentUser, {
         orders,
         invoices,
         products,
         deliveries,
         purchaseOrders,
+        leads,
       });
       setDbOrders(scoped.orders ?? []);
       setDbInvoices(scoped.invoices ?? []);
       setDbProducts(scoped.products ?? []);
       setDbPOs(scoped.purchaseOrders ?? []);
+      setDbLeads((scoped.leads as DBLead[] | undefined) ?? []);
     });
   }, [company, currentUser]);
 
@@ -386,23 +396,81 @@ function Overview() {
               <span className="trend">Payments due</span>
             </div>
           )}
+          {hasPermission("leads.view") && (
+            <>
+              <div className="kpi">
+                <div className="flex items-center justify-between gap-2 min-w-0">
+                  <p className="text-xs font-semibold text-muted-foreground truncate">
+                    Active deals
+                  </p>
+                  <Users className="kpi-icon shrink-0" />
+                </div>
+                <p className="kpi-value">{dbLeads.length}</p>
+                <span className="trend">Commercial prospects</span>
+              </div>
+              <div className="kpi">
+                <div className="flex items-center justify-between gap-2 min-w-0">
+                  <p className="text-xs font-semibold text-muted-foreground truncate">
+                    Pipeline value
+                  </p>
+                  <TrendingUp className="kpi-icon shrink-0" />
+                </div>
+                <p className="kpi-value">
+                  {money(dbLeads.reduce((sum, l) => sum + (Number(l.estimated_value) || 0), 0))}
+                </p>
+                <span className="trend">Estimated potential</span>
+              </div>
+              <div className="kpi">
+                <div className="flex items-center justify-between gap-2 min-w-0">
+                  <p className="text-xs font-semibold text-muted-foreground truncate">
+                    In qualification
+                  </p>
+                  <Target className="kpi-icon shrink-0" />
+                </div>
+                <p className="kpi-value">
+                  {dbLeads.filter((l) => l.stage === "Qualified" || l.stage === "Follow-up").length}
+                </p>
+                <span className="trend">Qualified & follow-ups</span>
+              </div>
+              <div className="kpi">
+                <div className="flex items-center justify-between gap-2 min-w-0">
+                  <p className="text-xs font-semibold text-muted-foreground truncate">Converted</p>
+                  <UserCheck className="kpi-icon shrink-0" />
+                </div>
+                <p className="kpi-value">
+                  {dbLeads.filter((l) => l.stage === "Converted").length}{" "}
+                  <span className="text-xs font-bold text-primary">
+                    (
+                    {dbLeads.length > 0
+                      ? Math.round(
+                          (dbLeads.filter((l) => l.stage === "Converted").length / dbLeads.length) *
+                            100,
+                        )
+                      : 0}
+                    %)
+                  </span>
+                </p>
+                <span className="trend">Active customers</span>
+              </div>
+            </>
+          )}
         </div>
 
         <section className="panel">
-          <div className="panel-head flex-wrap gap-3">
+          <div className="panel-head flex-wrap items-center justify-between gap-2.5">
             <div className="min-w-0">
               <h2 className="panel-title truncate">Recent orders</h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">
+              <p className="mt-0.5 text-xs text-muted-foreground truncate">
                 {salesRecentOrders.length} order{salesRecentOrders.length === 1 ? "" : "s"} ·{" "}
                 {salesRangeLabel}
               </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <div className="flex items-center gap-2 shrink-0">
               <select
                 aria-label="Filter recent orders by date"
                 value={salesOrderRange}
                 onChange={(e) => setSalesOrderRange(e.target.value as SalesOrderRange)}
-                className="toolbar-select rounded-md border border-border bg-background text-foreground"
+                className="h-8 rounded-md border border-border bg-background px-2.5 text-xs font-medium text-foreground"
               >
                 <option value="today">Today</option>
                 <option value="5days">Last 5 days</option>
@@ -413,7 +481,7 @@ function Overview() {
                 asChild
                 variant="outline"
                 size="sm"
-                className="h-8 gap-1.5 text-xs font-semibold"
+                className="h-8 gap-1.5 px-2.5 text-xs font-semibold shrink-0"
               >
                 <Link to="/orders">
                   All orders
@@ -492,14 +560,6 @@ function Overview() {
             <TaskWorkspace compact />
           </section>
         </div>
-
-        <footer className="mt-6 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
-          <span className="flex items-center gap-2">
-            <span className="size-1.5 rounded-full bg-success" />
-            Sales desk · Orders · Visits · Collections
-          </span>
-          <span className="font-medium">Salesperson dashboard</span>
-        </footer>
       </main>
     );
   }

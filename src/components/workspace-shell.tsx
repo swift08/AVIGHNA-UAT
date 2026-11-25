@@ -281,6 +281,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
   }, [company, currentUser]);
 
   // Change password local state
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
   const [currentPass, setCurrentPass] = useState("");
   const [newPass, setNewPass] = useState("");
   const [confirmPass, setConfirmPass] = useState("");
@@ -634,32 +635,42 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
             </Button>
             <span className="mx-1 h-5 border-l border-border" />
 
-            {/* Logout button in topbar */}
-            {currentUser && (
-              <Button
-                variant="ghost"
-                size="icon"
-                title="Log out"
-                aria-label="Log out"
-                onClick={logout}
-                className="text-muted-foreground hover:text-danger hover:bg-danger/10"
-              >
-                <LogOut className="size-4" />
-              </Button>
-            )}
-
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => {
-                setProfileTab("profile");
-                setNotice("profile");
-              }}
-              aria-label="Your profile"
-              title={currentUser ? `${currentUser.name} (${currentUser.roleName})` : "Profile"}
-            >
-              <span className="avatar">{currentUser?.initials || "??"}</span>
-            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  aria-label="Your profile"
+                  title={currentUser ? `${currentUser.name} (${currentUser.roleName})` : "Profile"}
+                >
+                  <span className="avatar">{currentUser?.initials || "??"}</span>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48 rounded-md">
+                <DropdownMenuItem
+                  onClick={() => {
+                    setPassError("");
+                    setPassSuccess("");
+                    setCurrentPass("");
+                    setNewPass("");
+                    setConfirmPass("");
+                    setPasswordModalOpen(true);
+                  }}
+                  className="cursor-pointer gap-2 text-xs font-medium"
+                >
+                  <KeyRound className="size-3.5" />
+                  Change password
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={logout}
+                  className="cursor-pointer gap-2 text-xs font-medium text-danger focus:text-danger"
+                >
+                  <LogOut className="size-3.5" />
+                  Log out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </header>
         {children}
@@ -755,6 +766,101 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
             </>
           )}
         </nav>
+
+        {/* CHANGE PASSWORD POPUP */}
+        {passwordModalOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={() => setPasswordModalOpen(false)}
+          >
+            <div
+              className="w-full max-w-sm rounded-xl border border-border bg-card p-5 shadow-lg space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-bold flex items-center gap-1.5">
+                  <Lock className="size-4 text-primary" />
+                  Change password
+                </h3>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  aria-label="Close"
+                  onClick={() => setPasswordModalOpen(false)}
+                >
+                  <X className="size-4" />
+                </Button>
+              </div>
+
+              {passSuccess && (
+                <div className="flex items-center gap-2 rounded-lg border border-success/30 bg-success/10 p-2.5 text-xs text-success">
+                  <CheckCircle2 className="size-4 shrink-0" />
+                  <span>{passSuccess}</span>
+                </div>
+              )}
+
+              {passError && (
+                <div className="flex items-center gap-2 rounded-lg border border-danger/30 bg-danger/10 p-2.5 text-xs text-danger">
+                  <AlertCircle className="size-4 shrink-0" />
+                  <span>{passError}</span>
+                </div>
+              )}
+
+              <form onSubmit={handleChangePassword} className="space-y-3">
+                <div>
+                  <label className="block text-xs font-semibold text-muted-foreground mb-1">
+                    Current Password
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    placeholder="Enter current password"
+                    value={currentPass}
+                    onChange={(e) => setCurrentPass(e.target.value)}
+                    className="w-full text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-muted-foreground mb-1">
+                    New Password (min 6 characters)
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    placeholder="Enter new password"
+                    value={newPass}
+                    onChange={(e) => setNewPass(e.target.value)}
+                    className="w-full text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-muted-foreground mb-1">
+                    Confirm New Password
+                  </label>
+                  <input
+                    type="password"
+                    required
+                    minLength={6}
+                    placeholder="Confirm new password"
+                    value={confirmPass}
+                    onChange={(e) => setConfirmPass(e.target.value)}
+                    className="w-full text-xs"
+                  />
+                </div>
+                <Button
+                  type="submit"
+                  disabled={passLoading}
+                  className="w-full text-xs font-semibold h-9"
+                >
+                  <KeyRound className="mr-1.5 size-3.5" />
+                  {passLoading ? "Updating..." : "Update Password"}
+                </Button>
+              </form>
+            </div>
+          </div>
+        )}
 
         {/* MOBILE FULL DRAWER NAVIGATION SHEET */}
         <Sheet open={mobileMenuOpen} onOpenChange={setMobileMenuOpen}>
