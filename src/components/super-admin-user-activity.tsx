@@ -20,6 +20,11 @@ import { ROLE_NAMES, type RoleType } from "@/lib/auth-service";
 import { fetchAuditLogs, type DBAuditLog } from "@/lib/erp-service";
 import { listStaffLogins, type StaffLogin } from "@/lib/login-admin";
 import { companies } from "@/lib/workspace-data";
+import {
+  AUDIT_CATEGORIES,
+  classifyAuditLog,
+  type AuditCategory,
+} from "./audit-logs-panel";
 
 type DirectoryUser = {
   id: string;
@@ -85,6 +90,7 @@ export function SuperAdminUserActivityButton() {
   const [users, setUsers] = useState<DirectoryUser[]>([]);
   const [logs, setLogs] = useState<DBAuditLog[]>([]);
   const [selected, setSelected] = useState<DirectoryUser | null>(null);
+  const [category, setCategory] = useState<AuditCategory>("all");
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -145,8 +151,10 @@ export function SuperAdminUserActivityButton() {
 
   const selectedActivity = useMemo(() => {
     if (!selected) return [];
-    return logs.filter((log) => matchesUser(log, selected));
-  }, [logs, selected]);
+    const userLogs = logs.filter((log) => matchesUser(log, selected));
+    if (category === "all") return userLogs;
+    return userLogs.filter((log) => classifyAuditLog(log) === category);
+  }, [logs, selected, category]);
 
   const activityCounts = useMemo(() => {
     const map = new Map<string, number>();
@@ -249,6 +257,22 @@ export function SuperAdminUserActivityButton() {
                     <Activity className="size-3" />
                     Activity
                   </p>
+                  <div className="flex flex-wrap gap-1">
+                    {AUDIT_CATEGORIES.map((cat) => (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => setCategory(cat.id)}
+                        className={`rounded-full border px-2 py-0.5 text-[10px] font-medium transition-colors cursor-pointer ${
+                          category === cat.id
+                            ? "border-primary bg-primary text-primary-foreground"
+                            : "border-border bg-background text-muted-foreground hover:bg-muted/60"
+                        }`}
+                      >
+                        {cat.label}
+                      </button>
+                    ))}
+                  </div>
                   {selectedActivity.length === 0 ? (
                     <p className="rounded-lg border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
                       No audit activity recorded for {selected.name} yet.

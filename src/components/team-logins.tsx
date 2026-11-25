@@ -3,9 +3,13 @@ import { Button } from "@/components/ui/button";
 import { companies } from "@/lib/workspace-data";
 import {
   ACCESS_FEATURES,
+  defaultFeaturesForRole,
   featureLabel,
   featuresCreatorCanAssign,
+  FIXED_STAFF_ROLES,
+  isFixedStaffRole,
   ROLE_NAMES,
+  rolesCreatorCanAssign,
   type RoleType,
 } from "@/lib/auth-service";
 import {
@@ -51,16 +55,21 @@ function StaffCard({
   onNotice: (message: string) => void;
 }) {
   const [features, setFeatures] = useState<string[]>(user.features || []);
+  const [role, setRole] = useState<RoleType>(
+    isFixedStaffRole(user.role) ? user.role : "sales",
+  );
   const [status, setStatus] = useState<StaffStatus>(user.status || "Active");
   const [password, setPassword] = useState("");
   const [files, setFiles] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const isPending = user.status === "Pending approval";
+  const roleLabel = ROLE_NAMES[role] || user.role;
 
   useEffect(() => {
     setStatus(user.status || "Active");
     setFeatures(user.features || []);
-  }, [user.status, user.features]);
+    setRole(isFixedStaffRole(user.role) ? user.role : "sales");
+  }, [user.status, user.features, user.role]);
 
   useEffect(() => {
     if (!owner || isPending) return;
@@ -135,9 +144,8 @@ function StaffCard({
       </div>
       <p className="text-xs text-muted-foreground break-all">{user.email}</p>
       <p className="text-[11px] font-medium text-foreground/80">
-        {user.features?.length
-          ? featureLabel(user.features)
-          : ROLE_NAMES[user.role as RoleType] || user.role}
+        {roleLabel}
+        {user.features?.length ? ` · ${featureLabel(user.features)}` : ""}
         {user.phone ? ` · ${user.phone}` : ""}
       </p>
       {isPending && (
@@ -189,13 +197,33 @@ function StaffCard({
             Manage access
           </summary>
           <div className="mt-3 grid gap-2">
-            <fieldset className="grid gap-2">
-              <legend className="text-xs font-semibold">Features</legend>
+            <label className="drawer-field !gap-1">
+              Base role (stays fixed)
+              <select
+                value={role}
+                disabled={busy}
+                aria-label={`Base role for ${user.name}`}
+                onChange={(e) => setRole(e.target.value as RoleType)}
+              >
+                {FIXED_STAFF_ROLES.map((r) => (
+                  <option key={r} value={r}>
+                    {ROLE_NAMES[r]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <fieldset className="grid gap-1.5">
+              <legend className="text-xs font-semibold mb-1">
+                Permission matrix (does not change role)
+              </legend>
               {ACCESS_FEATURES.map((feature) => (
-                <label key={feature.id} className="flex items-start gap-2 text-xs">
+                <label
+                  key={feature.id}
+                  className="flex items-start gap-2.5 rounded-lg border border-border/70 bg-card/60 px-2.5 py-2 text-xs hover:bg-muted/40 cursor-pointer"
+                >
                   <input
                     type="checkbox"
-                    className="mt-0.5"
+                    className="mt-0.5 size-4 shrink-0 !w-4 !h-4 accent-primary cursor-pointer"
                     checked={features.includes(feature.id)}
                     aria-label={`${feature.name} for ${user.name}`}
                     onChange={(e) =>
@@ -206,9 +234,11 @@ function StaffCard({
                       )
                     }
                   />
-                  <span>
-                    <span className="font-semibold">{feature.name}</span>
-                    <span className="block text-muted-foreground">{feature.description}</span>
+                  <span className="min-w-0 flex-1 text-left">
+                    <span className="block font-semibold text-foreground">{feature.name}</span>
+                    <span className="block text-muted-foreground leading-snug">
+                      {feature.description}
+                    </span>
                   </span>
                 </label>
               ))}
@@ -222,13 +252,18 @@ function StaffCard({
                 void run(
                   () =>
                     updateStaffLogin({
-                      data: { actorRole: "super_admin", userId: user.id, features },
+                      data: {
+                        actorRole: "super_admin",
+                        userId: user.id,
+                        role,
+                        features,
+                      },
                     }),
-                  `${user.name} can use ${featureLabel(features)}.`,
+                  `${user.name} stays ${ROLE_NAMES[role]} with ${featureLabel(features)}.`,
                 ).then((ok) => ok && onChanged())
               }
             >
-              Save features
+              Save role & features
             </Button>
 
             <label className="drawer-field !gap-1">
@@ -342,16 +377,27 @@ export function TeamLogins() {
   const owner = canManageStaff(currentUser?.role);
   const canPropose = canProposeStaff(currentUser?.role);
   const allowed = featuresCreatorCanAssign(currentUser?.role);
+  const assignableRoles = rolesCreatorCanAssign(currentUser?.role);
   const [users, setUsers] = useState<StaffLogin[]>([]);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [phone, setPhone] = useState("");
-  const [features, setFeatures] = useState<string[]>([]);
+  const [role, setRole] = useState<RoleType>(assignableRoles[0] || "sales");
+  const [features, setFeatures] = useState<string[]>(() =>
+    defaultFeaturesForRole(assignableRoles[0] || "sales").filter((id) =>
+      featuresCreatorCanAssign(currentUser?.role).includes(id),
+    ),
+  );
   const [companyId, setCompanyId] = useState("all");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [saving, setSaving] = useState(false);
+
+  const pickRole = (next: RoleType) => {
+    setRole(next);
+    setFeatures(defaultFeaturesForRole(next).filter((id) => allowed.includes(id)));
+  };
 
   const load = () => {
     listStaffLogins()
@@ -394,6 +440,7 @@ export function TeamLogins() {
           email,
           password,
           phone,
+          role,
           features,
           companyId,
         },
@@ -403,14 +450,14 @@ export function TeamLogins() {
       } else {
         setNotice(
           res.pending
-            ? `${res.email} sent to Super Admin for approval. They cannot sign in until approved.`
-            : `${res.email} can sign in now.`,
+            ? `${res.email} (${ROLE_NAMES[role]}) sent to Super Admin for approval. They cannot sign in until approved.`
+            : `${res.email} can sign in now as ${ROLE_NAMES[role]}.`,
         );
         setName("");
         setEmail("");
         setPassword("");
         setPhone("");
-        setFeatures([]);
+        pickRole(assignableRoles[0] || "sales");
         load();
       }
     } catch (err: unknown) {
@@ -426,8 +473,8 @@ export function TeamLogins() {
         <h3 className="text-sm font-bold">Team logins</h3>
         <p className="mt-1 text-xs text-muted-foreground">
           {owner
-            ? "Create a login ID and tick every feature that person should use. Approve supervisor requests before they can sign in."
-            : "Propose a login ID and tick the features they need. Super Admin must approve before the login becomes active."}
+            ? "Pick a fixed job role (Sales, Logistics, …), then tweak the permission matrix. Changing features never converts the role to Custom."
+            : "Propose a fixed job role and features. Super Admin must approve before the login becomes active."}
         </p>
       </div>
 
@@ -470,16 +517,32 @@ export function TeamLogins() {
             placeholder="+91 98450 33445"
           />
         </label>
+        <label className="drawer-field sm:col-span-2">
+          Base role
+          <select
+            required
+            value={role}
+            onChange={(e) => pickRole(e.target.value as RoleType)}
+          >
+            {assignableRoles.map((r) => (
+              <option key={r} value={r}>
+                {ROLE_NAMES[r]}
+              </option>
+            ))}
+          </select>
+        </label>
         <fieldset className="sm:col-span-2 grid gap-2 sm:grid-cols-2">
-          <legend className="text-xs font-semibold mb-1">Features</legend>
+          <legend className="text-xs font-semibold mb-1">
+            Permission matrix (optional extras — role stays {ROLE_NAMES[role]})
+          </legend>
           {ACCESS_FEATURES.filter((feature) => allowed.includes(feature.id)).map((feature) => (
             <label
               key={feature.id}
-              className="flex items-start gap-2 rounded-lg border border-border bg-card p-2.5 text-xs"
+              className="flex items-start gap-2.5 rounded-lg border border-border bg-card p-2.5 text-xs hover:bg-muted/40 cursor-pointer"
             >
               <input
                 type="checkbox"
-                className="mt-0.5"
+                className="mt-0.5 size-4 shrink-0 !w-4 !h-4 accent-primary cursor-pointer"
                 checked={features.includes(feature.id)}
                 onChange={(e) =>
                   setFeatures((current) =>
@@ -489,9 +552,11 @@ export function TeamLogins() {
                   )
                 }
               />
-              <span>
-                <span className="font-semibold text-foreground">{feature.name}</span>
-                <span className="block text-muted-foreground">{feature.description}</span>
+              <span className="min-w-0 flex-1 text-left">
+                <span className="block font-semibold text-foreground">{feature.name}</span>
+                <span className="block text-muted-foreground leading-snug">
+                  {feature.description}
+                </span>
               </span>
             </label>
           ))}

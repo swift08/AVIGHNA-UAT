@@ -321,16 +321,6 @@ function Overview() {
           <div className="kpi">
             <div className="flex items-center justify-between gap-2 min-w-0">
               <p className="text-xs font-semibold text-muted-foreground truncate">
-                Pending dispatch
-              </p>
-              <Truck className="kpi-icon shrink-0" />
-            </div>
-            <p className="kpi-value">{pendingDispatchCount}</p>
-            <span className="trend">Ready to move</span>
-          </div>
-          <div className="kpi">
-            <div className="flex items-center justify-between gap-2 min-w-0">
-              <p className="text-xs font-semibold text-muted-foreground truncate">
                 Awaiting approval
               </p>
               <Clock className="kpi-icon shrink-0" />
@@ -456,52 +446,6 @@ function Overview() {
             </div>
           )}
         </section>
-
-        <div className="mt-[22px] grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Button
-            asChild
-            variant="outline"
-            className="h-11 justify-between text-xs font-semibold px-4"
-          >
-            <Link to="/customers">
-              Customers
-              <ArrowRight className="size-3.5" />
-            </Link>
-          </Button>
-          <Button
-            asChild
-            variant="outline"
-            className="h-11 justify-between text-xs font-semibold px-4"
-          >
-            <Link to="/leads">
-              Leads
-              <ArrowRight className="size-3.5" />
-            </Link>
-          </Button>
-          {hasPermission("payments.record") ? (
-            <Button
-              asChild
-              variant="outline"
-              className="h-11 justify-between text-xs font-semibold px-4"
-            >
-              <Link to="/accounts">
-                Payments due
-                <ArrowRight className="size-3.5" />
-              </Link>
-            </Button>
-          ) : (
-            <Button
-              asChild
-              variant="outline"
-              className="h-11 justify-between text-xs font-semibold px-4"
-            >
-              <Link to="/field-visits">
-                Field visits
-                <ArrowRight className="size-3.5" />
-              </Link>
-            </Button>
-          )}
-        </div>
 
         <div className="mt-[22px]">
           <section className="panel">

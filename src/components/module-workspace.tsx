@@ -23,6 +23,7 @@ import {
   Phone,
   Play,
   Plus,
+  Upload,
   Search,
   ShieldAlert,
   ShoppingBag,
@@ -52,6 +53,7 @@ import {
 import { Navigate, useNavigate, useRouterState } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   Sheet,
   SheetContent,
@@ -61,7 +63,7 @@ import {
 } from "@/components/ui/sheet";
 import { useWorkspace } from "./workspace-provider";
 import { CompanyLogo } from "./workspace-shell";
-import { OrderTable, getOrderManager } from "./order-workspace";
+import { OrderTable, getOrderManager, unitConversionFactor } from "./order-workspace";
 import { TaskWorkspace } from "./task-workspace";
 import { SuppliersWorkspace } from "./suppliers-workspace";
 import { RevenueChart } from "./revenue-chart";
@@ -72,12 +74,18 @@ import {
   ConversionFunnelBarChart,
   ProductCategoryCharts,
 } from "./analytics-charts";
-import { companies, money as moneyFormat } from "@/lib/workspace-data";
+import { companies, money as moneyFormat, type CompanyId } from "@/lib/workspace-data";
 import { SYSTEM_USERS } from "@/lib/auth-service";
 import { scopeForDriver } from "@/lib/driver-scope";
 import { isFieldApp } from "@/lib/field-app";
 import { openMapsAt, parseMapCoords } from "@/lib/maps";
-import { captureLiveGps, takeLivePhoto } from "@/lib/live-capture";
+import {
+  captureLiveGps,
+  clearVisitCameraDraft,
+  consumeVisitCameraDraft,
+  saveVisitCameraDraft,
+  takeLivePhoto,
+} from "@/lib/live-capture";
 import { buildSalesInvoiceHtml, suggestSalesInvoiceNumber } from "@/lib/sales-invoice";
 import {
   buildPurchaseOrderHtml,
@@ -93,6 +101,7 @@ import {
 import { missingPhone, missingRequired } from "@/lib/form-required";
 import { listStaffLogins } from "@/lib/login-admin";
 import { TeamLogins } from "./team-logins";
+import { AuditLogsPanel } from "./audit-logs-panel";
 import { CoaImportButton, ProductBatchesPanel } from "./coa-import";
 import { getBatchCoaAccess, listProductBatches } from "@/lib/coa-service";
 import {
@@ -122,6 +131,7 @@ import {
   updateCustomer,
   fetchSuppliers,
   createProduct,
+  importStockExcelRows,
   inboundStock,
   updateProductStock,
   recordPayment,
@@ -142,6 +152,11 @@ import {
   createCreditNote,
   deleteCreditNote,
   updateCustomerCreditLimit,
+  fetchDealCostEntries,
+  createDealCostEntry,
+  deleteDealCostEntry,
+  computeDealCost,
+  salesPriceAndQtyFromOrder,
   fetchVehicles,
   createVehicle,
   updateVehicle,
@@ -162,6 +177,7 @@ import {
   type DBDelivery,
   type DBPayment,
   type DBCreditNote,
+  type DBDealCostEntry,
   type DBVehicle,
   type VehicleStatus,
 } from "@/lib/erp-service";
@@ -273,6 +289,24 @@ export function ModuleWorkspace({
     }
   };
 
+  const navigateToAddCustomer = () => {
+    if (typeof window !== "undefined") {
+      try {
+        sessionStorage.setItem("open_add_customer", "true");
+      } catch {
+        // Ignore session storage errors
+      }
+    }
+    try {
+      navigate({
+        to: "/customers",
+        search: { openAdd: "true" } as unknown as Record<string, string>,
+      });
+    } catch {
+      window.location.assign("/customers?openAdd=true");
+    }
+  };
+
   // Live state from Supabase
   const [dbOrders, setDbOrders] = useState<DBOrder[]>([]);
   const [dbProducts, setDbProducts] = useState<DBProduct[]>([]);
@@ -369,6 +403,26 @@ export function ModuleWorkspace({
 
   // Customer modal state (All 11 user fields)
   const [custModal, setCustModal] = useState(false);
+
+  useEffect(() => {
+    if (module !== "customers" || !hasPermission("customers.manage")) return;
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const fromQuery = params.get("openAdd") === "true";
+    let fromStorage = false;
+    try {
+      fromStorage = sessionStorage.getItem("open_add_customer") === "true";
+      if (fromStorage) sessionStorage.removeItem("open_add_customer");
+    } catch {
+      // Ignore session storage errors
+    }
+    if (fromQuery || fromStorage) {
+      setCustModal(true);
+      if (fromQuery) {
+        window.history.replaceState({}, "", "/customers");
+      }
+    }
+  }, [module, hasPermission]);
   const [custCompany, setCustCompany] = useState("asian");
   const [custLegalName, setCustLegalName] = useState("");
   const [custTradeName, setCustTradeName] = useState("");
@@ -422,8 +476,8 @@ export function ModuleWorkspace({
   // Inventory list search + product detail drawer
   const [inventorySearch, setInventorySearch] = useState("");
   const [inventoryStockFilter, setInventoryStockFilter] = useState<
-    "all" | "low" | "reorder" | "out"
-  >("all");
+    "in_stock" | "all" | "low" | "reorder" | "out"
+  >("in_stock");
   const [selectedInventoryProduct, setSelectedInventoryProduct] = useState<DBProduct | null>(null);
 
   // Product modal state
@@ -503,6 +557,20 @@ export function ModuleWorkspace({
     new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
   );
 
+  // Inline order booking state when visitPurpose === "Order booking"
+  const [visitOrderProductId, setVisitOrderProductId] = useState("");
+  const [visitOrderQty, setVisitOrderQty] = useState("1");
+  const [visitOrderUnit, setVisitOrderUnit] = useState("kg");
+  const [visitOrderPrice, setVisitOrderPrice] = useState("");
+  const [visitOrderGstRate, setVisitOrderGstRate] = useState("18");
+  const [visitOrderIsInterstate, setVisitOrderIsInterstate] = useState(false);
+  const [visitOrderTransportMode, setVisitOrderTransportMode] = useState<
+    "Logistics / Assigned Vehicle" | "Manufacturer Vehicle"
+  >("Logistics / Assigned Vehicle");
+  const [visitOrderDispatchDetails, setVisitOrderDispatchDetails] = useState("");
+  const [visitOrderTerms, setVisitOrderTerms] = useState("");
+  const [visitOrderSubmitting, setVisitOrderSubmitting] = useState(false);
+
   // Field visit Edit modal state (1-time edit for sales, full edit for superadmin/supervisor)
   const [editVisitModal, setEditVisitModal] = useState(false);
   const [editingVisit, setEditingVisit] = useState<DBFieldVisit | null>(null);
@@ -560,14 +628,9 @@ export function ModuleWorkspace({
   );
   const [dispatchTimeWindow, setDispatchTimeWindow] = useState("Morning (09:00 - 13:00)");
   const [vehicleNo, setVehicleNo] = useState("KA 01 AB 1024");
-  const [driverName, setDriverName] = useState("Mahesh Patel");
-  const [driverChoices, setDriverChoices] = useState<{ name: string; phone: string }[]>(
-    SYSTEM_USERS.filter((user) => user.role === "logistics").map((user) => ({
-      name: user.name,
-      phone: user.phone,
-    })),
-  );
-  const [driverPhone, setDriverPhone] = useState("+91 98450 33445");
+  const [driverName, setDriverName] = useState("");
+  const [driverChoices, setDriverChoices] = useState<{ name: string; phone: string }[]>([]);
+  const [driverPhone, setDriverPhone] = useState("");
 
   // Invoice viewer modal state
   const [invoiceViewModal, setInvoiceViewModal] = useState(false);
@@ -637,6 +700,18 @@ export function ModuleWorkspace({
   const [editCreditLimit, setEditCreditLimit] = useState("");
   const [editCreditDays, setEditCreditDays] = useState("");
   const [savingCreditLimit, setSavingCreditLimit] = useState(false);
+
+  // Deal cost sheet (PO ↔ sales order margin)
+  const [dbDealCosts, setDbDealCosts] = useState<DBDealCostEntry[]>([]);
+  const [dealPoId, setDealPoId] = useState("");
+  const [dealOrderId, setDealOrderId] = useState("");
+  const [dealBuyTransport, setDealBuyTransport] = useState("");
+  const [dealBuyLabor, setDealBuyLabor] = useState("");
+  const [dealBuyMisc, setDealBuyMisc] = useState("");
+  const [dealSellHandling, setDealSellHandling] = useState("");
+  const [dealSellMisc, setDealSellMisc] = useState("");
+  const [dealSellTransport, setDealSellTransport] = useState("");
+  const [savingDealCost, setSavingDealCost] = useState(false);
 
   // Invoices & accounts desk states
   const [invoiceSearch, setInvoiceSearch] = useState("");
@@ -720,10 +795,19 @@ export function ModuleWorkspace({
   }, [reloadData, module]);
 
   useEffect(() => {
+    if (module !== "credit") return;
+    void fetchDealCostEntries(company).then(setDbDealCosts).catch(() => setDbDealCosts([]));
+  }, [module, company]);
+
+  const [activeUsersCount, setActiveUsersCount] = useState<number>(1);
+
+  useEffect(() => {
     if (currentUser?.role !== "super_admin" && currentUser?.role !== "supervisor") return;
     listStaffLogins()
       .then((res) => {
         if (!res.ok) return;
+        const activeCount = res.users.filter((u) => u.status === "Active").length;
+        setActiveUsersCount(activeCount > 0 ? activeCount : 1);
         const extras = res.users
           .filter((user) => user.role === "logistics")
           .map((user) => ({ name: user.name, phone: user.phone }));
@@ -1071,9 +1155,11 @@ export function ModuleWorkspace({
       toast.error("Required fields missing", { description: requiredError });
       return;
     }
+    const createdName = custLegalName.trim();
+    const createdCompany = custCompany || visitFirm || "asian";
     await createCustomer({
-      companyId: custCompany || "asian",
-      name: custLegalName.trim(),
+      companyId: createdCompany,
+      name: createdName,
       tradeName: custTradeName,
       phone: custPhone.trim(),
       email: custEmail,
@@ -1084,7 +1170,7 @@ export function ModuleWorkspace({
       contactPerson,
       creditLimit: currentUser?.role === "sales" ? 0 : parseFloat(custCreditLimit) || 0,
       creditDays: currentUser?.role === "sales" ? 30 : parseInt(custCreditDays) || 30,
-      creatorName: currentUser?.name || "Ravi Kumar",
+      creatorName: currentUser?.name || "Sales",
     });
     setCustModal(false);
     setCustLegalName("");
@@ -1099,6 +1185,12 @@ export function ModuleWorkspace({
     setCustCreditLimit("0");
     setCustCreditDays("30");
     setSalesCustMore(false);
+    // Visit log: keep company + auto-select the client just created.
+    if (module === "field-visits") {
+      setVisitFirm(createdCompany);
+      setVisitSelectedCustomer(createdName);
+      toast.success(`${createdName} added — selected for this visit.`);
+    }
     reloadData();
   };
 
@@ -1111,14 +1203,69 @@ export function ModuleWorkspace({
   };
 
   const handleTakeProofPhoto = async () => {
+    saveVisitCameraDraft({
+      visitFirm,
+      visitSelectedCustomer,
+      visitPurpose,
+      visitCustomPurpose,
+      visitRequirement,
+      visitLogDate: visitLogDate || "",
+      visitLogTime: visitLogTime || "",
+      gpsLocation,
+      proofPhotos,
+      visitOrderProductId,
+      visitOrderQty,
+      visitOrderUnit,
+      visitOrderPrice,
+      visitOrderGstRate,
+      visitOrderIsInterstate,
+      visitOrderTransportMode,
+      visitOrderDispatchDetails,
+      visitOrderTerms,
+    });
     try {
       const dataUrl = await takeLivePhoto();
+      clearVisitCameraDraft();
       setProofPhotos((prev) => [...prev, dataUrl]);
     } catch (err) {
+      clearVisitCameraDraft();
       if (err instanceof Error && /cancel|No photo/i.test(err.message)) return;
       toast.error(err instanceof Error ? err.message : "Camera capture failed.");
     }
   };
+
+  useEffect(() => {
+    if (module !== "field-visits") return;
+    const draft = consumeVisitCameraDraft();
+    if (!draft) return;
+    setTab("Log a visit");
+    if (draft.visitFirm) setVisitFirm(draft.visitFirm);
+    if (draft.visitSelectedCustomer) setVisitSelectedCustomer(draft.visitSelectedCustomer);
+    if (draft.visitPurpose) setVisitPurpose(draft.visitPurpose);
+    if (draft.visitCustomPurpose) setVisitCustomPurpose(draft.visitCustomPurpose);
+    if (draft.visitRequirement) setVisitRequirement(draft.visitRequirement);
+    if (draft.visitLogDate) setVisitLogDate(draft.visitLogDate);
+    if (draft.visitLogTime) setVisitLogTime(draft.visitLogTime);
+    if (draft.gpsLocation) setGpsLocation(draft.gpsLocation);
+    if (Array.isArray(draft.proofPhotos) && draft.proofPhotos.length > 0) {
+      setProofPhotos(draft.proofPhotos);
+    }
+    if (draft.visitOrderProductId !== undefined) setVisitOrderProductId(draft.visitOrderProductId);
+    if (draft.visitOrderQty !== undefined) setVisitOrderQty(draft.visitOrderQty);
+    if (draft.visitOrderUnit !== undefined) setVisitOrderUnit(draft.visitOrderUnit);
+    if (draft.visitOrderPrice !== undefined) setVisitOrderPrice(draft.visitOrderPrice);
+    if (draft.visitOrderGstRate !== undefined) setVisitOrderGstRate(draft.visitOrderGstRate);
+    if (draft.visitOrderIsInterstate !== undefined) {
+      setVisitOrderIsInterstate(draft.visitOrderIsInterstate);
+    }
+    if (draft.visitOrderTransportMode !== undefined) {
+      setVisitOrderTransportMode(draft.visitOrderTransportMode);
+    }
+    if (draft.visitOrderDispatchDetails !== undefined) {
+      setVisitOrderDispatchDetails(draft.visitOrderDispatchDetails);
+    }
+    if (draft.visitOrderTerms !== undefined) setVisitOrderTerms(draft.visitOrderTerms);
+  }, [module]);
 
   const startVoiceRecording = async () => {
     try {
@@ -1423,7 +1570,7 @@ export function ModuleWorkspace({
       additionalQuantity: qty,
       newReorderLevel: isNaN(reorder) ? undefined : reorder,
       notes: inboundNotes,
-      userName: currentUser?.name || "Warehouse Supervisor",
+      userName: currentUser?.name || "Supervisor",
     });
     setInboundModal(false);
     setInboundNotes("");
@@ -1496,7 +1643,7 @@ export function ModuleWorkspace({
         wholesalePrice: newWholesale,
         unit: finalUnit,
         reason: fullReason,
-        userName: currentUser?.name || "Warehouse Supervisor",
+        userName: currentUser?.name || "Supervisor",
       });
 
       setDbProducts((prev) => prev.map((p) => (p.id === editStockProduct.id ? updated : p)));
@@ -1534,41 +1681,156 @@ export function ModuleWorkspace({
     const effectivePurpose =
       visitPurpose === "Custom" ? visitCustomPurpose.trim() || "Client Meeting" : visitPurpose;
 
-    await scheduleFieldVisit({
-      companyId: visitFirm,
-      customerName: clientName,
-      customerId: matchedCust?.id,
-      purpose: effectivePurpose,
-      scheduledDate: (visitLogDate || new Date().toISOString().split("T")[0]) || "",
-      scheduledTime:
-        visitLogTime || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      assignedTo: currentUser?.id,
-      assignedToName: currentUser?.name || "Ravi Kumar",
-      creatorName: currentUser?.name || "Ravi Kumar",
-      outcomeNotes: visitRequirement || "Visit completed on site.",
-      gpsLatitude: gpsLocation?.lat || 12.9716,
-      gpsLongitude: gpsLocation?.lng || 77.5946,
-      photos: proofPhotos,
-      voiceRecordingPath:
-        voiceAudioDataUrl ||
-        (hasVoiceNote ? `voice-memo-${recordingDuration || 8}s.m4a` : undefined),
-      status: "Completed",
-    });
+    const shouldCreateInlineOrder =
+      visitPurpose === "Order booking" && visitOrderProductId.trim().length > 0;
+    const selectedOrderProduct = shouldCreateInlineOrder
+      ? dbProducts.find((p) => p.id === visitOrderProductId)
+      : undefined;
 
-    setVisitSuccessNotice(`Visit to "${clientName}" saved.`);
-    setTimeout(() => setVisitSuccessNotice(null), 5000);
-    setVisitRequirement("");
-    setHasVoiceNote(false);
-    setVoiceAudioDataUrl(null);
-    setRecordingDuration(0);
-    setGpsLocation(null);
-    setProofPhotos([]);
-    setVisitCustomPurpose("");
-    setSalesVisitProofOpen(false);
-    setVisitLogDate(new Date().toISOString().split("T")[0]);
-    setVisitLogTime(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
-    setTab("Visit history");
-    reloadData();
+    let orderQty = 0;
+    let orderFactor = 1;
+    let orderEffectiveUnitPrice = 0;
+    let orderTaxAmount = 0;
+    let orderCombinedNotes = "";
+
+    if (shouldCreateInlineOrder) {
+      if (!selectedOrderProduct) {
+        toast.error("Selected product not found in inventory.");
+        return;
+      }
+      orderQty = Number(visitOrderQty);
+      const basePrice = Number(visitOrderPrice);
+      if (!Number.isFinite(orderQty) || orderQty <= 0) {
+        toast.error("Please enter a valid order quantity.");
+        return;
+      }
+      if (!Number.isFinite(basePrice) || basePrice <= 0) {
+        toast.error("Please enter a valid unit price.");
+        return;
+      }
+      const baseUnit = selectedOrderProduct.unit || "kg";
+      orderFactor = unitConversionFactor(visitOrderUnit, baseUnit);
+      const qtyInBaseUnit = orderQty * orderFactor;
+      const availableStock = Math.max(
+        0,
+        Number(selectedOrderProduct.on_hand ?? 0) - Number(selectedOrderProduct.reserved ?? 0),
+      );
+      if (qtyInBaseUnit > availableStock) {
+        toast.error("Insufficient stock", {
+          description: `Requested ${qtyInBaseUnit.toLocaleString("en-IN", { maximumFractionDigits: 3 })} ${baseUnit} exceeds available stock (${availableStock.toLocaleString("en-IN")} ${baseUnit}).`,
+        });
+        return;
+      }
+      orderEffectiveUnitPrice = basePrice * orderFactor;
+      const subtotal = orderQty * orderEffectiveUnitPrice;
+      const gstPct = Math.max(0, Number(visitOrderGstRate) || 0);
+      orderTaxAmount = Math.round(((subtotal * gstPct) / 100) * 100) / 100;
+
+      const noteParts: string[] = [];
+      if (gstPct > 0) {
+        if (visitOrderIsInterstate) {
+          noteParts.push(`[IGST: ${gstPct}% (₹${orderTaxAmount.toLocaleString("en-IN")})]`);
+        } else {
+          const halfPct = gstPct / 2;
+          const halfAmt = Math.round((orderTaxAmount / 2) * 100) / 100;
+          noteParts.push(
+            `[CGST: ${halfPct}% (₹${halfAmt.toLocaleString("en-IN")}) + SGST: ${halfPct}% (₹${halfAmt.toLocaleString("en-IN")})]`,
+          );
+        }
+      }
+      if (visitOrderDispatchDetails.trim()) {
+        noteParts.push(`[Dispatch: ${visitOrderDispatchDetails.trim()}]`);
+      }
+      if (visitOrderTerms.trim()) {
+        noteParts.push(`[Terms: ${visitOrderTerms.trim()}]`);
+      }
+      if (visitRequirement.trim()) {
+        noteParts.push(visitRequirement.trim());
+      }
+      orderCombinedNotes = noteParts.join(" | ");
+    }
+
+    setVisitOrderSubmitting(true);
+    try {
+      if (shouldCreateInlineOrder && selectedOrderProduct) {
+        const orderRes = await createOrder({
+          companyId: visitFirm,
+          customerName: clientName,
+          productId: selectedOrderProduct.id,
+          productName: selectedOrderProduct.name,
+          quantity: orderQty,
+          unit: visitOrderUnit,
+          unitPrice: orderEffectiveUnitPrice,
+          catalogPrice: selectedOrderProduct.unit_price,
+          wholesalePrice: selectedOrderProduct.wholesale_price,
+          tax: orderTaxAmount,
+          deliveryAddress: matchedCust?.address || undefined,
+          notes: orderCombinedNotes || undefined,
+          creatorName: currentUser?.name || "Sales Executive",
+          transportMode: visitOrderTransportMode,
+        });
+        if (!orderRes.success) {
+          toast.error("Order not created", {
+            description: orderRes.error || "Order could not be created.",
+          });
+          return;
+        }
+        toast.success("Order created from visit", {
+          description: `Order #${orderRes.orderId} booked for ${clientName}.`,
+        });
+      }
+
+      await scheduleFieldVisit({
+        companyId: visitFirm,
+        customerName: clientName,
+        customerId: matchedCust?.id,
+        purpose: effectivePurpose,
+        scheduledDate: (visitLogDate || new Date().toISOString().split("T")[0]) || "",
+        scheduledTime:
+          visitLogTime || new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        assignedTo: currentUser?.id,
+        assignedToName: currentUser?.name || "Sales Executive",
+        creatorName: currentUser?.name || "Sales Executive",
+        outcomeNotes: visitRequirement || "Visit completed on site.",
+        gpsLatitude: gpsLocation?.lat || 12.9716,
+        gpsLongitude: gpsLocation?.lng || 77.5946,
+        photos: proofPhotos,
+        voiceRecordingPath:
+          voiceAudioDataUrl ||
+          (hasVoiceNote ? `voice-memo-${recordingDuration || 8}s.m4a` : undefined),
+        status: "Completed",
+      });
+
+      setVisitSuccessNotice(
+        shouldCreateInlineOrder
+          ? `Visit to "${clientName}" & Order saved successfully!`
+          : `Visit to "${clientName}" saved.`,
+      );
+      setTimeout(() => setVisitSuccessNotice(null), 5000);
+      setVisitRequirement("");
+      setHasVoiceNote(false);
+      setVoiceAudioDataUrl(null);
+      setRecordingDuration(0);
+      setGpsLocation(null);
+      setProofPhotos([]);
+      setVisitCustomPurpose("");
+      setSalesVisitProofOpen(false);
+      setVisitOrderProductId("");
+      setVisitOrderQty("1");
+      setVisitOrderUnit("kg");
+      setVisitOrderPrice("");
+      setVisitOrderGstRate("18");
+      setVisitOrderIsInterstate(false);
+      setVisitOrderTransportMode("Logistics / Assigned Vehicle");
+      setVisitOrderDispatchDetails("");
+      setVisitOrderTerms("");
+      setVisitLogDate(new Date().toISOString().split("T")[0]);
+      setVisitLogTime(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
+      setTab("Visit history");
+      reloadData();
+    } finally {
+      setVisitOrderSubmitting(false);
+    }
   };
 
   const handleCreateOrderFromVisit = async () => {
@@ -2754,6 +3016,91 @@ export function ModuleWorkspace({
     });
   }, [creditPositions, creditSearch, creditStatusFilter, creditBalanceFilter]);
 
+  const dealSelectedPo = useMemo(
+    () => dbPOs.find((p) => p.id === dealPoId) || null,
+    [dbPOs, dealPoId],
+  );
+  const dealSelectedOrder = useMemo(
+    () => dbOrders.find((o) => o.id === dealOrderId) || null,
+    [dbOrders, dealOrderId],
+  );
+  const dealSalesPrefill = useMemo(
+    () =>
+      dealSelectedOrder
+        ? salesPriceAndQtyFromOrder(dealSelectedOrder)
+        : { unitPrice: 0, quantity: 0 },
+    [dealSelectedOrder],
+  );
+  const dealLiveTotals = useMemo(
+    () =>
+      computeDealCost({
+        purchaseUnitPrice: dealSelectedPo?.unit_price || 0,
+        salesUnitPrice: dealSalesPrefill.unitPrice,
+        salesQuantity: dealSalesPrefill.quantity,
+        buyTransport: parseFloat(dealBuyTransport) || 0,
+        buyLabor: parseFloat(dealBuyLabor) || 0,
+        buyMisc: parseFloat(dealBuyMisc) || 0,
+        sellHandling: parseFloat(dealSellHandling) || 0,
+        sellMisc: parseFloat(dealSellMisc) || 0,
+        sellTransport: parseFloat(dealSellTransport) || 0,
+      }),
+    [
+      dealSelectedPo,
+      dealSalesPrefill,
+      dealBuyTransport,
+      dealBuyLabor,
+      dealBuyMisc,
+      dealSellHandling,
+      dealSellMisc,
+      dealSellTransport,
+    ],
+  );
+
+  const handleSaveDealCost = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!dealSelectedPo || !dealSelectedOrder) {
+      toast.error("Select a purchase order and a sales order.");
+      return;
+    }
+    if (dealSalesPrefill.quantity <= 0 || dealSalesPrefill.unitPrice <= 0) {
+      toast.error("Sales order is missing quantity or price.");
+      return;
+    }
+    setSavingDealCost(true);
+    try {
+      const entry = await createDealCostEntry({
+        companyId: dealSelectedPo.company_id || dealSelectedOrder.company_id,
+        purchaseOrderId: dealSelectedPo.id,
+        orderId: dealSelectedOrder.id,
+        purchaseUnitPrice: Number(dealSelectedPo.unit_price) || 0,
+        purchaseQuantity: Number(dealSelectedPo.quantity) || 0,
+        salesUnitPrice: dealSalesPrefill.unitPrice,
+        salesQuantity: dealSalesPrefill.quantity,
+        buyTransport: parseFloat(dealBuyTransport) || 0,
+        buyLabor: parseFloat(dealBuyLabor) || 0,
+        buyMisc: parseFloat(dealBuyMisc) || 0,
+        sellHandling: parseFloat(dealSellHandling) || 0,
+        sellMisc: parseFloat(dealSellMisc) || 0,
+        sellTransport: parseFloat(dealSellTransport) || 0,
+        userName: currentUser?.name || "Super Admin",
+      });
+      setDbDealCosts((prev) => [entry, ...prev]);
+      setDealPoId("");
+      setDealOrderId("");
+      setDealBuyTransport("");
+      setDealBuyLabor("");
+      setDealBuyMisc("");
+      setDealSellHandling("");
+      setDealSellMisc("");
+      setDealSellTransport("");
+      toast.success(`Deal cost saved — margin ${money(entry.margin)}.`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Could not save deal cost.");
+    } finally {
+      setSavingDealCost(false);
+    }
+  };
+
   const handlePostCreditNote = async (e: React.FormEvent) => {
     e.preventDefault();
     const parsedAmount = parseFloat(noteAmount);
@@ -3037,6 +3384,23 @@ export function ModuleWorkspace({
     if (prefillCustomer) setVisitSelectedCustomer(prefillCustomer);
     if (shouldLog && canLogFieldVisit) setTab("Log a visit");
   }, [module, routerSearch, canLogFieldVisit]);
+
+  // Visit log client list must match the selected company (workspace filter may differ).
+  useEffect(() => {
+    if (module !== "field-visits" || !visitFirm) return;
+    let cancelled = false;
+    void fetchCustomers(visitFirm as CompanyId).then((rows) => {
+      if (cancelled) return;
+      setDbCustomers((prev) => {
+        const byId = new Map(prev.map((c) => [c.id, c]));
+        for (const row of rows) byId.set(row.id, row);
+        return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+      });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [module, visitFirm]);
 
   const handleOpenRaiseInvoiceModal = (o: DBOrder) => {
     setSelectedOrderForInvoice(o);
@@ -3608,7 +3972,8 @@ export function ModuleWorkspace({
         )
       ) : module === "inventory" ? (
         (() => {
-          const inventoryDashboard = isSuperAdmin || isSupervisor;
+          const inventoryDashboard =
+            isSuperAdmin || isSupervisor || currentUser?.role === "accounts";
           const cleanInventoryCategory = (raw: string | undefined) =>
             String(raw || "")
               .replace(/\s*#ws:.*$/i, "")
@@ -3637,6 +4002,7 @@ export function ModuleWorkspace({
           const kpiHealthy = productMetrics.filter((m) => m.healthy).length;
           const kpiReorder = productMetrics.filter((m) => m.needsReorder).length;
           const kpiOut = productMetrics.filter((m) => m.outOfStock).length;
+          const kpiInStock = productMetrics.filter((m) => !m.outOfStock).length;
           const searchedMetrics =
             inventoryQuery === ""
               ? productMetrics
@@ -3646,6 +4012,7 @@ export function ModuleWorkspace({
                     .includes(inventoryQuery),
                 );
           const filteredMetrics = searchedMetrics.filter((m) => {
+            if (inventoryStockFilter === "in_stock") return !m.outOfStock;
             if (inventoryStockFilter === "low") return m.lowStock;
             if (inventoryStockFilter === "reorder") return m.needsReorder;
             if (inventoryStockFilter === "out") return m.outOfStock;
@@ -3688,18 +4055,83 @@ export function ModuleWorkspace({
                       actorName={currentUser?.name || "User"}
                       defaultCompanyId={company}
                       onImported={reloadData}
-                      label="Import"
-                      shortLabel="Import"
+                      label="Import COA"
+                      shortLabel="COA"
                     />
                     {canMutateInventory && (
-                      <Button
-                        size="sm"
-                        className="inv-dash-action-btn h-9 gap-1.5 text-xs font-semibold"
-                        onClick={() => setProdModal(true)}
-                      >
-                        <Plus className="size-3.5" />
-                        Add Product
-                      </Button>
+                      <label className="inline-flex">
+                        <input
+                          type="file"
+                          accept=".xls,.xlsx"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            e.target.value = "";
+                            if (!file) return;
+                            try {
+                              const XLSX = await import("xlsx");
+                              const { parseTallyStockWorkbook } = await import(
+                                "@/lib/stock-excel-parser"
+                              );
+                              const buf = await file.arrayBuffer();
+                              const wb = XLSX.read(buf, { type: "array" });
+                              const fallbackCompany = company !== "all" ? company : "asian";
+                              const parsed = parseTallyStockWorkbook(wb, fallbackCompany);
+                              if (parsed.rows.length === 0) {
+                                toast.error("No stock items found in Excel", {
+                                  description:
+                                    "Expected Tally Stock Summary columns: Particulars, Quantity, Rate, Value.",
+                                });
+                                return;
+                              }
+                              const res = await importStockExcelRows(
+                                parsed.rows,
+                                currentUser?.name || "Admin",
+                              );
+                              toast.success("Stock Excel imported", {
+                                description: `${res.inserted} added, ${res.updated} updated from ${file.name}.`,
+                              });
+                              reloadData();
+                            } catch (err) {
+                              toast.error("Excel import failed", {
+                                description:
+                                  err instanceof Error ? err.message : "Could not parse file.",
+                              });
+                            }
+                          }}
+                        />
+                        <span className="inv-dash-action-btn inline-flex items-center justify-center whitespace-nowrap rounded-md border border-input bg-background px-3 h-9 gap-1.5 text-xs font-semibold shadow-xs hover:bg-accent hover:text-accent-foreground cursor-pointer">
+                          <Upload className="size-3.5" />
+                          Import Excel
+                        </span>
+                      </label>
+                    )}
+                    {canMutateInventory && (
+                      <>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="inv-dash-action-btn h-9 gap-1.5 text-xs font-semibold"
+                          onClick={() => {
+                            if (dbProducts.length > 0 && dbProducts[0]) {
+                              setInboundProductId(dbProducts[0].id || "");
+                              setInboundReorder(String(dbProducts[0].reorder_level || 20));
+                            }
+                            setInboundModal(true);
+                          }}
+                        >
+                          <Package className="size-3.5" />
+                          Add Stock
+                        </Button>
+                        <Button
+                          size="sm"
+                          className="inv-dash-action-btn h-9 gap-1.5 text-xs font-semibold"
+                          onClick={() => setProdModal(true)}
+                        >
+                          <Plus className="size-3.5" />
+                          Add Product
+                        </Button>
+                      </>
                     )}
                   </div>
                 </header>
@@ -3751,6 +4183,7 @@ export function ModuleWorkspace({
                   <div className="inv-dash-segments" role="tablist" aria-label="Stock filters">
                     {(
                       [
+                        { id: "in_stock" as const, label: "In Stock", count: kpiInStock },
                         { id: "all" as const, label: "All Products", count: kpiTotal },
                         { id: "low" as const, label: "Low Stock", count: kpiLow },
                         { id: "reorder" as const, label: "To Reorder", count: kpiReorder },
@@ -4006,6 +4439,54 @@ export function ModuleWorkspace({
                         defaultCompanyId={company}
                         onImported={reloadData}
                       />
+                      <label className="inline-flex">
+                        <input
+                          type="file"
+                          accept=".xls,.xlsx"
+                          className="hidden"
+                          onChange={async (e) => {
+                            const file = e.target.files?.[0];
+                            e.target.value = "";
+                            if (!file) return;
+                            try {
+                              const XLSX = await import("xlsx");
+                              const { parseTallyStockWorkbook } = await import(
+                                "@/lib/stock-excel-parser"
+                              );
+                              const buf = await file.arrayBuffer();
+                              const wb = XLSX.read(buf, { type: "array" });
+                              const fallbackCompany =
+                                company !== "all" ? company : "asian";
+                              const parsed = parseTallyStockWorkbook(wb, fallbackCompany);
+                              if (parsed.rows.length === 0) {
+                                toast.error("No stock items found in Excel", {
+                                  description:
+                                    "Expected Tally Stock Summary columns: Particulars, Quantity, Rate, Value.",
+                                });
+                                return;
+                              }
+                              const res = await importStockExcelRows(
+                                parsed.rows,
+                                currentUser?.name || "Admin",
+                              );
+                              toast.success("Stock Excel imported", {
+                                description: `${res.inserted} added, ${res.updated} updated from ${file.name}.`,
+                              });
+                              reloadData();
+                            } catch (err) {
+                              toast.error("Excel import failed", {
+                                description:
+                                  err instanceof Error ? err.message : "Could not parse file.",
+                              });
+                            }
+                          }}
+                        />
+                        <span className="inline-flex items-center justify-center whitespace-nowrap rounded-md border border-input bg-background px-3 h-8 gap-1.5 text-xs font-semibold shadow-xs hover:bg-accent hover:text-accent-foreground cursor-pointer">
+                          <Upload className="size-3.5" />
+                          <span className="inventory-btn-full">Import Excel</span>
+                          <span className="inventory-btn-short">Excel</span>
+                        </span>
+                      </label>
                       <Button
                         size="sm"
                         className="inventory-toolbar-btn h-8 gap-1.5 text-xs font-semibold"
@@ -5093,6 +5574,277 @@ export function ModuleWorkspace({
               )}
             </div>
           </section>
+
+          {/* SECTION 3: DEAL COST SHEET */}
+          <section className="panel mb-6">
+            <div className="panel-head flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
+              <div>
+                <h2 className="panel-title text-base font-bold">Deal cost</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Link a purchase order and sales order. Prices and quantities fill automatically;
+                  enter transport, labor, and miscellaneous charges. Goods cost uses sold qty.
+                </p>
+              </div>
+            </div>
+
+            <form
+              onSubmit={handleSaveDealCost}
+              className="p-4 border-b border-border bg-muted/10 space-y-4"
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block mb-1">
+                    Purchase order <span className="text-destructive">*</span>
+                  </label>
+                  <select
+                    required
+                    value={dealPoId}
+                    onChange={(e) => setDealPoId(e.target.value)}
+                    className="w-full h-9 px-2 text-xs rounded-lg border border-border bg-card"
+                  >
+                    <option value="">Select PO / inbound</option>
+                    {dbPOs.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        #{p.id} · {p.product_name} · {p.quantity} {p.unit} @ {money(p.unit_price)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground block mb-1">
+                    Sales order <span className="text-destructive">*</span>
+                  </label>
+                  <select
+                    required
+                    value={dealOrderId}
+                    onChange={(e) => setDealOrderId(e.target.value)}
+                    className="w-full h-9 px-2 text-xs rounded-lg border border-border bg-card"
+                  >
+                    <option value="">Select sales order</option>
+                    {dbOrders.map((o) => (
+                      <option key={o.id} value={o.id}>
+                        #{o.id} · {o.customer_name}
+                        {o.items_summary ? ` · ${o.items_summary}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">
+                    Purchase price
+                  </p>
+                  <p className="mt-1 text-sm font-bold">
+                    {dealSelectedPo ? money(dealSelectedPo.unit_price) : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">
+                    PO quantity
+                  </p>
+                  <p className="mt-1 text-sm font-bold">
+                    {dealSelectedPo
+                      ? `${dealSelectedPo.quantity} ${dealSelectedPo.unit}`
+                      : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">
+                    Sales price
+                  </p>
+                  <p className="mt-1 text-sm font-bold">
+                    {dealSelectedOrder ? money(dealSalesPrefill.unitPrice) : "—"}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">
+                    Sales quantity
+                  </p>
+                  <p className="mt-1 text-sm font-bold">
+                    {dealSelectedOrder ? dealSalesPrefill.quantity : "—"}
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-[11px] font-bold text-foreground mb-2">
+                  Purchase charges (owner)
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <label className="drawer-field !gap-1">
+                    Transportation
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={dealBuyTransport}
+                      onChange={(e) => setDealBuyTransport(e.target.value)}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="drawer-field !gap-1">
+                    Labor / handling
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={dealBuyLabor}
+                      onChange={(e) => setDealBuyLabor(e.target.value)}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="drawer-field !gap-1">
+                    Miscellaneous
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={dealBuyMisc}
+                      onChange={(e) => setDealBuyMisc(e.target.value)}
+                      placeholder="0"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-[11px] font-bold text-foreground mb-2">Sales charges (owner)</p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <label className="drawer-field !gap-1">
+                    Handling
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={dealSellHandling}
+                      onChange={(e) => setDealSellHandling(e.target.value)}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="drawer-field !gap-1">
+                    Miscellaneous
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={dealSellMisc}
+                      onChange={(e) => setDealSellMisc(e.target.value)}
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="drawer-field !gap-1">
+                    Transportation
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={dealSellTransport}
+                      onChange={(e) => setDealSellTransport(e.target.value)}
+                      placeholder="0"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">Buy total</p>
+                  <p className="mt-1 text-lg font-extrabold">{money(dealLiveTotals.buyTotal)}</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Goods {money(dealLiveTotals.buyGoods)} (price × sold qty)
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">
+                    Sell total
+                  </p>
+                  <p className="mt-1 text-lg font-extrabold">{money(dealLiveTotals.sellTotal)}</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Goods {money(dealLiveTotals.sellGoods)}
+                  </p>
+                </div>
+                <div className="rounded-lg border border-border bg-card p-3">
+                  <p className="text-[10px] font-bold uppercase text-muted-foreground">Margin</p>
+                  <p
+                    className={`mt-1 text-lg font-extrabold ${
+                      dealLiveTotals.margin >= 0
+                        ? "text-emerald-600 dark:text-emerald-400"
+                        : "text-destructive"
+                    }`}
+                  >
+                    {money(dealLiveTotals.margin)}
+                  </p>
+                </div>
+              </div>
+
+              <Button
+                type="submit"
+                disabled={savingDealCost || !dealPoId || !dealOrderId}
+                className="h-9 text-xs font-semibold"
+              >
+                {savingDealCost ? "Saving…" : "Save deal cost"}
+              </Button>
+            </form>
+
+            <div className="table-scroll">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>PURCHASE ORDER</th>
+                    <th>SALES ORDER</th>
+                    <th>SOLD QTY</th>
+                    <th>BUY TOTAL</th>
+                    <th>SELL TOTAL</th>
+                    <th>MARGIN</th>
+                    <th>ACTION</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {dbDealCosts.map((entry) => (
+                    <tr key={entry.id}>
+                      <td className="font-mono text-xs font-semibold">{entry.id}</td>
+                      <td className="font-mono text-xs">#{entry.purchase_order_id}</td>
+                      <td className="font-mono text-xs">#{entry.order_id}</td>
+                      <td>{entry.sales_quantity}</td>
+                      <td className="font-semibold">{money(entry.buy_total)}</td>
+                      <td className="font-semibold">{money(entry.sell_total)}</td>
+                      <td
+                        className={`font-bold ${
+                          entry.margin >= 0
+                            ? "text-emerald-600 dark:text-emerald-400"
+                            : "text-destructive"
+                        }`}
+                      >
+                        {money(entry.margin)}
+                      </td>
+                      <td>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="size-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10 cursor-pointer"
+                          title="Delete deal cost"
+                          onClick={async () => {
+                            await deleteDealCostEntry(entry.id, currentUser?.name);
+                            setDbDealCosts((prev) => prev.filter((e) => e.id !== entry.id));
+                          }}
+                        >
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {dbDealCosts.length === 0 && (
+                <div className="p-8 text-center text-muted-foreground">
+                  <p className="text-sm font-medium">No deal cost entries yet.</p>
+                </div>
+              )}
+            </div>
+          </section>
         </>
       ) : module === "analytics" ? (
         isSupervisor ? (
@@ -5677,7 +6429,7 @@ export function ModuleWorkspace({
             </div>
             <div className="kpi">
               <p className="text-xs text-muted-foreground uppercase font-semibold">ACTIVE USERS</p>
-              <p className="kpi-value">7</p>
+              <p className="kpi-value">{activeUsersCount}</p>
               <span className="trend">RBAC authenticated</span>
             </div>
             <div className="kpi">
@@ -5848,27 +6600,10 @@ export function ModuleWorkspace({
           ) : tab === "Roles" ? (
             <TeamLogins />
           ) : (
-            <div className="p-6 rounded-xl border border-border bg-card">
-              <h4 className="text-sm font-bold mb-2">Audit Trail</h4>
-              <p className="text-xs text-muted-foreground mb-4">
-                Tamper-evident audit logs recorded in PostgreSQL db_audit_logs.
-              </p>
-              <div className="space-y-2">
-                <div className="text-xs p-3 rounded bg-muted/40 border border-border flex justify-between">
-                  <span>
-                    System security configuration initialized for all 4 company workspaces
-                  </span>
-                  <span className="text-muted-foreground">Active</span>
-                </div>
-                <div className="text-xs p-3 rounded bg-muted/40 border border-border flex justify-between">
-                  <span>Multi-tenant row-level access validated</span>
-                  <span className="text-muted-foreground">Active</span>
-                </div>
-              </div>
-            </div>
+            <AuditLogsPanel companyId={company} />
           )}
           <p className="mt-6 text-xs text-muted-foreground">
-            Each login ID opens only the features you tick when you create it.
+            Each login keeps a fixed job role; the feature matrix only adjusts permissions.
           </p>
         </>
         )
@@ -7000,7 +7735,7 @@ export function ModuleWorkspace({
                 <label className="text-xs font-bold text-foreground flex items-center gap-2">
                   <Building2 className="size-3.5 text-primary" />
                   <span>
-                    {currentUser?.role === "sales" ? "Client" : "Company & Client"}
+                    {currentUser?.role === "sales" ? "Client" : "Company & Customer"}
                   </span>
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -7025,24 +7760,45 @@ export function ModuleWorkspace({
                   </div>
                   <div>
                     <label className="text-[11px] font-semibold text-muted-foreground block mb-1">
-                      Client <span className="text-destructive">*</span>
+                      Customer <span className="text-destructive">*</span>
                     </label>
-                    <select
+                    <SearchableSelect
                       required
                       value={visitSelectedCustomer}
-                      onChange={(e) => setVisitSelectedCustomer(e.target.value)}
-                      className="w-full text-xs font-semibold h-10 px-3 rounded-lg border border-border bg-background cursor-pointer"
-                    >
-                      <option value="">Select client</option>
-                      {dbCustomers
-                        .filter((c) => c.company_id === visitFirm || company === "all")
-                        .map((c) => (
-                          <option key={c.id || c.name} value={c.name}>
-                            {c.name} {c.contact_person ? `(${c.contact_person})` : ""}{" "}
-                            {c.city ? `· ${c.city}` : ""}
-                          </option>
-                        ))}
-                    </select>
+                      placeholder="Select customer"
+                      searchPlaceholder="Search customer..."
+                      emptyText="No matching customers"
+                      onChange={(val) => {
+                        if (val === "__add_new_customer__") {
+                          setVisitSelectedCustomer("");
+                          navigateToAddCustomer();
+                          return;
+                        }
+                        setVisitSelectedCustomer(val);
+                      }}
+                      options={[
+                        {
+                          value: "__add_new_customer__",
+                          label: "+ Add new customer",
+                          keywords: "add new customer create",
+                        },
+                        ...dbCustomers
+                          .filter((c) => c.company_id === visitFirm)
+                          .map((c) => ({
+                            value: c.name,
+                            label: `${c.name}${c.contact_person ? ` (${c.contact_person})` : ""}${c.city ? ` · ${c.city}` : ""}`,
+                            keywords: `${c.name} ${c.contact_person || ""} ${c.city || ""}`,
+                          })),
+                      ]}
+                    />
+                    {dbCustomers.filter((c) => c.company_id === visitFirm).length === 0 && (
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        No customers for this company yet
+                        {hasPermission("customers.manage")
+                          ? " — use + Add new customer."
+                          : "."}
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -7123,6 +7879,263 @@ export function ModuleWorkspace({
                     />
                   </div>
                 )}
+
+                {visitPurpose === "Order booking" && (() => {
+                  const firmProducts = dbProducts.filter(
+                    (p): p is typeof p & { id: string } =>
+                      Boolean(p.id) && (p.company_id === visitFirm || !visitFirm),
+                  );
+                  const orderProductOptions = firmProducts.map((p) => {
+                    const avail = Math.max(0, Number(p.on_hand ?? 0) - Number(p.reserved ?? 0));
+                    const u = p.unit || "kg";
+                    return {
+                      value: p.id,
+                      label: `${p.name} — ${avail.toLocaleString("en-IN")} ${u} in stock`,
+                      keywords: `${p.name} ${p.code || ""} ${p.category || ""}`,
+                    };
+                  });
+                  const selectedProd = firmProducts.find((p) => p.id === visitOrderProductId);
+                  const baseUnit = selectedProd?.unit || "kg";
+                  const availStock = selectedProd
+                    ? Math.max(0, Number(selectedProd.on_hand ?? 0) - Number(selectedProd.reserved ?? 0))
+                    : 0;
+                  const qtyNum = Number(visitOrderQty) || 0;
+                  const factor = unitConversionFactor(visitOrderUnit, baseUnit);
+                  const qtyInBase = qtyNum * factor;
+                  const overStock = Boolean(selectedProd && qtyNum > 0 && qtyInBase > availStock);
+                  const basePrice = Number(visitOrderPrice) || 0;
+                  const effectiveUnitPrice = basePrice * factor;
+                  const subtotal = qtyNum * effectiveUnitPrice;
+                  const gstPct = Math.max(0, Number(visitOrderGstRate) || 0);
+                  const taxAmt = Math.round(((subtotal * gstPct) / 100) * 100) / 100;
+                  const grandTotal = subtotal + taxAmt;
+
+                  return (
+                    <div className="mt-2 p-3.5 rounded-xl border border-primary/30 bg-primary/[0.03] space-y-3 animate-in fade-in">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                          <ShoppingBag className="size-3.5 text-primary" />
+                          New Order Booking
+                        </span>
+                        <span className="text-[11px] text-muted-foreground">
+                          Customer &amp; firm pre-filled from above
+                        </span>
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-semibold text-muted-foreground">
+                          Product *
+                        </label>
+                        <SearchableSelect
+                          value={visitOrderProductId}
+                          onChange={(val) => {
+                            setVisitOrderProductId(val);
+                            const prod = firmProducts.find((p) => p.id === val);
+                            if (prod) {
+                              setVisitOrderUnit(prod.unit || "kg");
+                              setVisitOrderPrice(
+                                prod.unit_price != null ? String(prod.unit_price) : "",
+                              );
+                            }
+                          }}
+                          options={orderProductOptions}
+                          placeholder="Select product from inventory..."
+                          searchPlaceholder="Search product or SKU..."
+                          emptyText="No products found for this firm"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-muted-foreground">
+                            Quantity *
+                          </label>
+                          <input
+                            type="number"
+                            min="0.001"
+                            step="any"
+                            value={visitOrderQty}
+                            onChange={(e) => setVisitOrderQty(e.target.value)}
+                            placeholder="Qty"
+                            className="w-full text-xs font-semibold h-9 px-3 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-muted-foreground">
+                            Unit
+                          </label>
+                          <select
+                            value={visitOrderUnit}
+                            onChange={(e) => setVisitOrderUnit(e.target.value)}
+                            className="w-full text-xs font-semibold h-9 px-2.5 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
+                          >
+                            {["kg", "g", "L", "ml", "Bags", "Boxes", "Units", "MT"].map((u) => (
+                              <option key={u} value={u}>
+                                {u}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-muted-foreground">
+                            Unit Price (₹ / {baseUnit}) *
+                          </label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={visitOrderPrice}
+                            onChange={(e) => setVisitOrderPrice(e.target.value)}
+                            placeholder="Price"
+                            className="w-full text-xs font-semibold h-9 px-3 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
+                      </div>
+
+                      {overStock && (
+                        <div className="text-[11px] font-semibold text-destructive bg-destructive/10 border border-destructive/30 rounded-lg px-3 py-2">
+                          Requested {qtyInBase.toLocaleString("en-IN", { maximumFractionDigits: 3 })}{" "}
+                          {baseUnit} exceeds available stock (
+                          {availStock.toLocaleString("en-IN")} {baseUnit}). Reduce quantity to book.
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 items-end">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-muted-foreground">
+                            GST Rate
+                          </label>
+                          <select
+                            value={visitOrderGstRate}
+                            onChange={(e) => setVisitOrderGstRate(e.target.value)}
+                            className="w-full text-xs font-semibold h-9 px-2.5 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
+                          >
+                            {[0, 5, 12, 18, 28].map((r) => (
+                              <option key={r} value={String(r)}>
+                                {r}% GST
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <label className="flex items-center gap-2 h-9 px-3 rounded-lg border border-border bg-background text-xs font-medium cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={visitOrderIsInterstate}
+                            onChange={(e) => setVisitOrderIsInterstate(e.target.checked)}
+                            className="!w-4 !h-4 accent-primary"
+                          />
+                          <span>Interstate (IGST)</span>
+                        </label>
+                      </div>
+
+                      {selectedProd && qtyNum > 0 && basePrice > 0 && (
+                        <div className="rounded-lg border border-border/80 bg-background/80 p-2.5 text-[11px] space-y-1">
+                          <div className="flex justify-between text-muted-foreground">
+                            <span>Subtotal</span>
+                            <span className="font-semibold text-foreground">
+                              ₹{subtotal.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                          {gstPct > 0 &&
+                            (visitOrderIsInterstate ? (
+                              <div className="flex justify-between text-muted-foreground">
+                                <span>IGST ({gstPct}%)</span>
+                                <span>
+                                  ₹{taxAmt.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                                </span>
+                              </div>
+                            ) : (
+                              <>
+                                <div className="flex justify-between text-muted-foreground">
+                                  <span>CGST ({gstPct / 2}%)</span>
+                                  <span>
+                                    ₹
+                                    {(taxAmt / 2).toLocaleString("en-IN", {
+                                      maximumFractionDigits: 2,
+                                    })}
+                                  </span>
+                                </div>
+                                <div className="flex justify-between text-muted-foreground">
+                                  <span>SGST ({gstPct / 2}%)</span>
+                                  <span>
+                                    ₹
+                                    {(taxAmt / 2).toLocaleString("en-IN", {
+                                      maximumFractionDigits: 2,
+                                    })}
+                                  </span>
+                                </div>
+                              </>
+                            ))}
+                          <div className="flex justify-between pt-1 border-t border-border/60 font-bold text-foreground">
+                            <span>Total (incl. GST)</span>
+                            <span>
+                              ₹{grandTotal.toLocaleString("en-IN", { maximumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="space-y-1.5">
+                        <label className="text-[11px] font-semibold text-muted-foreground">
+                          Transport
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setVisitOrderTransportMode("Logistics / Assigned Vehicle")
+                            }
+                            className={`h-9 px-2.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                              visitOrderTransportMode === "Logistics / Assigned Vehicle"
+                                ? "bg-primary text-primary-foreground border-primary"
+                                : "bg-background text-muted-foreground border-border hover:bg-muted"
+                            }`}
+                          >
+                            1. Company Vehicle
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setVisitOrderTransportMode("Manufacturer Vehicle")}
+                            className={`h-9 px-2.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                              visitOrderTransportMode === "Manufacturer Vehicle"
+                                ? "bg-primary text-primary-foreground border-primary"
+                                : "bg-background text-muted-foreground border-border hover:bg-muted"
+                            }`}
+                          >
+                            2. Other Means
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-muted-foreground">
+                            Dispatch Details
+                          </label>
+                          <input
+                            type="text"
+                            value={visitOrderDispatchDetails}
+                            onChange={(e) => setVisitOrderDispatchDetails(e.target.value)}
+                            placeholder="Expected dispatch / delivery note"
+                            className="w-full text-xs h-9 px-3 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[11px] font-semibold text-muted-foreground">
+                            Terms &amp; Conditions
+                          </label>
+                          <input
+                            type="text"
+                            value={visitOrderTerms}
+                            onChange={(e) => setVisitOrderTerms(e.target.value)}
+                            placeholder="Payment / delivery terms"
+                            className="w-full text-xs h-9 px-3 rounded-lg border border-border bg-background focus:border-primary focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* 3. Notes — optional short field for sales */}
@@ -7353,10 +8366,15 @@ export function ModuleWorkspace({
               <div className="field-visit-actions">
                 <Button
                   onClick={handleSaveVisit}
+                  disabled={visitOrderSubmitting}
                   className="w-full h-11 font-bold text-xs cursor-pointer"
                 >
                   <Check className="size-3.5 mr-1.5" />
-                  Save
+                  {visitOrderSubmitting
+                    ? "Saving..."
+                    : visitPurpose === "Order booking" && visitOrderProductId
+                      ? "Save Visit & Book Order"
+                      : "Save"}
                 </Button>
                 <Button
                   onClick={handleCreateOrderFromVisit}
@@ -8463,6 +9481,19 @@ export function ModuleWorkspace({
           </SheetHeader>
           <form onSubmit={handleCreateCustomer} className="mt-6 space-y-4">
             <label className="drawer-field">
+              Company
+              <select
+                value={custCompany}
+                onChange={(e) => setCustCompany(e.target.value)}
+              >
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="drawer-field">
               Legal name <span className="text-destructive">*</span>
               <input
                 required
@@ -9098,25 +10129,28 @@ export function ModuleWorkspace({
             </SheetDescription>
           </SheetHeader>
           <form onSubmit={handleInboundStock} className="mt-6 space-y-4 pb-12">
-            <label className="drawer-field">
-              Select Product <span className="text-destructive">*</span>
-              <select
+            <div className="drawer-field">
+              <span>
+                Select Product <span className="text-destructive">*</span>
+              </span>
+              <SearchableSelect
+                required
                 value={inboundProductId}
-                onChange={(e) => {
-                  setInboundProductId(e.target.value);
-                  const p = dbProducts.find((x) => x.id === e.target.value);
+                placeholder="-- Choose Product --"
+                searchPlaceholder="Search product by name or code..."
+                emptyText="No matching products"
+                onChange={(val) => {
+                  setInboundProductId(val);
+                  const p = dbProducts.find((x) => x.id === val);
                   if (p) setInboundReorder(String(p.reorder_level || 20));
                 }}
-                required
-              >
-                <option value="">-- Choose Product --</option>
-                {dbProducts.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.code}) · Current On-Hand: {p.on_hand} {p.unit}
-                  </option>
-                ))}
-              </select>
-            </label>
+                options={dbProducts.map((p) => ({
+                  value: p.id || "",
+                  label: `${p.name} (${p.code}) · Current On-Hand: ${p.on_hand} ${p.unit}`,
+                  keywords: `${p.name} ${p.code} ${p.category} ${p.unit}`,
+                }))}
+              />
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <label className="drawer-field">
                 Inbound Quantity Received <span className="text-destructive">*</span>
@@ -11183,7 +12217,7 @@ export function ModuleWorkspace({
               Sales Invoice {viewingInvoice?.id || ""}
             </SheetTitle>
             <SheetDescription>
-              Raised by Accounts · travels with Order #{viewingOrder?.id} for the logistics driver
+              Raised by Accounts · travels with Order #{viewingOrder?.id} for the warehouse supervisor
             </SheetDescription>
           </SheetHeader>
 
@@ -11361,7 +12395,7 @@ export function ModuleWorkspace({
                 {raisingInvoice ? "Raising sales invoice..." : "Confirm & Raise Sales Invoice"}
               </Button>
               <p className="text-[11px] text-muted-foreground text-center">
-                This sales invoice is attached to the order and shown to the logistics driver after
+                This sales invoice is attached to the order and shown to the warehouse supervisor after
                 Order Desk assigns the trip.
               </p>
             </div>
