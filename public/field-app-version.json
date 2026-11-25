@@ -1,6 +1,6 @@
 {
-  "versionCode": 6,
-  "versionName": "1.5",
+  "versionCode": 7,
+  "versionName": "1.6",
   "apkUrl": "https://avighna-uat.vercel.app/downloads/avighna-field.apk",
-  "message": "Update includes the simplified sales workflow (visit + create order)."
+  "message": "Update includes Documents OCR confirm, Accounts receivables/payables desk, and purchase-invoice stock receive."
 }

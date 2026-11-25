@@ -56,7 +56,15 @@ export default defineConfig(async ({ command }) => {
       host: "::",
       port: 8080,
       watch: {
-        ignored: ["**/.git/**", "**/node_modules/**", "**/.output/**", "**/.vercel/**"],
+        ignored: [
+          "**/.git/**",
+          "**/node_modules/**",
+          "**/.output/**",
+          "**/.vercel/**",
+          // Capacitor Android sync dirs can throw UNKNOWN scandir errors under OneDrive.
+          "**/android/**",
+          "**/ios/**",
+        ],
       },
     },
     plugins,
