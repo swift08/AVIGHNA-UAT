@@ -2068,15 +2068,11 @@ export function ModuleWorkspace({
     }
   };
 
-  const handleUploadPoPdf = (po: DBPurchaseOrder, file: File | null) => {
+  const handleUploadPoPdf = async (po: DBPurchaseOrder, file: File | null) => {
     if (!file) return;
     // Attach PDF / photo → OCR qty + amount → "Is this correct?" → stock update
     if (!hasPermission("purchases.receive") && !isSuperAdmin) {
       toast.error("Only Supervisor can receive stock from the supplier invoice.");
-      return;
-    }
-    if (po.status !== "In transit" && !isSuperAdmin) {
-      toast.error("Mark the PO as sent (In transit) before attaching the supplier invoice.");
       return;
     }
     if (!po.product_id) {
@@ -2089,8 +2085,32 @@ export function ModuleWorkspace({
       toast.error("This purchase order is already fully received.");
       return;
     }
+
+    let readyPo = po;
+    // Attaching the supplier invoice implies goods are on the way / arrived —
+    // auto-mark Requested → In transit so supervisor isn't blocked by a toast.
+    if (po.status === "Requested") {
+      try {
+        readyPo = await markPurchaseOrderSent(
+          po.id,
+          po.company_id,
+          currentUser?.name || "Supervisor",
+        );
+        toast.message("PO marked as sent (In transit). Reading invoice…");
+        reloadData();
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Could not mark PO as sent before attach.",
+        );
+        return;
+      }
+    } else if (po.status !== "In transit" && !isSuperAdmin) {
+      toast.error("Only In transit (or Requested) POs can receive from a supplier invoice.");
+      return;
+    }
+
     setReceiveInitialFile(file);
-    setReceivePo(po);
+    setReceivePo(readyPo);
   };
 
   const handleCreatePO = async (e: React.FormEvent) => {
@@ -9027,7 +9047,7 @@ export function ModuleWorkspace({
                         className="hidden"
                         onChange={(e) => {
                           const file = e.target.files?.[0] || null;
-                          handleUploadPoPdf(p, file);
+                          void handleUploadPoPdf(p, file);
                           e.currentTarget.value = "";
                         }}
                       />
