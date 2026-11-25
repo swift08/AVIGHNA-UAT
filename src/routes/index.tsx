@@ -338,13 +338,13 @@ function Overview() {
       <main className="content">
         <div className="heading-row flex flex-wrap items-end justify-between gap-4 min-w-0">
           <div className="min-w-0 flex-1">
-            <p className="eyebrow mb-2">Sales desk</p>
+            <p className="eyebrow mb-2">Sales</p>
             <h1 className="page-heading">
               Good morning, {firstName}{" "}
               <span className="font-normal text-primary">↗</span>
             </h1>
-            <p className="mt-2 text-xs text-muted-foreground max-w-xl">
-              Your orders and collections — clear status, no clutter.
+            <p className="mt-2 text-sm text-muted-foreground max-w-xl">
+              Use the bottom buttons: Visits · Orders · Customers · Payments.
             </p>
           </div>
         </div>
@@ -356,17 +356,17 @@ function Overview() {
               <ShoppingBag className="kpi-icon shrink-0" />
             </div>
             <p className="kpi-value">{activeOrdersCount}</p>
-            <span className="trend">In your pipeline</span>
+            <span className="trend">Open now</span>
           </div>
           <div className="kpi">
             <div className="flex items-center justify-between gap-2 min-w-0">
               <p className="text-xs font-semibold text-muted-foreground truncate">
-                Awaiting approval
+                Waiting approval
               </p>
               <Clock className="kpi-icon shrink-0" />
             </div>
             <p className="kpi-value">{approvalsWaitingCount}</p>
-            <span className="trend">With supervisor</span>
+            <span className="trend">With boss</span>
           </div>
           <div className="kpi">
             <div className="flex items-center justify-between gap-2 min-w-0">
@@ -374,16 +374,16 @@ function Overview() {
               <CalendarDays className="kpi-icon shrink-0" />
             </div>
             <p className="kpi-value">{todaysOrders.length}</p>
-            <span className="trend">Booked today</span>
+            <span className="trend">Today</span>
           </div>
           {hasPermission("payments.record") && (
             <div className="kpi">
               <div className="flex items-center justify-between gap-2 min-w-0">
-                <p className="text-xs font-semibold text-muted-foreground truncate">Payments due</p>
+                <p className="text-xs font-semibold text-muted-foreground truncate">To collect</p>
                 <CreditCard className="kpi-icon shrink-0" />
               </div>
               <p className="kpi-value">{paymentsDueCount}</p>
-              <span className="trend">Open invoices</span>
+              <span className="trend">Payments due</span>
             </div>
           )}
         </div>

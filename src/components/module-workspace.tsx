@@ -3783,16 +3783,16 @@ export function ModuleWorkspace({
         ) : (
         <div className="customers-page">
           <div className="customers-toolbar mb-5 flex flex-wrap items-center justify-between gap-3">
-            <span className="customers-toolbar-count text-xs text-muted-foreground">
-              {dbCustomers.length} active customer accounts
+            <span className="customers-toolbar-count text-sm text-muted-foreground">
+              {dbCustomers.length} customer{dbCustomers.length === 1 ? "" : "s"}
             </span>
             {hasPermission("customers.manage") && (
               <Button
                 size="sm"
-                className="customers-toolbar-action h-8 gap-1.5 text-xs font-semibold"
+                className="customers-toolbar-action h-11 gap-1.5 text-sm font-semibold px-4"
                 onClick={() => setCustModal(true)}
               >
-                <Plus className="size-3.5" />
+                <Plus className="size-4" />
                 Add customer
               </Button>
             )}
@@ -3811,6 +3811,15 @@ export function ModuleWorkspace({
               const cardEmail = c.email || matchingLead?.email || "";
               const cardAddress = c.address || matchingLead?.city || "";
               const cardContact = c.contact_person || matchingLead?.contact_person || "—";
+              const billingMatch = cardAddress.match(/Billing:\s*([\s\S]*?)(?=\nShipping:|$)/i);
+              const shippingMatch = cardAddress.match(/Shipping:\s*([\s\S]*?)$/i);
+              const billingText = billingMatch?.[1]?.trim() || "";
+              const shippingText = shippingMatch?.[1]?.trim() || "";
+              const sameAddress =
+                Boolean(billingText && shippingText) &&
+                billingText.toLowerCase() === shippingText.toLowerCase();
+              const plainAddress =
+                !billingText && !shippingText ? cardAddress.trim() : "";
 
               return (
                 <article
@@ -3902,15 +3911,46 @@ export function ModuleWorkspace({
                       )}
                     </div>
 
-                    <div className="customer-card-row">
-                      <span className="customer-card-label">
-                        <MapPin className="size-3 text-primary shrink-0" /> Address
-                      </span>
-                      {cardAddress ? (
-                        <span className="customer-card-value" title={cardAddress}>
-                          {cardAddress}
+                    {sameAddress || plainAddress ? (
+                      <div className="customer-card-row">
+                        <span className="customer-card-label">
+                          <MapPin className="size-3 text-primary shrink-0" /> Address
                         </span>
-                      ) : (
+                        <span
+                          className="customer-card-value"
+                          title={sameAddress ? billingText : plainAddress}
+                        >
+                          {sameAddress ? billingText : plainAddress}
+                        </span>
+                      </div>
+                    ) : billingText || shippingText ? (
+                      <>
+                        {billingText && (
+                          <div className="customer-card-row">
+                            <span className="customer-card-label">
+                              <MapPin className="size-3 text-primary shrink-0" /> Billing
+                            </span>
+                            <span className="customer-card-value" title={billingText}>
+                              {billingText}
+                            </span>
+                          </div>
+                        )}
+                        {shippingText && (
+                          <div className="customer-card-row">
+                            <span className="customer-card-label">
+                              <MapPin className="size-3 text-primary shrink-0" /> Shipping
+                            </span>
+                            <span className="customer-card-value" title={shippingText}>
+                              {shippingText}
+                            </span>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <div className="customer-card-row">
+                        <span className="customer-card-label">
+                          <MapPin className="size-3 text-primary shrink-0" /> Address
+                        </span>
                         <button
                           type="button"
                           onClick={(e) => {
@@ -3921,8 +3961,8 @@ export function ModuleWorkspace({
                         >
                           + Add Address
                         </button>
-                      )}
-                    </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="customer-card-footer">
@@ -4635,7 +4675,7 @@ export function ModuleWorkspace({
             {isSalesCollector ? (
               <>
                 <div className="kpi">
-                  <p className="text-xs text-muted-foreground">Payments due</p>
+                  <p className="text-xs text-muted-foreground">Open bills</p>
                   <p className="kpi-value">
                     {
                       companyInvoices.filter(
@@ -4643,7 +4683,7 @@ export function ModuleWorkspace({
                       ).length
                     }
                   </p>
-                  <span className="trend">Open invoices</span>
+                  <span className="trend">To collect</span>
                 </div>
                 <div className="kpi">
                   <p className="text-xs text-muted-foreground">Amount due</p>
@@ -4656,12 +4696,12 @@ export function ModuleWorkspace({
                       ),
                     )}
                   </p>
-                  <span className="trend">Outstanding collections</span>
+                  <span className="trend">Still unpaid</span>
                 </div>
                 <div className="kpi">
                   <p className="text-xs text-muted-foreground">Collected</p>
                   <p className="kpi-value">{money(totalCollectedRevenue)}</p>
-                  <span className="trend">{dbPayments.length} receipts</span>
+                  <span className="trend">{dbPayments.length} paid</span>
                 </div>
                 <div className="kpi">
                   <p className="text-xs text-muted-foreground">Overdue</p>
@@ -4676,7 +4716,7 @@ export function ModuleWorkspace({
                       }).length
                     }
                   </p>
-                  <span className="trend">Past due date</span>
+                  <span className="trend">Late</span>
                 </div>
               </>
             ) : (
@@ -4985,9 +5025,9 @@ export function ModuleWorkspace({
                     {tab === "Payments due" ? "Payments due" : "Issued invoices"}
                   </h2>
                 </div>
-                <p className="text-xs text-muted-foreground">
+                <p className="text-sm text-muted-foreground">
                   {tab === "Payments due"
-                    ? "Open balances ready for field collection. Record payment against each invoice."
+                    ? "Tap a bill → enter amount collected → Save."
                     : "Invoice ↔ sales order ↔ dispatch. Filters stay on this company."}
                 </p>
               </div>
@@ -9465,7 +9505,7 @@ export function ModuleWorkspace({
             <SheetTitle>Add customer</SheetTitle>
             <SheetDescription>
               {currentUser?.role === "sales"
-                ? "Name and phone only — extras are optional."
+                ? "Only name and phone needed. Tap Save when done."
                 : "Create customer profile directly"}
             </SheetDescription>
           </SheetHeader>
@@ -9486,12 +9526,17 @@ export function ModuleWorkspace({
               </label>
             )}
             <label className="drawer-field">
-              Legal name <span className="text-destructive">*</span>
+              {currentUser?.role === "sales" ? "Customer name" : "Legal name"}{" "}
+              <span className="text-destructive">*</span>
               <input
                 required
                 value={custLegalName}
                 onChange={(e) => setCustLegalName(e.target.value)}
-                placeholder="Registered business legal name"
+                placeholder={
+                  currentUser?.role === "sales"
+                    ? "Shop or customer name"
+                    : "Registered business legal name"
+                }
               />
             </label>
             <label className="drawer-field">
@@ -9501,7 +9546,7 @@ export function ModuleWorkspace({
                 required
                 value={custPhone}
                 onChange={(e) => setCustPhone(e.target.value)}
-                placeholder="+91 98..."
+                placeholder="10-digit mobile number"
               />
             </label>
             {currentUser?.role !== "sales" && (
@@ -9611,19 +9656,19 @@ export function ModuleWorkspace({
               <button
                 type="button"
                 onClick={() => setSalesCustMore((v) => !v)}
-                className="text-xs font-semibold text-primary hover:underline cursor-pointer text-left"
+                className="text-sm font-semibold text-primary hover:underline cursor-pointer text-left min-h-11"
               >
-                {salesCustMore ? "Hide extra details" : "More details (optional)"}
+                {salesCustMore ? "Hide extra details" : "+ Address / GST (optional)"}
               </button>
             )}
             <div className="flex items-center gap-3 pt-3">
-              <Button type="submit" className="flex-1">
-                Save
+              <Button type="submit" className="flex-1 min-h-12 text-base font-bold">
+                Save customer
               </Button>
               <Button
                 type="button"
                 variant="outline"
-                className="flex-1"
+                className="flex-1 min-h-12"
                 onClick={() => {
                   setCustModal(false);
                   setSalesCustMore(false);

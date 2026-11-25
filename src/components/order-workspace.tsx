@@ -1541,12 +1541,12 @@ export function OrderTable({
               {isSales ? "New order" : "Create Order"}
             </SheetTitle>
             {isSales && (
-              <p className="text-xs text-muted-foreground">
-                Customer · product · quantity. Supervisor handles vehicle later.
+              <p className="text-sm text-muted-foreground">
+                1) Customer  2) Product  3) Quantity — then Save.
               </p>
             )}
           </SheetHeader>
-          <form onSubmit={handleCreateOrder} className="mt-4 space-y-3.5 pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
+          <form onSubmit={handleCreateOrder} className="mt-4 space-y-4 pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
             {(exceedsAvailable || shortageNotice) && (
               <div className="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
                 <AlertTriangle className="size-4 shrink-0 mt-0.5" />
@@ -2043,24 +2043,24 @@ export function OrderTable({
               <button
                 type="button"
                 onClick={() => setSalesOrderMore((v) => !v)}
-                className="text-xs font-semibold text-primary hover:underline cursor-pointer text-left"
+                className="text-sm font-semibold text-primary hover:underline cursor-pointer text-left min-h-11"
               >
-                {salesOrderMore ? "Hide extra details" : "More details (optional)"}
+                {salesOrderMore ? "Hide extra details" : "+ Address / notes (optional)"}
               </button>
             )}
             <Button
               type="submit"
-              className="w-full mt-2 h-11 text-xs font-bold"
+              className="w-full mt-2 min-h-12 text-base font-bold"
               disabled={isSubmitting || exceedsAvailable || !selectedProduct}
             >
               {isSubmitting
-                ? "Submitting..."
+                ? "Saving…"
                 : exceedsAvailable
                   ? "Stock too low"
                   : selectedProduct && parseFloat(unitPrice) < Number(selectedProduct.unit_price)
-                    ? "Submit (needs approval)"
+                    ? "Save (needs approval)"
                     : isSales
-                      ? "Submit"
+                      ? "Save order"
                       : "Submit Order"}
             </Button>
           </form>

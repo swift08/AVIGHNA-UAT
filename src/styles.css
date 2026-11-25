@@ -1733,17 +1733,28 @@
     border-radius: 14px !important;
   }
   .module-grid,
-  .kpi-grid,
   .customers-grid,
   .company-bar,
   .middle-grid,
   .bottom-grid {
     grid-template-columns: 1fr !important;
   }
-  .kpi + .kpi,
-  .kpi:nth-child(n + 3) {
+  /* Keep KPI summary as a readable 2×2 on phones (not a tall single column). */
+  .kpi-grid {
+    grid-template-columns: 1fr 1fr !important;
+  }
+  .kpi + .kpi {
     border-left: 0 !important;
-    border-top: 1px solid var(--border);
+    border-top: 0 !important;
+  }
+  .kpi:nth-child(odd) {
+    border-left: 0 !important;
+  }
+  .kpi:nth-child(even) {
+    border-left: 1px solid var(--border) !important;
+  }
+  .kpi:nth-child(n + 3) {
+    border-top: 1px solid var(--border) !important;
   }
   .content {
     overflow-x: clip;
@@ -1892,15 +1903,31 @@
   }
   .field-role .kpi-grid,
   .field-role .leads-kpi-grid {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 1fr !important;
     margin-top: 16px;
   }
   .field-role .kpi {
-    padding: 14px 12px;
+    padding: 16px 14px;
     min-height: 0;
   }
+  .field-role .kpi:nth-child(odd) {
+    border-left: 0 !important;
+  }
+  .field-role .kpi:nth-child(even) {
+    border-left: 1px solid var(--border) !important;
+  }
+  .field-role .kpi:nth-child(n + 3) {
+    border-top: 1px solid var(--border) !important;
+  }
   .field-role .kpi-value {
-    font-size: 22px;
+    font-size: 26px;
+  }
+  .field-role .kpi .text-xs,
+  .field-role .kpi p {
+    font-size: 13px;
+  }
+  .field-role .trend {
+    font-size: 12px;
   }
   .field-role .kpi .trend + span {
     flex-basis: 100%;
@@ -1978,20 +2005,82 @@
     gap: 12px;
   }
   .field-role .customer-card-row {
-    grid-template-columns: 72px minmax(0, 1fr);
-    gap: 6px 10px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 3px;
+  }
+  .field-role .customer-card-label {
+    font-size: 12px;
+  }
+  .field-role .customer-card-value {
+    font-size: 14px;
+    line-height: 1.45;
+  }
+  .field-role .customer-card-name {
+    font-size: 17px;
+  }
+  .field-role .customers-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  .field-role .customers-toolbar-action {
+    width: auto;
+    min-height: 44px;
+    padding-inline: 16px;
+    font-size: 14px;
   }
   .field-role .customer-card-footer {
     flex-wrap: wrap;
   }
   .field-role .customer-card-cta {
     white-space: normal;
+    font-size: 13px;
   }
   .field-role .customer-card-cta-full {
     display: none;
   }
   .field-role .customer-card-cta-short {
     display: inline;
+  }
+  /* Larger taps & text for older field users */
+  .field-role .page-heading {
+    font-size: clamp(24px, 6vw, 28px) !important;
+  }
+  .field-role .mobile-bottom-nav-item {
+    font-size: 11px;
+    gap: 4px;
+    min-height: 56px;
+  }
+  .field-role .mobile-bottom-nav-item svg {
+    width: 22px;
+    height: 22px;
+  }
+  .field-role .drawer-field {
+    font-size: 14px;
+    gap: 8px;
+  }
+  .field-role .drawer-field input,
+  .field-role .drawer-field select,
+  .field-role .drawer-field textarea,
+  .field-role .content input,
+  .field-role .content select,
+  .field-role .content textarea {
+    min-height: 48px;
+    font-size: 16px !important;
+    line-height: 1.35;
+  }
+  .field-role .content button:not(.mobile-bottom-nav-item):not([class*="size-"]),
+  .field-role .panel button:not([class*="size-"]),
+  .field-role [role="dialog"] button {
+    min-height: 44px;
+    font-size: 14px;
+  }
+  .field-role .section-tabs a {
+    min-height: 44px;
+    font-size: 13px;
+    padding: 10px 12px;
   }
   .field-role .table-scroll {
     overflow-x: auto;
@@ -2158,23 +2247,52 @@ html.driver-mobile .panel-head {
 }
 html.driver-mobile .kpi-grid,
 html.driver-mobile .leads-kpi-grid {
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1fr !important;
   margin-top: 16px;
 }
 html.driver-mobile .kpi {
-  padding: 14px 12px;
+  padding: 16px 14px;
   min-height: 0;
 }
-html.driver-mobile .kpi:nth-child(3) {
-  border-left: 0;
-  border-top: 1px solid var(--border);
+html.driver-mobile .kpi:nth-child(odd) {
+  border-left: 0 !important;
 }
-html.driver-mobile .kpi:nth-child(4) {
-  border-left: 1px solid var(--border);
-  border-top: 1px solid var(--border);
+html.driver-mobile .kpi:nth-child(even) {
+  border-left: 1px solid var(--border) !important;
+}
+html.driver-mobile .kpi:nth-child(n + 3) {
+  border-top: 1px solid var(--border) !important;
 }
 html.driver-mobile .kpi-value {
-  font-size: 22px;
+  font-size: 26px;
+}
+html.driver-mobile .trend {
+  font-size: 12px;
+}
+html.driver-mobile .page-heading {
+  font-size: clamp(24px, 6vw, 28px) !important;
+}
+html.driver-mobile .drawer-field input,
+html.driver-mobile .drawer-field select,
+html.driver-mobile .drawer-field textarea,
+html.driver-mobile .content input,
+html.driver-mobile .content select,
+html.driver-mobile .content textarea {
+  min-height: 48px;
+  font-size: 16px !important;
+}
+html.driver-mobile .mobile-bottom-nav-item {
+  font-size: 11px;
+  min-height: 56px;
+}
+html.driver-mobile .mobile-bottom-nav-item svg {
+  width: 22px;
+  height: 22px;
+}
+html.driver-mobile .section-tabs a {
+  min-height: 44px;
+  font-size: 13px;
+  padding: 10px 12px;
 }
 html.driver-mobile .middle-grid,
 html.driver-mobile .bottom-grid,
@@ -2475,14 +2593,37 @@ html.driver-mobile .customer-card {
   max-width: 100%;
 }
 html.driver-mobile .customer-card-row {
-  grid-template-columns: 72px minmax(0, 1fr);
-  gap: 6px 10px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+}
+html.driver-mobile .customer-card-label {
+  font-size: 12px;
+}
+html.driver-mobile .customer-card-value {
+  font-size: 14px;
+  line-height: 1.45;
+}
+html.driver-mobile .customer-card-name {
+  font-size: 17px;
+}
+html.driver-mobile .customers-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+html.driver-mobile .customers-toolbar-action {
+  width: auto;
+  min-height: 44px;
+  font-size: 14px;
 }
 html.driver-mobile .customer-card-footer {
   flex-wrap: wrap;
 }
 html.driver-mobile .customer-card-cta {
   white-space: normal;
+  font-size: 13px;
 }
 html.driver-mobile .customer-card-cta-full {
   display: none;
