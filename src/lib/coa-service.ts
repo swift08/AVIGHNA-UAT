@@ -128,11 +128,13 @@ async function extractWithAi(bytes: Buffer, mimeType: string): Promise<CoaExtrac
         content: [
           {
             type: "text",
-            text: `Extract Certificate of Analysis (COA) data from this document.
+            text: `Extract Certificate of Analysis (COA) or supplier Purchase / Tax Invoice data from this document.
 Return only values that are visibly present. Use null when missing — never invent values.
 Prefer ISO dates (YYYY-MM-DD) when possible.
-Extract tabular quality parameters with specification and result columns.
-For bags × weight (e.g. 216 Bags × 25 KG), fill packageCount, packageWeight, packageUnit and total quantity fields.`,
+Extract tabular quality parameters with specification and result columns when present (COA).
+For bags × weight (e.g. 216 Bags × 25 KG), fill packageCount, packageWeight, packageUnit and total quantity fields.
+For purchase / tax invoices (Tally etc.): put line Qty into dispatchQuantity + unit, and Grand Total / Invoice Total (₹) into invoiceAmount (digits only, no currency symbol).
+Also extract: invoiceNumber (Supplier Invoice No. / Invoice No., e.g. MH0026113992), ewayBillNumber (e-Way Bill No., usually 12 digits — if glued to invoice no., split them), invoiceDate (Supplier Invoice date as YYYY-MM-DD).`,
           },
           isPdf
             ? { type: "file" as const, data: bytes, mediaType: "application/pdf" as const }

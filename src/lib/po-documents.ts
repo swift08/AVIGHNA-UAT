@@ -17,6 +17,22 @@ export type PoDocRecord = {
   /** Supplier tax invoice, company PO copy, etc. */
   documentType?: "supplier_invoice" | "purchase_order";
   mimeType?: string;
+  /** OCR / confirm fields from supplier invoice */
+  invoiceNumber?: string;
+  ewayBillNumber?: string;
+  invoiceDate?: string;
+  batchNumber?: string;
+  invoiceAmount?: number;
+};
+
+export type PoInvoiceDocMeta = {
+  itemName?: string;
+  documentType?: PoDocRecord["documentType"];
+  invoiceNumber?: string;
+  ewayBillNumber?: string;
+  invoiceDate?: string;
+  batchNumber?: string;
+  invoiceAmount?: number;
 };
 
 function readAll(): Record<string, PoDocRecord> {
@@ -56,11 +72,21 @@ export function listPurchaseOrderDocumentIds() {
   return Object.keys(readAll());
 }
 
-/** Logistics: upload supplier invoice photo/PDF only — no OCR review. */
+/** Guess supplier invoice no. from common Tally export names like Purchase_MH0026113992.pdf */
+export function invoiceNumberFromFileName(name?: string | null): string | null {
+  if (!name) return null;
+  const base = name.replace(/\.[^.]+$/, "");
+  const m =
+    base.match(/Purchase[_\-\s]?([A-Za-z0-9][A-Za-z0-9/.\-]{4,30})$/i) ||
+    base.match(/\b([A-Z]{2,6}\d{6,}|[A-Z]{2,6}\/\d{2}-\d{2}\/\d+)\b/);
+  return m?.[1]?.trim() || null;
+}
+
+/** Logistics / supervisor: save supplier invoice file + OCR confirm fields. */
 export async function savePurchaseOrderDocument(
   poId: string,
   file: File,
-  opts?: { itemName?: string; documentType?: PoDocRecord["documentType"] },
+  opts?: PoInvoiceDocMeta,
 ) {
   const mime = guessMime(file);
   if (!ALLOWED_MIME.has(mime)) {
@@ -97,13 +123,52 @@ export async function savePurchaseOrderDocument(
         : mime.includes("webp")
           ? "webp"
           : "jpg";
+  const fileName = file.name || `Supplier_Invoice_${poId}.${ext}`;
+  const prev = map[poId];
   map[poId] = {
-    name: file.name || `Supplier_Invoice_${poId}.${ext}`,
+    name: fileName,
     dataUrl,
     uploadedAt: new Date().toISOString(),
-    itemName: opts?.itemName,
-    documentType: opts?.documentType || "supplier_invoice",
+    itemName: opts?.itemName ?? prev?.itemName,
+    documentType: opts?.documentType || prev?.documentType || "supplier_invoice",
     mimeType: mime,
+    invoiceNumber:
+      opts?.invoiceNumber?.trim() ||
+      prev?.invoiceNumber ||
+      invoiceNumberFromFileName(fileName) ||
+      undefined,
+    ewayBillNumber: opts?.ewayBillNumber?.trim() || prev?.ewayBillNumber,
+    invoiceDate: opts?.invoiceDate?.trim() || prev?.invoiceDate,
+    batchNumber: opts?.batchNumber?.trim() || prev?.batchNumber,
+    invoiceAmount:
+      opts?.invoiceAmount !== undefined && Number.isFinite(opts.invoiceAmount)
+        ? opts.invoiceAmount
+        : prev?.invoiceAmount,
+  };
+  writeAll(map);
+  return map[poId];
+}
+
+/** Update OCR fields on an already-saved PO document (no re-upload). */
+export function patchPurchaseOrderDocumentMeta(poId: string, meta: PoInvoiceDocMeta) {
+  const map = readAll();
+  const prev = map[poId];
+  if (!prev) return null;
+  map[poId] = {
+    ...prev,
+    ...(meta.itemName !== undefined ? { itemName: meta.itemName } : {}),
+    ...(meta.documentType ? { documentType: meta.documentType } : {}),
+    ...(meta.invoiceNumber?.trim()
+      ? { invoiceNumber: meta.invoiceNumber.trim() }
+      : {}),
+    ...(meta.ewayBillNumber?.trim()
+      ? { ewayBillNumber: meta.ewayBillNumber.trim() }
+      : {}),
+    ...(meta.invoiceDate?.trim() ? { invoiceDate: meta.invoiceDate.trim() } : {}),
+    ...(meta.batchNumber?.trim() ? { batchNumber: meta.batchNumber.trim() } : {}),
+    ...(meta.invoiceAmount !== undefined && Number.isFinite(meta.invoiceAmount)
+      ? { invoiceAmount: meta.invoiceAmount }
+      : {}),
   };
   writeAll(map);
   return map[poId];

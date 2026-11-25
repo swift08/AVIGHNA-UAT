@@ -9,6 +9,11 @@ export type PoDocumentMeta = {
   /** Supplier tax invoice uploaded by Accounts for this item */
   documentType?: "supplier_invoice" | "purchase_order";
   itemName?: string;
+  invoiceNumber?: string;
+  ewayBillNumber?: string;
+  invoiceDate?: string;
+  batchNumber?: string;
+  invoiceAmount?: number;
 };
 
 /** Suggest PO reference like GI/PO/55/26-27 */
@@ -32,15 +37,27 @@ export function parsePoNotes(notes?: string | null): PoDocumentMeta & { text: st
         documentKey: parsed.documentKey,
         documentType: parsed.documentType,
         itemName: parsed.itemName,
+        invoiceNumber: parsed.invoiceNumber,
+        ewayBillNumber: parsed.ewayBillNumber,
+        invoiceDate: parsed.invoiceDate,
+        batchNumber: parsed.batchNumber,
+        invoiceAmount:
+          parsed.invoiceAmount !== undefined ? Number(parsed.invoiceAmount) : undefined,
       };
     }
   } catch {
     // plain text notes
   }
   const docMatch = notes.match(/^\[DOC\]\s*(.+)$/m);
+  const invoiceFromText = notes.match(/Invoice\s*No\.?\s*([A-Za-z0-9/.\-]{4,30})/i)?.[1];
+  const ewayFromText = notes.match(/e-?Way\s*Bill\s*([0-9]{10,15})/i)?.[1];
+  const batchFromText = notes.match(/\bbatch\s+([A-Za-z0-9/.\-_]+)/i)?.[1];
   return {
     text: notes.replace(/^\[DOC\]\s*.+$/m, "").trim(),
     documentName: docMatch?.[1]?.trim(),
+    invoiceNumber: invoiceFromText?.trim(),
+    ewayBillNumber: ewayFromText?.trim(),
+    batchNumber: batchFromText?.trim(),
   };
 }
 
@@ -52,6 +69,14 @@ export function encodePoNotes(meta: PoDocumentMeta & { text?: string }) {
     documentKey: meta.documentKey || undefined,
     documentType: meta.documentType || undefined,
     itemName: meta.itemName || undefined,
+    invoiceNumber: meta.invoiceNumber || undefined,
+    ewayBillNumber: meta.ewayBillNumber || undefined,
+    invoiceDate: meta.invoiceDate || undefined,
+    batchNumber: meta.batchNumber || undefined,
+    invoiceAmount:
+      meta.invoiceAmount !== undefined && Number.isFinite(meta.invoiceAmount)
+        ? meta.invoiceAmount
+        : undefined,
   });
 }
 

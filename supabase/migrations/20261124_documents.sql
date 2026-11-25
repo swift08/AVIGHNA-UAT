@@ -16,5 +16,60 @@ CREATE TABLE IF NOT EXISTS public.documents (
 );
 
 ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+
 DROP POLICY IF EXISTS "Public read documents" ON public.documents;
-CREATE POLICY "Public read documents" ON public.documents FOR ALL USING (true);
+DROP POLICY IF EXISTS auth_select_documents ON public.documents;
+DROP POLICY IF EXISTS auth_insert_documents ON public.documents;
+DROP POLICY IF EXISTS auth_update_documents ON public.documents;
+DROP POLICY IF EXISTS auth_delete_documents ON public.documents;
+
+CREATE POLICY auth_select_documents ON public.documents
+  FOR SELECT TO authenticated USING (true);
+CREATE POLICY auth_insert_documents ON public.documents
+  FOR INSERT TO authenticated WITH CHECK (true);
+CREATE POLICY auth_update_documents ON public.documents
+  FOR UPDATE TO authenticated USING (true) WITH CHECK (true);
+CREATE POLICY auth_delete_documents ON public.documents
+  FOR DELETE TO authenticated USING (true);
+
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES (
+  'documents',
+  'documents',
+  true,
+  20971520,
+  ARRAY[
+    'application/pdf',
+    'image/jpeg',
+    'image/png',
+    'image/jpg',
+    'image/webp',
+    'application/json'
+  ]::text[]
+)
+ON CONFLICT (id) DO UPDATE SET
+  public = true,
+  file_size_limit = EXCLUDED.file_size_limit,
+  allowed_mime_types = EXCLUDED.allowed_mime_types;
+
+DROP POLICY IF EXISTS auth_documents_storage_select ON storage.objects;
+DROP POLICY IF EXISTS auth_documents_storage_insert ON storage.objects;
+DROP POLICY IF EXISTS auth_documents_storage_update ON storage.objects;
+DROP POLICY IF EXISTS auth_documents_storage_delete ON storage.objects;
+
+CREATE POLICY auth_documents_storage_select ON storage.objects
+  FOR SELECT TO authenticated
+  USING (bucket_id = 'documents');
+
+CREATE POLICY auth_documents_storage_insert ON storage.objects
+  FOR INSERT TO authenticated
+  WITH CHECK (bucket_id = 'documents');
+
+CREATE POLICY auth_documents_storage_update ON storage.objects
+  FOR UPDATE TO authenticated
+  USING (bucket_id = 'documents')
+  WITH CHECK (bucket_id = 'documents');
+
+CREATE POLICY auth_documents_storage_delete ON storage.objects
+  FOR DELETE TO authenticated
+  USING (bucket_id = 'documents');

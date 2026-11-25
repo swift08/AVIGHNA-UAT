@@ -7,6 +7,7 @@ import {
   requireRole,
   requireSuperAdmin,
 } from "./security";
+import { encodePoNotes, parsePoNotes } from "./purchase-order-doc";
 
 export type VehicleStatus =
   "Available / At Godown" | "Dispatched / On Delivery" | "Returned to Godown" | "Assigned / Booked";
@@ -2003,6 +2004,11 @@ export async function receivePurchaseGoods(
     manufacturerName?: string;
     mfgDate?: string | null;
     expiryDate?: string | null;
+    /** Persist on PO notes for list display */
+    invoiceNumber?: string;
+    ewayBillNumber?: string;
+    invoiceDate?: string;
+    invoiceAmount?: number;
   },
 ): Promise<{
   po: DBPurchaseOrder;
@@ -2058,6 +2064,24 @@ export async function receivePurchaseGoods(
   const newReceived = previouslyReceived + receivedThisTime;
   const remaining = Math.max(0, Number(po.quantity) - newReceived);
 
+  const supplierBatch = options?.batchNumber?.trim();
+  const usedBatchPreview =
+    supplierBatch || `PO-${poId}-R${Date.now().toString().slice(-6)}`;
+  const prevNotes = parsePoNotes(po.notes);
+  const nextNotes = encodePoNotes({
+    ...prevNotes,
+    text: [prevNotes.text, options?.notes?.trim()].filter(Boolean).join(" · "),
+    documentType: "supplier_invoice",
+    invoiceNumber: options?.invoiceNumber?.trim() || prevNotes.invoiceNumber,
+    ewayBillNumber: options?.ewayBillNumber?.trim() || prevNotes.ewayBillNumber,
+    invoiceDate: options?.invoiceDate?.trim() || prevNotes.invoiceDate,
+    batchNumber: usedBatchPreview || prevNotes.batchNumber,
+    invoiceAmount:
+      options?.invoiceAmount !== undefined && Number.isFinite(options.invoiceAmount)
+        ? options.invoiceAmount
+        : prevNotes.invoiceAmount,
+  });
+
   const { data: updated, error } = await supabase
     .from("purchase_orders")
     .update({
@@ -2065,6 +2089,12 @@ export async function receivePurchaseGoods(
       updated_at: new Date().toISOString(),
       // Trigger flips to Received when fully received; keep In transit for partials
       status: remaining > 0 ? "In transit" : "Received",
+      notes: nextNotes,
+      ...(options?.invoiceAmount !== undefined &&
+      Number.isFinite(options.invoiceAmount) &&
+      options.invoiceAmount > 0
+        ? { total_amount: options.invoiceAmount }
+        : {}),
     })
     .eq("id", poId)
     .select()
@@ -2076,9 +2106,7 @@ export async function receivePurchaseGoods(
   let usedBatchNumber: string | undefined;
   if (productId && receivedThisTime > 0) {
     try {
-      const supplierBatch = options?.batchNumber?.trim();
-      const batchNumber =
-        supplierBatch || `PO-${poId}-R${Date.now().toString().slice(-6)}`;
+      const batchNumber = usedBatchPreview;
       usedBatchNumber = batchNumber;
       const noteParts = [
         `Receipt from PO #${poId}`,

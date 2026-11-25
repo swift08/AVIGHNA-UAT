@@ -41,6 +41,14 @@ export const coaExtractionSchema = z.object({
   packageCount: field,
   packageWeight: field,
   packageUnit: field,
+  /** Invoice / bill grand total (₹) — purchase invoices & tax invoices */
+  invoiceAmount: field.default({ value: null, confidence: 0 }),
+  /** Supplier / tax Invoice No. (e.g. MH0026113992) */
+  invoiceNumber: field.default({ value: null, confidence: 0 }),
+  /** e-Way Bill No. (usually 12 digits) */
+  ewayBillNumber: field.default({ value: null, confidence: 0 }),
+  /** Supplier invoice date */
+  invoiceDate: field.default({ value: null, confidence: 0 }),
   coaRemarks: field,
   qualityParameters: z.array(coaQualityRowSchema).default([]),
   notes: z.string().nullable().default(null),
@@ -70,10 +78,188 @@ export function emptyCoaExtraction(): CoaExtraction {
     packageCount: { value: null, confidence: 0 },
     packageWeight: { value: null, confidence: 0 },
     packageUnit: { value: null, confidence: 0 },
+    invoiceAmount: { value: null, confidence: 0 },
+    invoiceNumber: { value: null, confidence: 0 },
+    ewayBillNumber: { value: null, confidence: 0 },
+    invoiceDate: { value: null, confidence: 0 },
     coaRemarks: { value: null, confidence: 0 },
     qualityParameters: [],
     notes: null,
   });
+}
+
+const emptyField = (): CoaField => ({ value: null, confidence: 0 });
+
+/**
+ * Tally purchase invoice headers:
+ *   Invoice No. e-Way Bill No.
+ *   MH0026113992232330552894   (often glued)
+ *   Supplier Invoice No. & Date.
+ *   MH0026113992  dt. 16-Nov-26
+ */
+export function extractPurchaseInvoiceRefs(text: string): {
+  invoiceNumber: CoaField;
+  ewayBillNumber: CoaField;
+  invoiceDate: CoaField;
+} {
+  if (!text.trim()) {
+    return {
+      invoiceNumber: emptyField(),
+      ewayBillNumber: emptyField(),
+      invoiceDate: emptyField(),
+    };
+  }
+  const corpus = text.replace(/\r/g, "\n");
+
+  let invoiceNumber: string | null = null;
+  let ewayBillNumber: string | null = null;
+  let invoiceDateRaw: string | null = null;
+  let invConf = 0;
+  let ewayConf = 0;
+  let dateConf = 0;
+
+  const supplierBlock = corpus.match(
+    /Supplier\s*Invoice\s*No\.?\s*&?\s*Date\.?\s*[\s:\n]*([A-Za-z0-9][A-Za-z0-9/.\-]{3,40})\s*(?:dt\.?\s*)?(\d{1,2}[-./][A-Za-z]{3}[-./]\d{2,4}|\d{1,2}[-./]\d{1,2}[-./]\d{2,4})?/i,
+  );
+  if (supplierBlock?.[1]) {
+    invoiceNumber = supplierBlock[1].trim();
+    invConf = 0.92;
+    if (supplierBlock[2]) {
+      invoiceDateRaw = supplierBlock[2].trim();
+      dateConf = 0.9;
+    }
+  }
+
+  const invoiceOnly = corpus.match(
+    /Invoice\s*No\.?\s*(?!e-?\s*Way)[\s:\n]*([A-Za-z0-9][A-Za-z0-9/.\-]{3,40})/i,
+  );
+  if (!invoiceNumber && invoiceOnly?.[1] && !/e-?\s*way/i.test(invoiceOnly[1])) {
+    invoiceNumber = invoiceOnly[1].trim();
+    invConf = 0.8;
+  }
+
+  const pairedLine = corpus.match(
+    /Invoice\s*No\.?\s*e-?\s*Way\s*Bill\s*No\.?\s*[\s:\n]*([A-Za-z0-9][A-Za-z0-9/.\- ]{6,60})/i,
+  );
+  if (pairedLine?.[1]) {
+    const raw = pairedLine[1].replace(/\s+/g, " ").trim();
+    const spaced = raw.match(/^([A-Za-z0-9/.\-]{4,30})\s+(\d{10,15})$/);
+    if (spaced) {
+      if (!invoiceNumber) {
+        invoiceNumber = spaced[1]!.trim();
+        invConf = 0.88;
+      }
+      ewayBillNumber = spaced[2]!.trim();
+      ewayConf = 0.9;
+    } else if (invoiceNumber && raw.replace(/\s/g, "").startsWith(invoiceNumber.replace(/\s/g, ""))) {
+      const rest = raw.replace(/\s/g, "").slice(invoiceNumber.replace(/\s/g, "").length);
+      if (/^\d{10,15}$/.test(rest)) {
+        ewayBillNumber = rest;
+        ewayConf = 0.9;
+      }
+    } else {
+      // Glued alphanumeric invoice + 12-digit e-way (common Tally export)
+      const glued = raw.replace(/\s/g, "").match(/^([A-Za-z0-9/.\-]{6,24})(\d{12})$/);
+      if (glued) {
+        if (!invoiceNumber) {
+          invoiceNumber = glued[1]!;
+          invConf = 0.85;
+        }
+        ewayBillNumber = glued[2]!;
+        ewayConf = 0.88;
+      }
+    }
+  }
+
+  const ewayLabel = corpus.match(
+    /e-?\s*Way\s*Bill\s*No\.?\s*[:.\-]?\s*(\d{10,15})/i,
+  );
+  if (!ewayBillNumber && ewayLabel?.[1]) {
+    ewayBillNumber = ewayLabel[1]!;
+    ewayConf = 0.85;
+  }
+
+  if (!invoiceDateRaw) {
+    const dtNear = corpus.match(
+      /(?:Supplier\s*Invoice[^\n]{0,40}|Invoice\s*No[^\n]{0,40})[\s\S]{0,80}?dt\.?\s*(\d{1,2}[-./][A-Za-z]{3}[-./]\d{2,4}|\d{1,2}[-./]\d{1,2}[-./]\d{2,4})/i,
+    );
+    if (dtNear?.[1]) {
+      invoiceDateRaw = dtNear[1]!;
+      dateConf = 0.75;
+    }
+  }
+
+  const invoiceDateIso = normalizeDateValue(
+    invoiceDateRaw
+      ? invoiceDateRaw.replace(
+          /^(\d{1,2})[-./]([A-Za-z]{3})[-./](\d{2,4})$/i,
+          (_, d, mon, y) => {
+            const months: Record<string, string> = {
+              jan: "01",
+              feb: "02",
+              mar: "03",
+              apr: "04",
+              may: "05",
+              jun: "06",
+              jul: "07",
+              aug: "08",
+              sep: "09",
+              oct: "10",
+              nov: "11",
+              dec: "12",
+            };
+            const m = months[String(mon).toLowerCase()] || "01";
+            const year = String(y).length === 2 ? `20${y}` : String(y);
+            return `${d}-${m}-${year}`;
+          },
+        )
+      : null,
+  );
+
+  return {
+    invoiceNumber: invoiceNumber
+      ? { value: invoiceNumber, confidence: invConf }
+      : emptyField(),
+    ewayBillNumber: ewayBillNumber
+      ? { value: ewayBillNumber, confidence: ewayConf }
+      : emptyField(),
+    invoiceDate: invoiceDateIso
+      ? { value: invoiceDateIso, confidence: dateConf }
+      : invoiceDateRaw
+        ? { value: invoiceDateRaw, confidence: Math.max(dateConf, 0.6) }
+        : emptyField(),
+  };
+}
+
+/** Parse invoice ₹ amount from OCR / PDF text (Tally purchase invoices, tax invoices). */
+export function extractInvoiceAmountFromText(text: string): CoaField {
+  if (!text.trim()) return { value: null, confidence: 0 };
+  const corpus = text.replace(/\u20b9/g, "₹");
+  const patterns = [
+    /(?:grand\s*total|invoice\s*total|total\s*amount|amount\s*payable|net\s*payable|bill\s*amount|total\s*value)\s*[:.\-]?\s*(?:₹|rs\.?|inr)?\s*([0-9][0-9,]*(?:\.\d{1,2})?)/i,
+    /(?:₹|rs\.?|inr)\s*([0-9][0-9,]*(?:\.\d{1,2})?)\s*(?:only)?/i,
+  ];
+  for (const re of patterns) {
+    const match = corpus.match(re);
+    if (!match?.[1]) continue;
+    const n = Number(String(match[1]).replace(/,/g, ""));
+    if (Number.isFinite(n) && n > 0) {
+      return { value: String(n), confidence: 0.75 };
+    }
+  }
+  // Last-resort: largest money-looking number on a "total" line
+  const totalLines = corpus
+    .split(/\n/)
+    .filter((l) => /total|amount|payable|value/i.test(l));
+  let best = 0;
+  for (const line of totalLines) {
+    for (const m of line.matchAll(/([0-9]{1,3}(?:,[0-9]{3})+(?:\.\d{1,2})?|[0-9]+\.\d{2})/g)) {
+      const n = Number(String(m[1]).replace(/,/g, ""));
+      if (Number.isFinite(n) && n > best) best = n;
+    }
+  }
+  if (best > 0) return { value: String(best), confidence: 0.55 };
+  return { value: null, confidence: 0 };
 }
 
 export function normalizeDateValue(raw: string | null | undefined): string | null {
@@ -179,6 +365,10 @@ export function mergeCoaExtractions(primary: CoaExtraction, secondary: CoaExtrac
     "packageCount",
     "packageWeight",
     "packageUnit",
+    "invoiceAmount",
+    "invoiceNumber",
+    "ewayBillNumber",
+    "invoiceDate",
     "coaRemarks",
   ];
   const out = emptyCoaExtraction();
@@ -354,6 +544,30 @@ export function heuristicExtractFromText(text: string): CoaExtraction {
   }
 
   base.coaRemarks = pick(/remarks?\s*[:.\-]?\s*([^\n\r]{8,180})/i, 0.65);
+  base.invoiceAmount = extractInvoiceAmountFromText(corpus);
+  const invRefs = extractPurchaseInvoiceRefs(corpus);
+  base.invoiceNumber = invRefs.invoiceNumber;
+  base.ewayBillNumber = invRefs.ewayBillNumber;
+  base.invoiceDate = invRefs.invoiceDate;
+
+  // Purchase / qty lines common on Tally tax invoices (labelled Qty only — not bag×weight tails)
+  const purchaseQty = corpus.match(
+    /(?:\bqty\.?|\bquantity)\s*[:.\-]?\s*([0-9][0-9,]*(?:\.\d+)?)\s*(MT|kg|KG|nos?|bags?|pcs?|quintal|qtl)?/i,
+  );
+  if (
+    purchaseQty &&
+    !base.dispatchQuantity.value &&
+    !base.batchQuantity.value &&
+    !base.packageCount.value
+  ) {
+    const q = String(purchaseQty[1]!).replace(/,/g, "");
+    if (Number(q) > 0) {
+      base.dispatchQuantity = { value: q, confidence: 0.7 };
+      if (purchaseQty[2]) {
+        base.unit = { value: purchaseQty[2], confidence: 0.7 };
+      }
+    }
+  }
 
   // Quality rows: numbered Ambuja table lines or pipe-separated.
   const lines = corpus.split(/\n/).map((l) => l.trim()).filter(Boolean);
@@ -568,6 +782,35 @@ export function finalizeCoaExtraction(extraction: CoaExtraction, sourceText = ""
   if (!out.unit.value) {
     const qty = resolvedReceiveQuantity(out);
     if (qty.quantity > 0) out.unit = makeField(qty.unit, 0.75);
+  }
+  const amt = extractInvoiceAmountFromText(corpus);
+  if (amt.value && (!out.invoiceAmount.value || amt.confidence > out.invoiceAmount.confidence)) {
+    out.invoiceAmount = amt;
+  }
+  if (out.invoiceAmount.value) {
+    const n = Number(String(out.invoiceAmount.value).replace(/,/g, ""));
+    if (Number.isFinite(n) && n > 0) {
+      out.invoiceAmount = makeField(String(n), Math.max(out.invoiceAmount.confidence, 0.7));
+    }
+  }
+  const invRefs = extractPurchaseInvoiceRefs(corpus);
+  if (
+    invRefs.invoiceNumber.value &&
+    (!out.invoiceNumber.value || invRefs.invoiceNumber.confidence > out.invoiceNumber.confidence)
+  ) {
+    out.invoiceNumber = invRefs.invoiceNumber;
+  }
+  if (
+    invRefs.ewayBillNumber.value &&
+    (!out.ewayBillNumber.value || invRefs.ewayBillNumber.confidence > out.ewayBillNumber.confidence)
+  ) {
+    out.ewayBillNumber = invRefs.ewayBillNumber;
+  }
+  if (
+    invRefs.invoiceDate.value &&
+    (!out.invoiceDate.value || invRefs.invoiceDate.confidence > out.invoiceDate.confidence)
+  ) {
+    out.invoiceDate = invRefs.invoiceDate;
   }
   if (out.unit.value) {
     const u = out.unit.value.toUpperCase() === "KG" ? "kg" : out.unit.value.toUpperCase() === "MT" || /M1/i.test(out.unit.value) ? "MT" : out.unit.value;

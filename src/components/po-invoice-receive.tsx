@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Camera, FileUp, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import {
   emptyCoaExtraction,
   fieldStatus,
   normalizeDateValue,
+  parseQuantityNumber,
   resolvedReceiveQuantity,
   type CoaExtraction,
   type CoaField,
@@ -23,6 +24,7 @@ import {
   isCoaImageFile,
 } from "@/lib/coa-client-ocr";
 import { extractCoaDocument } from "@/lib/coa-service";
+import { savePurchaseOrderDocument, patchPurchaseOrderDocumentMeta } from "@/lib/po-documents";
 import {
   poPaymentRemaining,
   poPaymentStatus,
@@ -127,6 +129,7 @@ export function PoInvoiceReceiveSheet({
   actorRole,
   actorName,
   allowAnyStatus,
+  initialFile,
   onReceived,
 }: {
   po: DBPurchaseOrder | null;
@@ -135,6 +138,8 @@ export function PoInvoiceReceiveSheet({
   actorRole: RoleType | undefined;
   actorName: string;
   allowAnyStatus?: boolean;
+  /** When set (e.g. from Attach PDF), start OCR on this file immediately. */
+  initialFile?: File | null;
   onReceived: () => void;
 }) {
   const [stage, setStage] = useState<
@@ -144,6 +149,7 @@ export function PoInvoiceReceiveSheet({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [extraction, setExtraction] = useState<CoaExtraction>(emptyCoaExtraction());
   const [receiveQty, setReceiveQty] = useState("");
+  const [invoiceAmount, setInvoiceAmount] = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
@@ -160,6 +166,7 @@ export function PoInvoiceReceiveSheet({
   const qtyPreview = useMemo(() => resolvedReceiveQuantity(extraction), [extraction]);
   const paymentPo = receivedPo || po;
   const payRemaining = paymentPo ? poPaymentRemaining(paymentPo) : 0;
+  const poTotal = po ? Number(po.total_amount) || 0 : 0;
 
   const applySettlement = (mode: PaySettlement, rem: number) => {
     setPaySettlement(mode);
@@ -178,6 +185,7 @@ export function PoInvoiceReceiveSheet({
     setPreviewUrl(null);
     setExtraction(emptyCoaExtraction());
     setReceiveQty("");
+    setInvoiceAmount("");
     setNotes("");
     setError("");
     setWarning(null);
@@ -265,8 +273,12 @@ export function PoInvoiceReceiveSheet({
           ? Math.min(resolved.quantity, remaining)
           : remaining;
       setReceiveQty(String(suggested || ""));
+      const amtRaw =
+        extractionNext.invoiceAmount.value ||
+        (poTotal > 0 ? String(poTotal) : "");
+      setInvoiceAmount(amtRaw ? String(parseQuantityNumber(amtRaw) || amtRaw) : "");
       setStage("review");
-      toast.success("Review OCR details, then confirm to update inventory.");
+      toast.success("Check quantity & amount — then confirm if correct.");
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not read invoice.";
       setError(message);
@@ -279,9 +291,18 @@ export function PoInvoiceReceiveSheet({
     if (!next) return;
     if (previewUrl) URL.revokeObjectURL(previewUrl);
     setFile(next);
-    setPreviewUrl(URL.createObjectURL(next));
+    setPreviewUrl(
+      next.type.startsWith("image/") ? URL.createObjectURL(next) : null,
+    );
     void runExtract(next);
   };
+
+  useEffect(() => {
+    if (!open || !po || !initialFile) return;
+    onPickFile(initialFile);
+    // Only when sheet opens with a new file from Attach PDF
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, po?.id, initialFile]);
 
   const handleCamera = async () => {
     const photo = await pickInvoicePhoto();
@@ -315,16 +336,31 @@ export function PoInvoiceReceiveSheet({
       return;
     }
 
-    const batchNumber = extraction.batchNumber.value?.trim();
-    if (!batchNumber) {
-      setError("Batch / lot number from the invoice is required.");
-      toast.error("Enter the supplier batch ID before confirming.");
-      return;
-    }
+    const invoiceNo = extraction.invoiceNumber.value?.trim() || "";
+    const ewayNo = extraction.ewayBillNumber.value?.trim() || "";
+    const batchNumber =
+      extraction.batchNumber.value?.trim() ||
+      invoiceNo ||
+      `INV-${po.id}-${Date.now().toString().slice(-4)}`;
+    const amountNum = parseQuantityNumber(invoiceAmount);
 
     setStage("saving");
     setError("");
     try {
+      const invoiceMeta = {
+        itemName: po.product_name,
+        documentType: "supplier_invoice" as const,
+        invoiceNumber: invoiceNo || undefined,
+        ewayBillNumber: ewayNo || undefined,
+        invoiceDate: extraction.invoiceDate.value?.trim() || undefined,
+        batchNumber,
+        invoiceAmount: amountNum > 0 ? amountNum : undefined,
+      };
+      if (file) {
+        await savePurchaseOrderDocument(po.id, file, invoiceMeta);
+      } else {
+        patchPurchaseOrderDocumentMeta(po.id, invoiceMeta);
+      }
       const mfg = normalizeDateValue(extraction.manufacturingDate.value);
       const exp = normalizeDateValue(extraction.expiryDate.value);
       const result = await receivePurchaseGoods(po.id, po.company_id, actorName, {
@@ -332,7 +368,13 @@ export function PoInvoiceReceiveSheet({
         receiveQty: qty,
         notes: [
           notes.trim(),
-          file ? `Invoice photo: ${file.name}` : "",
+          file ? `Invoice: ${file.name}` : "",
+          invoiceNo ? `Invoice No. ${invoiceNo}` : "",
+          ewayNo ? `e-Way Bill ${ewayNo}` : "",
+          extraction.invoiceDate.value
+            ? `Invoice date ${extraction.invoiceDate.value}`
+            : "",
+          amountNum > 0 ? `Invoice amount ₹${amountNum.toLocaleString("en-IN")}` : "",
           extraction.productName.value
             ? `OCR product: ${extraction.productName.value}`
             : "",
@@ -344,17 +386,25 @@ export function PoInvoiceReceiveSheet({
         manufacturerName: extraction.manufacturerName.value || undefined,
         mfgDate: mfg,
         expiryDate: exp,
+        invoiceNumber: invoiceNo || undefined,
+        ewayBillNumber: ewayNo || undefined,
+        invoiceDate: extraction.invoiceDate.value?.trim() || undefined,
+        invoiceAmount: amountNum > 0 ? amountNum : undefined,
       });
 
       const updatedPo = {
         ...result.po,
         paid_amount: Number(result.po.paid_amount ?? po.paid_amount) || 0,
+        total_amount:
+          amountNum > 0
+            ? amountNum
+            : Number(result.po.total_amount ?? po.total_amount) || 0,
       };
       setReceivedPo(updatedPo);
       setReceivedThisTime(result.receivedThisTime);
       const remPay = poPaymentRemaining(updatedPo);
       setPaySettlement("fully");
-      setPayAmount(remPay > 0 ? String(remPay) : "");
+      setPayAmount(remPay > 0 ? String(remPay) : amountNum > 0 ? String(amountNum) : "");
       if (result.remaining > 0) {
         toast.success(
           `Stock updated: +${result.receivedThisTime} ${po.unit}. Remaining to receive: ${result.remaining} ${po.unit}. Now choose Fully / Partially paid.`,
@@ -448,7 +498,7 @@ export function PoInvoiceReceiveSheet({
           <SheetDescription>
             {stage === "payment"
               ? `Stock is updated. Record how much was paid to ${paymentPo?.supplier_name || "the supplier"} for this invoice, and the payment type.`
-              : `Supervisor uploads the supplier invoice PDF (or photo). OCR fills product, batch ID, and qty — confirm to tag stock to PO #${po?.id}. Then record supplier payment.`}
+              : `Upload the supplier purchase invoice PDF (or photo). We read quantity & amount — confirm if correct, then stock updates for PO #${po?.id}.`}
           </SheetDescription>
         </SheetHeader>
 
@@ -575,26 +625,104 @@ export function PoInvoiceReceiveSheet({
                   />
                 </div>
 
-                <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-2">
-                  <p className="text-[11px] font-bold uppercase tracking-wide text-primary">
-                    Confirm this arrival
+                <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-3">
+                  <p className="text-[12px] font-bold text-primary">
+                    Is this correct?
                   </p>
-                  <p className="text-[11px] text-muted-foreground">
-                    OCR suggested {qtyPreview.quantity || "—"} {qtyPreview.unit || po.unit}. Enter
-                    how much arrived now (max {remaining} {po.unit}).
+                  <p className="text-[12px] text-muted-foreground">
+                    From the invoice we read{" "}
+                    {extraction.invoiceNumber.value ? (
+                      <>
+                        Invoice No.{" "}
+                        <strong className="text-foreground">
+                          {extraction.invoiceNumber.value}
+                        </strong>
+                        {extraction.ewayBillNumber.value ? (
+                          <>
+                            {" "}
+                            · e-Way{" "}
+                            <strong className="text-foreground">
+                              {extraction.ewayBillNumber.value}
+                            </strong>
+                          </>
+                        ) : null}
+                        {" · "}
+                      </>
+                    ) : null}
+                    qty{" "}
+                    <strong className="text-foreground">
+                      {qtyPreview.quantity || "—"} {qtyPreview.unit || po.unit}
+                    </strong>
+                    {extraction.invoiceAmount.value ? (
+                      <>
+                        {" "}
+                        · amount{" "}
+                        <strong className="text-foreground">
+                          ₹
+                          {Number(
+                            parseQuantityNumber(extraction.invoiceAmount.value) || 0,
+                          ).toLocaleString("en-IN")}
+                        </strong>
+                      </>
+                    ) : null}
+                    . Fix below if needed, then tap Yes.
                   </p>
-                  <label className="flex flex-col gap-1.5 text-[12px] font-medium">
-                    Qty this arrival ({po.unit})
-                    <input
-                      type="number"
-                      min="0.001"
-                      step="any"
-                      max={remaining}
-                      className="h-10 rounded-md border border-border bg-background px-3 text-[14px] font-semibold"
-                      value={receiveQty}
-                      onChange={(e) => setReceiveQty(e.target.value)}
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <FieldInput
+                      label="Invoice No. (Supplier Invoice No.)"
+                      field={extraction.invoiceNumber}
+                      onChange={(n) => updateField("invoiceNumber", n)}
                     />
-                  </label>
+                    <FieldInput
+                      label="e-Way Bill No."
+                      field={extraction.ewayBillNumber}
+                      onChange={(n) => updateField("ewayBillNumber", n)}
+                    />
+                    <FieldInput
+                      label="Supplier Invoice Date"
+                      field={extraction.invoiceDate}
+                      kind="date"
+                      onChange={(n) => updateField("invoiceDate", n)}
+                    />
+                    <FieldInput
+                      label="Batch / lot (optional)"
+                      field={extraction.batchNumber}
+                      onChange={(n) => updateField("batchNumber", n)}
+                    />
+                    <label className="flex flex-col gap-1.5 text-[12px] font-medium">
+                      Quantity arrived ({po.unit})
+                      <input
+                        type="number"
+                        min="0.001"
+                        step="any"
+                        max={remaining}
+                        className="h-11 rounded-md border border-border bg-background px-3 text-[15px] font-semibold"
+                        value={receiveQty}
+                        onChange={(e) => setReceiveQty(e.target.value)}
+                      />
+                      <span className="text-[10px] text-muted-foreground">
+                        Max remaining on PO: {remaining} {po.unit}
+                      </span>
+                    </label>
+                    <label className="flex flex-col gap-1.5 text-[12px] font-medium">
+                      Invoice amount (₹)
+                      <input
+                        type="number"
+                        min="0"
+                        step="any"
+                        className="h-11 rounded-md border border-border bg-background px-3 text-[15px] font-semibold"
+                        value={invoiceAmount}
+                        onChange={(e) => {
+                          setInvoiceAmount(e.target.value);
+                          updateField("invoiceAmount", {
+                            value: e.target.value || null,
+                            confidence: 0.95,
+                          });
+                        }}
+                        placeholder={poTotal > 0 ? String(poTotal) : "Grand total from bill"}
+                      />
+                    </label>
+                  </div>
                   <label className="flex flex-col gap-1.5 text-[12px] font-medium">
                     Notes (optional)
                     <input
@@ -606,7 +734,7 @@ export function PoInvoiceReceiveSheet({
                   </label>
                   {Number(receiveQty) > 0 && Number(receiveQty) <= remaining && (
                     <p className="text-[11px] font-semibold text-foreground">
-                      After confirm: remaining will be{" "}
+                      After Yes: remaining will be{" "}
                       <span className="text-primary">
                         {(remaining - Number(receiveQty)).toLocaleString("en-IN")} {po.unit}
                       </span>
@@ -625,17 +753,17 @@ export function PoInvoiceReceiveSheet({
                   <Button
                     type="button"
                     variant="outline"
-                    className="h-9 text-xs font-semibold"
+                    className="h-11 text-sm font-semibold"
                     disabled={stage === "saving"}
                     onClick={() => {
                       reset();
                     }}
                   >
-                    Re-upload photo
+                    No — re-upload
                   </Button>
                   <Button
                     type="button"
-                    className="h-9 flex-1 text-xs font-bold"
+                    className="h-11 flex-1 text-sm font-bold"
                     disabled={stage === "saving"}
                     onClick={() => void handleConfirm()}
                   >
@@ -645,7 +773,7 @@ export function PoInvoiceReceiveSheet({
                         Updating inventory…
                       </>
                     ) : (
-                      "Confirm details & update inventory"
+                      "Yes, this is correct — update stock"
                     )}
                   </Button>
                 </div>

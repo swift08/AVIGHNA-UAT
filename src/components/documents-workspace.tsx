@@ -148,7 +148,7 @@ export function DocumentsWorkspace() {
   const handleDelete = async (doc: DocumentRecord) => {
     if (!window.confirm(`Permanently delete "${doc.title}"?`)) return;
     try {
-      await deleteDocument(doc);
+      await deleteDocument(doc, { role, actorName: currentUser?.name });
       toast.success("Document deleted");
       setDocs((prev) => prev.filter((d) => d.id !== doc.id));
       if (previewDoc?.id === doc.id) setPreviewDoc(null);

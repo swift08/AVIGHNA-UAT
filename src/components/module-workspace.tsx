@@ -95,8 +95,8 @@ import {
 } from "@/lib/purchase-order-doc";
 import {
   getPurchaseOrderDocument,
+  invoiceNumberFromFileName,
   openPurchaseOrderDocument,
-  savePurchaseOrderDocument,
 } from "@/lib/po-documents";
 import { missingPhone, missingRequired } from "@/lib/form-required";
 import { listStaffLogins } from "@/lib/login-admin";
@@ -540,6 +540,7 @@ export function ModuleWorkspace({
   const [poRemark, setPoRemark] = useState("GST Extra");
   const [poDocTick, setPoDocTick] = useState(0);
 
+  const [receiveInitialFile, setReceiveInitialFile] = useState<File | null>(null);
   // Supervisor invoice-photo partial receive (OCR confirm → stock tagged to PO)
   const [receivePo, setReceivePo] = useState<DBPurchaseOrder | null>(null);
   const [supplierPayPo, setSupplierPayPo] = useState<DBPurchaseOrder | null>(null);
@@ -2067,18 +2068,29 @@ export function ModuleWorkspace({
     }
   };
 
-  const handleUploadPoPdf = async (po: DBPurchaseOrder, file: File | null) => {
+  const handleUploadPoPdf = (po: DBPurchaseOrder, file: File | null) => {
     if (!file) return;
-    try {
-      const saved = await savePurchaseOrderDocument(po.id, file, {
-        itemName: po.product_name,
-        documentType: "supplier_invoice",
-      });
-      setPoDocTick((n) => n + 1);
-      toast.success(`Supplier invoice uploaded for ${po.product_name}: ${saved.name}`);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not upload supplier invoice PDF.");
+    // Attach PDF / photo → OCR qty + amount → "Is this correct?" → stock update
+    if (!hasPermission("purchases.receive") && !isSuperAdmin) {
+      toast.error("Only Supervisor can receive stock from the supplier invoice.");
+      return;
     }
+    if (po.status !== "In transit" && !isSuperAdmin) {
+      toast.error("Mark the PO as sent (In transit) before attaching the supplier invoice.");
+      return;
+    }
+    if (!po.product_id) {
+      toast.error(
+        "This PO is not linked to a catalog product. Ask Accounts to recreate it with a product selected.",
+      );
+      return;
+    }
+    if (poRemainingQuantity(po) <= 0) {
+      toast.error("This purchase order is already fully received.");
+      return;
+    }
+    setReceiveInitialFile(file);
+    setReceivePo(po);
   };
 
   const handleCreatePO = async (e: React.FormEvent) => {
@@ -8912,11 +8924,73 @@ export function ModuleWorkspace({
                       {p.supplier_name}
                       {p.product_id ? "" : " · No catalog product linked"}
                     </p>
-                    {(uploaded || meta.documentName) && (
-                      <p className="mt-1 text-[10px] font-semibold text-primary">
-                        Attached PDF: {uploaded?.name || meta.documentName}
-                      </p>
-                    )}
+                    {(() => {
+                      const invoiceNo =
+                        uploaded?.invoiceNumber ||
+                        meta.invoiceNumber ||
+                        invoiceNumberFromFileName(uploaded?.name || meta.documentName);
+                      const ewayNo = uploaded?.ewayBillNumber || meta.ewayBillNumber;
+                      const batchNo = uploaded?.batchNumber || meta.batchNumber || invoiceNo;
+                      const invDate = uploaded?.invoiceDate || meta.invoiceDate;
+                      const invAmt =
+                        uploaded?.invoiceAmount ??
+                        meta.invoiceAmount ??
+                        (received > 0 ? Number(p.total_amount) || undefined : undefined);
+                      const hasInvoiceBits =
+                        uploaded ||
+                        meta.documentName ||
+                        invoiceNo ||
+                        ewayNo ||
+                        batchNo ||
+                        invDate;
+                      if (!hasInvoiceBits) return null;
+                      return (
+                        <div className="mt-1.5 space-y-0.5 text-[10px]">
+                          {(uploaded || meta.documentName) && (
+                            <p className="font-semibold text-primary">
+                              Attached: {uploaded?.name || meta.documentName}
+                            </p>
+                          )}
+                          <p className="text-muted-foreground font-medium leading-relaxed">
+                            {invoiceNo ? (
+                              <>
+                                Invoice No.{" "}
+                                <span className="text-foreground font-bold">{invoiceNo}</span>
+                              </>
+                            ) : null}
+                            {ewayNo ? (
+                              <>
+                                {invoiceNo ? " · " : ""}
+                                e-Way{" "}
+                                <span className="text-foreground font-bold">{ewayNo}</span>
+                              </>
+                            ) : null}
+                            {batchNo ? (
+                              <>
+                                {invoiceNo || ewayNo ? " · " : ""}
+                                Batch{" "}
+                                <span className="text-foreground font-bold">{batchNo}</span>
+                              </>
+                            ) : null}
+                            {invDate ? (
+                              <>
+                                {" · "}
+                                Date <span className="text-foreground font-bold">{invDate}</span>
+                              </>
+                            ) : null}
+                            {invAmt !== undefined && Number(invAmt) > 0 ? (
+                              <>
+                                {" · "}
+                                Amount{" "}
+                                <span className="text-foreground font-bold">
+                                  ₹{Number(invAmt).toLocaleString("en-IN")}
+                                </span>
+                              </>
+                            ) : null}
+                          </p>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
@@ -8943,17 +9017,17 @@ export function ModuleWorkspace({
                     <Eye className="size-3.5" />
                     {uploaded ? "Download / Print PDF" : "Download / Print PO"}
                   </Button>
-                  {hasPermission("purchases.create") && (
+                  {(hasPermission("purchases.receive") || isSuperAdmin) && (
                     <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2 text-xs font-semibold cursor-pointer hover:bg-muted/50">
                       <FileText className="size-3.5" />
-                      {uploaded ? "Replace PDF" : "Attach PDF"}
+                      {uploaded ? "Replace invoice" : "Attach PDF"}
                       <input
                         type="file"
-                        accept="application/pdf,.pdf"
+                        accept="application/pdf,.pdf,image/*"
                         className="hidden"
                         onChange={(e) => {
                           const file = e.target.files?.[0] || null;
-                          void handleUploadPoPdf(p, file);
+                          handleUploadPoPdf(p, file);
                           e.currentTarget.value = "";
                         }}
                       />
@@ -11803,12 +11877,17 @@ export function ModuleWorkspace({
         po={receivePo}
         open={!!receivePo}
         onOpenChange={(open) => {
-          if (!open) setReceivePo(null);
+          if (!open) {
+            setReceivePo(null);
+            setReceiveInitialFile(null);
+          }
         }}
         actorRole={currentUser?.role}
         actorName={currentUser?.name || "Supervisor"}
         allowAnyStatus={isSuperAdmin}
+        initialFile={receiveInitialFile}
         onReceived={() => {
+          setPoDocTick((n) => n + 1);
           reloadData();
         }}
       />

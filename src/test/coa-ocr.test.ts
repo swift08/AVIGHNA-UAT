@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  extractInvoiceAmountFromText,
+  extractPurchaseInvoiceRefs,
   fieldStatus,
   heuristicExtractFromText,
   normalizeDateValue,
@@ -45,5 +47,51 @@ describe("COA OCR helpers", () => {
     expect(fieldStatus({ value: null, confidence: 0 })).toBe("missing");
     expect(fieldStatus({ value: "ok", confidence: 0.4 })).toBe("low");
     expect(fieldStatus({ value: "bad-date", confidence: 0.9 }, "date")).toBe("invalid");
+  });
+
+  it("extracts purchase invoice grand total amount", () => {
+    const amt = extractInvoiceAmountFromText(
+      "Supplier Tax Invoice\nQty: 10 MT\nGrand Total ₹1,25,450.00\nAmount in words",
+    );
+    expect(amt.value).toBe("125450");
+    const extracted = heuristicExtractFromText(
+      "Purchase Invoice\nQuantity: 10 MT\nInvoice Total: Rs. 98400.50",
+    );
+    expect(extracted.dispatchQuantity.value).toBe("10");
+    expect(extracted.invoiceAmount.value).toBe("98400.5");
+  });
+
+  it("splits Tally Invoice No. and e-Way Bill No. when glued", () => {
+    const text = `
+Invoice No. e-Way Bill No.
+MH0026113992232330552894
+Supplier Invoice No. & Date.
+MH0026113992
+  dt. 16-Nov-26
+`;
+    const refs = extractPurchaseInvoiceRefs(text);
+    expect(refs.invoiceNumber.value).toBe("MH0026113992");
+    expect(refs.ewayBillNumber.value).toBe("232330552894");
+    expect(refs.invoiceDate.value).toBe("2026-11-16");
+
+    const spaced = extractPurchaseInvoiceRefs(`
+Invoice No. e-Way Bill No.
+1400328620 172622670696
+Supplier Invoice No. & Date.
+1400328620  dt.
+24-Nov-26
+`);
+    expect(spaced.invoiceNumber.value).toBe("1400328620");
+    expect(spaced.ewayBillNumber.value).toBe("172622670696");
+
+    const noEway = extractPurchaseInvoiceRefs(`
+Invoice No.
+CVFL/26-27/1377
+Supplier Invoice No. & Date.
+CVFL/26-27/1377  dt.
+30-Oct-26
+`);
+    expect(noEway.invoiceNumber.value).toBe("CVFL/26-27/1377");
+    expect(noEway.ewayBillNumber.value).toBeNull();
   });
 });
