@@ -363,6 +363,9 @@ export function ModuleWorkspace({
   const [leadPriorityFilter, setLeadPriorityFilter] = useState("All");
   const [leadMobileStageFilter, setLeadMobileStageFilter] = useState("All");
   const [selectedLeadDetails, setSelectedLeadDetails] = useState<DBLead | null>(null);
+  const [salesLeadMore, setSalesLeadMore] = useState(false);
+  const [salesCustMore, setSalesCustMore] = useState(false);
+  const [salesVisitProofOpen, setSalesVisitProofOpen] = useState(false);
 
   // Customer modal state (All 11 user fields)
   const [custModal, setCustModal] = useState(false);
@@ -859,10 +862,13 @@ export function ModuleWorkspace({
 
   const handleCreateLead = async (e: React.FormEvent) => {
     e.preventDefault();
+    const contactPerson =
+      leadContact.trim() ||
+      (currentUser?.role === "sales" ? leadName.trim() : leadContact.trim());
     const requiredError =
       missingRequired([
         { label: "Business name", value: leadName },
-        { label: "Contact person", value: leadContact },
+        { label: "Contact person", value: contactPerson },
       ]) ||
       missingPhone("Phone number", leadPhone) ||
       (leadSource === "Referral"
@@ -877,7 +883,7 @@ export function ModuleWorkspace({
     const payload = {
       companyId: safeCompany || "asian",
       businessName: leadName.trim(),
-      contactPerson: leadContact.trim(),
+      contactPerson,
       phone: leadPhone.trim(),
       email: leadEmail,
       gstin: leadGstin,
@@ -1053,10 +1059,13 @@ export function ModuleWorkspace({
 
   const handleCreateCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
+    const contactPerson =
+      custContact.trim() ||
+      (currentUser?.role === "sales" ? custLegalName.trim() : custContact.trim());
     const requiredError =
       missingRequired([
         { label: "Legal name", value: custLegalName },
-        { label: "Contact person", value: custContact },
+        { label: "Contact person", value: contactPerson },
       ]) || missingPhone("Phone number", custPhone);
     if (requiredError) {
       toast.error("Required fields missing", { description: requiredError });
@@ -1072,10 +1081,10 @@ export function ModuleWorkspace({
       billingAddress: custBillingAddress,
       shippingAddress: custShippingAddress,
       customerType: custType,
-      contactPerson: custContact.trim(),
-      creditLimit: parseFloat(custCreditLimit) || 0,
-      creditDays: parseInt(custCreditDays) || 30,
-      creatorName: "Ravi Kumar",
+      contactPerson,
+      creditLimit: currentUser?.role === "sales" ? 0 : parseFloat(custCreditLimit) || 0,
+      creditDays: currentUser?.role === "sales" ? 30 : parseInt(custCreditDays) || 30,
+      creatorName: currentUser?.name || "Ravi Kumar",
     });
     setCustModal(false);
     setCustLegalName("");
@@ -1089,6 +1098,7 @@ export function ModuleWorkspace({
     setCustContact("");
     setCustCreditLimit("0");
     setCustCreditDays("30");
+    setSalesCustMore(false);
     reloadData();
   };
 
@@ -1545,7 +1555,7 @@ export function ModuleWorkspace({
       status: "Completed",
     });
 
-    setVisitSuccessNotice(`Visit to "${clientName}" saved with on-site GPS & verification!`);
+    setVisitSuccessNotice(`Visit to "${clientName}" saved.`);
     setTimeout(() => setVisitSuccessNotice(null), 5000);
     setVisitRequirement("");
     setHasVoiceNote(false);
@@ -1554,6 +1564,7 @@ export function ModuleWorkspace({
     setGpsLocation(null);
     setProofPhotos([]);
     setVisitCustomPurpose("");
+    setSalesVisitProofOpen(false);
     setVisitLogDate(new Date().toISOString().split("T")[0]);
     setVisitLogTime(new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }));
     setTab("Visit history");
@@ -1608,6 +1619,7 @@ export function ModuleWorkspace({
     setVoiceAudioDataUrl(null);
     setHasVoiceNote(false);
     setProofPhotos([]);
+    setSalesVisitProofOpen(false);
     reloadData();
 
     navigateToCreateOrder({
@@ -6957,7 +6969,10 @@ export function ModuleWorkspace({
               <div className="field-visit-log-head">
                 <button
                   type="button"
-                  onClick={() => setTab("Visit history")}
+                  onClick={() => {
+                    setTab("Visit history");
+                    setSalesVisitProofOpen(false);
+                  }}
                   className="field-app-back"
                   aria-label="Back to visit history"
                 >
@@ -6974,11 +6989,19 @@ export function ModuleWorkspace({
                 </div>
               )}
 
+              {currentUser?.role === "sales" && (
+                <p className="text-[11px] text-muted-foreground -mt-1">
+                  Pick client and purpose, then Save. Proof is optional.
+                </p>
+              )}
+
               {/* 1. Company & Client */}
               <div className="space-y-3">
                 <label className="text-xs font-bold text-foreground flex items-center gap-2">
                   <Building2 className="size-3.5 text-primary" />
-                  <span>Company & Client</span>
+                  <span>
+                    {currentUser?.role === "sales" ? "Client" : "Company & Client"}
+                  </span>
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div>
@@ -7023,31 +7046,33 @@ export function ModuleWorkspace({
                   </div>
                 </div>
 
-                {/* Visit Date & Time */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                  <div>
-                    <label className="text-[11px] font-semibold text-muted-foreground block mb-1 flex items-center gap-1.5">
-                      <CalendarDays className="size-3 text-primary" /> Visit Date
-                    </label>
-                    <input
-                      type="date"
-                      value={visitLogDate}
-                      onChange={(e) => setVisitLogDate(e.target.value)}
-                      className="w-full text-xs font-semibold h-10 px-3 rounded-lg border border-border bg-background focus:ring-1 focus:ring-primary"
-                    />
+                {/* Visit Date & Time — hidden for sales (defaults to now) */}
+                {currentUser?.role !== "sales" && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    <div>
+                      <label className="text-[11px] font-semibold text-muted-foreground block mb-1 flex items-center gap-1.5">
+                        <CalendarDays className="size-3 text-primary" /> Visit Date
+                      </label>
+                      <input
+                        type="date"
+                        value={visitLogDate}
+                        onChange={(e) => setVisitLogDate(e.target.value)}
+                        className="w-full text-xs font-semibold h-10 px-3 rounded-lg border border-border bg-background focus:ring-1 focus:ring-primary"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[11px] font-semibold text-muted-foreground block mb-1 flex items-center gap-1.5">
+                        <Clock className="size-3 text-primary" /> Visit Time
+                      </label>
+                      <input
+                        type="time"
+                        value={visitLogTime}
+                        onChange={(e) => setVisitLogTime(e.target.value)}
+                        className="w-full text-xs font-semibold h-10 px-3 rounded-lg border border-border bg-background focus:ring-1 focus:ring-primary"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="text-[11px] font-semibold text-muted-foreground block mb-1 flex items-center gap-1.5">
-                      <Clock className="size-3 text-primary" /> Visit Time
-                    </label>
-                    <input
-                      type="time"
-                      value={visitLogTime}
-                      onChange={(e) => setVisitLogTime(e.target.value)}
-                      className="w-full text-xs font-semibold h-10 px-3 rounded-lg border border-border bg-background focus:ring-1 focus:ring-primary"
-                    />
-                  </div>
-                </div>
+                )}
               </div>
 
               {/* 2. Purpose */}
@@ -7057,15 +7082,18 @@ export function ModuleWorkspace({
                   <span>Purpose</span>
                 </label>
                 <div className="flex flex-wrap gap-2">
-                  {[
-                    "Follow-up",
-                    "Order booking",
-                    "Payment collection",
-                    "Sample delivery",
-                    "Complaint resolution",
-                    "New client pitch",
-                    "Custom",
-                  ].map((p) => {
+                  {(currentUser?.role === "sales"
+                    ? ["Follow-up", "Order booking", "Payment collection", "Sample delivery", "Custom"]
+                    : [
+                        "Follow-up",
+                        "Order booking",
+                        "Payment collection",
+                        "Sample delivery",
+                        "Complaint resolution",
+                        "New client pitch",
+                        "Custom",
+                      ]
+                  ).map((p) => {
                     const isSelected = visitPurpose === p;
                     return (
                       <button
@@ -7097,187 +7125,227 @@ export function ModuleWorkspace({
                 )}
               </div>
 
-              {/* 3. Notes */}
+              {/* 3. Notes — optional short field for sales */}
               <div className="space-y-3 pt-2 border-t border-border/60">
                 <label className="text-xs font-bold text-foreground flex items-center gap-2">
                   <FileCheck2 className="size-3.5 text-primary" />
-                  <span>Notes</span>
+                  <span>
+                    Notes{currentUser?.role === "sales" ? " (optional)" : ""}
+                  </span>
                 </label>
                 <textarea
-                  rows={3}
+                  rows={currentUser?.role === "sales" ? 2 : 3}
                   value={visitRequirement}
                   onChange={(e) => setVisitRequirement(e.target.value)}
-                  placeholder="Notes"
+                  placeholder={
+                    currentUser?.role === "sales" ? "Quick note (optional)" : "Notes"
+                  }
                   className="w-full text-xs font-medium p-3 rounded-lg border border-border bg-background resize-none focus:border-primary focus:ring-1 focus:ring-primary leading-relaxed"
                 />
               </div>
 
-              {/* 4. GPS / Voice / Photos */}
+              {/* 4. GPS / Voice / Photos — accordion for sales */}
               <div className="space-y-3 pt-2 border-t border-border/60">
-                <label className="text-xs font-bold text-foreground flex items-center gap-2">
-                  <Navigation className="size-3.5 text-primary" />
-                  <span>GPS, Voice & Photos</span>
-                </label>
-                <div className="field-visit-capture-grid">
-                  {/* GPS Box */}
-                  <div className="p-3.5 rounded-xl border border-border bg-card/60 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                        <MapPin className="size-3.5 text-primary" /> GPS Location
-                      </span>
-                      {gpsLocation && (
-                        <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-                          Locked
+                {currentUser?.role === "sales" ? (
+                  <button
+                    type="button"
+                    onClick={() => setSalesVisitProofOpen((v) => !v)}
+                    className="w-full flex items-center justify-between text-left cursor-pointer"
+                  >
+                    <span className="text-xs font-bold text-foreground flex items-center gap-2">
+                      <Navigation className="size-3.5 text-primary" />
+                      Add proof (optional)
+                      {(gpsLocation || hasVoiceNote || proofPhotos.length > 0) && (
+                        <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                          {[
+                            gpsLocation ? "GPS" : null,
+                            hasVoiceNote ? "Voice" : null,
+                            proofPhotos.length > 0 ? `${proofPhotos.length} photo` : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
                         </span>
                       )}
-                    </div>
-                    {gpsLocation && (
-                      <p className="text-[11px] text-muted-foreground font-mono truncate">
-                        {gpsLocation.lat.toFixed(4)}, {gpsLocation.lng.toFixed(4)}
-                      </p>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => void handleRefreshGps()}
-                      className="w-full py-1.5 px-2 rounded-lg text-xs font-semibold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <MapPin className="size-3" />
-                      <span>{gpsLocation ? "Refresh GPS" : "Get GPS"}</span>
-                    </button>
-                  </div>
+                    </span>
+                    <span className="text-[11px] font-semibold text-primary">
+                      {salesVisitProofOpen ? "Hide" : "Show"}
+                    </span>
+                  </button>
+                ) : (
+                  <label className="text-xs font-bold text-foreground flex items-center gap-2">
+                    <Navigation className="size-3.5 text-primary" />
+                    <span>GPS, Voice & Photos</span>
+                  </label>
+                )}
 
-                  {/* Audio Memo Box */}
-                  <div className="p-3.5 rounded-xl border border-border bg-card/60 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                        <Mic className="size-3.5 text-primary" /> Voice
-                      </span>
-                      {hasVoiceNote && (
-                        <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
-                          {recordingDuration}s
-                        </span>
-                      )}
-                    </div>
-                    <div className="space-y-1.5">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (!isRecording) {
-                            startVoiceRecording();
-                          } else {
-                            stopVoiceRecording();
-                          }
-                        }}
-                        className={`w-full py-1.5 px-2 rounded-lg text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer ${
-                          isRecording
-                            ? "bg-red-500 text-white animate-pulse"
-                            : hasVoiceNote
-                              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
-                              : "bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20"
-                        }`}
-                      >
-                        {isRecording ? <MicOff className="size-3" /> : <Mic className="size-3" />}
-                        <span>
-                          {isRecording
-                            ? `Stop (${recordingDuration}s)`
-                            : hasVoiceNote
-                              ? "Re-record"
-                              : "Record"}
-                        </span>
-                      </button>
-
-                      {hasVoiceNote && voiceAudioDataUrl && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            if (isPlayingPreview) {
-                              stopCurrentAudio();
-                            } else {
-                              setIsPlayingPreview(true);
-                              playRecordedAudioUrl(
-                                voiceAudioDataUrl,
-                                recordingDuration || 8,
-                                () => setIsPlayingPreview(false),
-                              );
-                            }
-                          }}
-                          className="w-full py-1 px-2 rounded-lg text-[11px] font-semibold bg-muted hover:bg-muted/80 text-foreground transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                        >
-                          {isPlayingPreview ? (
-                            <Pause className="size-3 text-primary" />
-                          ) : (
-                            <Play className="size-3 text-primary" />
+                {(currentUser?.role !== "sales" || salesVisitProofOpen) && (
+                  <>
+                    <div className="field-visit-capture-grid">
+                      {/* GPS Box */}
+                      <div className="p-3.5 rounded-xl border border-border bg-card/60 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                            <MapPin className="size-3.5 text-primary" /> GPS Location
+                          </span>
+                          {gpsLocation && (
+                            <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                              Locked
+                            </span>
                           )}
-                          <span>{isPlayingPreview ? "Pause" : "Play"}</span>
-                        </button>
-                      )}
-
-                      {hasVoiceNote && !isRecording && (
+                        </div>
+                        {gpsLocation && (
+                          <p className="text-[11px] text-muted-foreground font-mono truncate">
+                            {gpsLocation.lat.toFixed(4)}, {gpsLocation.lng.toFixed(4)}
+                          </p>
+                        )}
                         <button
                           type="button"
-                          onClick={clearVoiceMemo}
-                          className="w-full py-1 px-2 rounded-lg text-[11px] font-semibold bg-destructive/10 hover:bg-destructive/15 text-destructive border border-destructive/20 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                          onClick={() => void handleRefreshGps()}
+                          className="w-full py-1.5 px-2 rounded-lg text-xs font-semibold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                         >
-                          <Trash2 className="size-3" />
-                          <span>Remove</span>
-                        </button>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Proof Photos Box */}
-                  <div className="p-3.5 rounded-xl border border-border bg-card/60 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
-                        <Camera className="size-3.5 text-primary" /> Photos
-                      </span>
-                      {proofPhotos.length > 0 && (
-                        <span className="text-[10px] font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded">
-                          {proofPhotos.length}
-                        </span>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => void handleTakeProofPhoto()}
-                      className="w-full py-1.5 px-2 rounded-lg text-xs font-semibold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                    >
-                      <Camera className="size-3" />
-                      <span>Take Photo</span>
-                    </button>
-                  </div>
-                </div>
-
-                {proofPhotos.length > 0 && (
-                  <div className="flex flex-wrap gap-2 pt-2">
-                    {proofPhotos.map((photo, idx) => (
-                      <div
-                        key={idx}
-                        className="relative size-16 rounded-lg overflow-hidden border border-border shadow-xs"
-                      >
-                        <img
-                          src={photo}
-                          alt={`Proof ${idx + 1}`}
-                          className="w-full h-full object-cover"
-                          onError={(e) => {
-                            if (e.currentTarget.src !== FALLBACK_PROOF_IMAGE) {
-                              e.currentTarget.src = FALLBACK_PROOF_IMAGE;
-                            }
-                          }}
-                        />
-                        <button
-                          type="button"
-                          aria-label={`Remove photo ${idx + 1}`}
-                          onClick={() =>
-                            setProofPhotos((photos) => photos.filter((_, i) => i !== idx))
-                          }
-                          className="absolute top-0.5 right-0.5 size-7 rounded-full bg-black/75 text-white flex items-center justify-center shadow-sm active:bg-black"
-                        >
-                          <X className="size-3.5" />
+                          <MapPin className="size-3" />
+                          <span>{gpsLocation ? "Refresh GPS" : "Get GPS"}</span>
                         </button>
                       </div>
-                    ))}
-                  </div>
+
+                      {/* Audio Memo Box */}
+                      <div className="p-3.5 rounded-xl border border-border bg-card/60 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                            <Mic className="size-3.5 text-primary" /> Voice
+                          </span>
+                          {hasVoiceNote && (
+                            <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded">
+                              {recordingDuration}s
+                            </span>
+                          )}
+                        </div>
+                        <div className="space-y-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (!isRecording) {
+                                startVoiceRecording();
+                              } else {
+                                stopVoiceRecording();
+                              }
+                            }}
+                            className={`w-full py-1.5 px-2 rounded-lg text-xs font-semibold transition-colors flex items-center justify-center gap-1.5 cursor-pointer ${
+                              isRecording
+                                ? "bg-red-500 text-white animate-pulse"
+                                : hasVoiceNote
+                                  ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
+                                  : "bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20"
+                            }`}
+                          >
+                            {isRecording ? (
+                              <MicOff className="size-3" />
+                            ) : (
+                              <Mic className="size-3" />
+                            )}
+                            <span>
+                              {isRecording
+                                ? `Stop (${recordingDuration}s)`
+                                : hasVoiceNote
+                                  ? "Re-record"
+                                  : "Record"}
+                            </span>
+                          </button>
+
+                          {hasVoiceNote && voiceAudioDataUrl && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (isPlayingPreview) {
+                                  stopCurrentAudio();
+                                } else {
+                                  setIsPlayingPreview(true);
+                                  playRecordedAudioUrl(
+                                    voiceAudioDataUrl,
+                                    recordingDuration || 8,
+                                    () => setIsPlayingPreview(false),
+                                  );
+                                }
+                              }}
+                              className="w-full py-1 px-2 rounded-lg text-[11px] font-semibold bg-muted hover:bg-muted/80 text-foreground transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                            >
+                              {isPlayingPreview ? (
+                                <Pause className="size-3 text-primary" />
+                              ) : (
+                                <Play className="size-3 text-primary" />
+                              )}
+                              <span>{isPlayingPreview ? "Pause" : "Play"}</span>
+                            </button>
+                          )}
+
+                          {hasVoiceNote && !isRecording && (
+                            <button
+                              type="button"
+                              onClick={clearVoiceMemo}
+                              className="w-full py-1 px-2 rounded-lg text-[11px] font-semibold bg-destructive/10 hover:bg-destructive/15 text-destructive border border-destructive/20 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                            >
+                              <Trash2 className="size-3" />
+                              <span>Remove</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Proof Photos Box */}
+                      <div className="p-3.5 rounded-xl border border-border bg-card/60 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-foreground flex items-center gap-1.5">
+                            <Camera className="size-3.5 text-primary" /> Photos
+                          </span>
+                          {proofPhotos.length > 0 && (
+                            <span className="text-[10px] font-bold text-primary bg-primary/10 px-1.5 py-0.5 rounded">
+                              {proofPhotos.length}
+                            </span>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void handleTakeProofPhoto()}
+                          className="w-full py-1.5 px-2 rounded-lg text-xs font-semibold bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Camera className="size-3" />
+                          <span>Take Photo</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {proofPhotos.length > 0 && (
+                      <div className="flex flex-wrap gap-2 pt-2">
+                        {proofPhotos.map((photo, idx) => (
+                          <div
+                            key={idx}
+                            className="relative size-16 rounded-lg overflow-hidden border border-border shadow-xs"
+                          >
+                            <img
+                              src={photo}
+                              alt={`Proof ${idx + 1}`}
+                              className="w-full h-full object-cover"
+                              onError={(e) => {
+                                if (e.currentTarget.src !== FALLBACK_PROOF_IMAGE) {
+                                  e.currentTarget.src = FALLBACK_PROOF_IMAGE;
+                                }
+                              }}
+                            />
+                            <button
+                              type="button"
+                              aria-label={`Remove photo ${idx + 1}`}
+                              onClick={() =>
+                                setProofPhotos((photos) => photos.filter((_, i) => i !== idx))
+                              }
+                              className="absolute top-0.5 right-0.5 size-7 rounded-full bg-black/75 text-white flex items-center justify-center shadow-sm active:bg-black"
+                            >
+                              <X className="size-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 
@@ -7300,7 +7368,10 @@ export function ModuleWorkspace({
                 </Button>
                 <Button
                   variant="ghost"
-                  onClick={() => setTab("Visit history")}
+                  onClick={() => {
+                    setTab("Visit history");
+                    setSalesVisitProofOpen(false);
+                  }}
                   className="w-full h-11 text-xs text-muted-foreground cursor-pointer gap-1.5"
                 >
                   <ArrowLeft className="size-3.5" />
@@ -8171,30 +8242,41 @@ export function ModuleWorkspace({
         open={leadModal}
         onOpenChange={(open) => {
           setLeadModal(open);
-          if (!open) resetLeadForm();
+          if (!open) {
+            resetLeadForm();
+            setSalesLeadMore(false);
+          }
         }}
       >
         <SheetContent className="overflow-y-auto max-h-screen">
           <SheetHeader>
             <SheetTitle>{editingLeadId ? "Edit lead" : "Add lead"}</SheetTitle>
             <SheetDescription>
-              {editingLeadId
-                ? "Update this inquiry. Sales and supervisor can each save twice."
-                : "Log a new prospective customer inquiry"}
+              {currentUser?.role === "sales"
+                ? "Just business name and phone — extras are optional."
+                : editingLeadId
+                  ? "Update this inquiry. Sales and supervisor can each save twice."
+                  : "Log a new prospective customer inquiry"}
             </SheetDescription>
           </SheetHeader>
           <form onSubmit={handleCreateLead} className="mt-6 space-y-4">
-            <label className="drawer-field">
-              Company
-              <select required value={leadCompany} onChange={(e) => setLeadCompany(e.target.value)}>
-                <option value="all">All Companies</option>
-                {companies.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {currentUser?.role !== "sales" && (
+              <label className="drawer-field">
+                Company
+                <select
+                  required
+                  value={leadCompany}
+                  onChange={(e) => setLeadCompany(e.target.value)}
+                >
+                  <option value="all">All Companies</option>
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="drawer-field">
               Business name <span className="text-destructive">*</span>
               <input
@@ -8202,15 +8284,6 @@ export function ModuleWorkspace({
                 value={leadName}
                 onChange={(e) => setLeadName(e.target.value)}
                 placeholder="Business or lead name"
-              />
-            </label>
-            <label className="drawer-field">
-              Contact person <span className="text-destructive">*</span>
-              <input
-                required
-                value={leadContact}
-                onChange={(e) => setLeadContact(e.target.value)}
-                placeholder="Contact person name"
               />
             </label>
             <label className="drawer-field">
@@ -8223,104 +8296,133 @@ export function ModuleWorkspace({
                 placeholder="+91 98..."
               />
             </label>
-            <label className="drawer-field">
-              Email
-              <input
-                type="email"
-                value={leadEmail}
-                onChange={(e) => setLeadEmail(e.target.value)}
-                placeholder="contact@business.com"
-              />
-            </label>
-            <label className="drawer-field">
-              GSTIN
-              <input
-                value={leadGstin}
-                onChange={(e) => setLeadGstin(e.target.value)}
-                placeholder="29AAAAA0000A1Z5"
-              />
-            </label>
-            <label className="drawer-field">
-              City
-              <input
-                value={leadCity}
-                onChange={(e) => setLeadCity(e.target.value)}
-                placeholder="Bengaluru"
-              />
-            </label>
-            <label className="drawer-field">
-              Product interest
-              <input
-                value={leadProductInterest}
-                onChange={(e) => setLeadProductInterest(e.target.value)}
-                placeholder="e.g. Skimmed Milk Powder, Condensed Milk"
-              />
-            </label>
-            <label className="drawer-field">
-              Estimated value (₹)
-              <input
-                type="number"
-                value={leadEstimatedValue}
-                onChange={(e) => setLeadEstimatedValue(e.target.value)}
-                placeholder="50000"
-              />
-            </label>
-            <label className="drawer-field">
-              Source
-              <select value={leadSource} onChange={(e) => setLeadSource(e.target.value)}>
-                <option value="WhatsApp">WhatsApp</option>
-                <option value="Referral">Referral</option>
-                <option value="Field Visit">Field Visit</option>
-                <option value="Cold Call">Cold Call</option>
-                <option value="Website">Website</option>
-                <option value="Exhibition">Exhibition</option>
-                <option value="Direct Inquiry">Direct Inquiry</option>
-              </select>
-            </label>
-            {leadSource === "Referral" && (
+            {currentUser?.role !== "sales" && (
               <label className="drawer-field">
-                Referred by <span className="text-destructive">*</span>
+                Contact person <span className="text-destructive">*</span>
                 <input
                   required
-                  value={leadReferrer}
-                  onChange={(e) => setLeadReferrer(e.target.value)}
-                  placeholder="Name of the person who referred this lead"
+                  value={leadContact}
+                  onChange={(e) => setLeadContact(e.target.value)}
+                  placeholder="Contact person name"
                 />
               </label>
             )}
-            <label className="drawer-field">
-              Type
-              <select value={leadType} onChange={(e) => setLeadType(e.target.value)}>
-                <option value="Wholesale">Wholesale</option>
-                <option value="Retailer">Retailer</option>
-                <option value="Distributor">Distributor</option>
-                <option value="Manufacturer">Manufacturer</option>
-                <option value="Institutional">Institutional</option>
-              </select>
-            </label>
-            <label className="drawer-field">
-              Priority
-              <select value={leadPriority} onChange={(e) => setLeadPriority(e.target.value)}>
-                <option value="Low">Low</option>
-                <option value="Medium">Medium</option>
-                <option value="High">High</option>
-                <option value="Urgent">Urgent</option>
-              </select>
-            </label>
-            <label className="drawer-field">
-              Notes
-              <textarea
-                rows={3}
-                required={leadSource === "Referral"}
-                value={leadNotes}
-                onChange={(e) => setLeadNotes(e.target.value)}
-                placeholder={
-                  leadSource === "Referral"
-                    ? "How this referral came in"
-                    : "Additional notes or conversation summary..."
-                }
-              />
-            </label>
+            {(currentUser?.role !== "sales" || salesLeadMore) && (
+              <>
+                {currentUser?.role === "sales" && (
+                  <label className="drawer-field">
+                    Contact person
+                    <input
+                      value={leadContact}
+                      onChange={(e) => setLeadContact(e.target.value)}
+                      placeholder="Defaults to business name"
+                    />
+                  </label>
+                )}
+                <label className="drawer-field">
+                  Email
+                  <input
+                    type="email"
+                    value={leadEmail}
+                    onChange={(e) => setLeadEmail(e.target.value)}
+                    placeholder="contact@business.com"
+                  />
+                </label>
+                <label className="drawer-field">
+                  GSTIN
+                  <input
+                    value={leadGstin}
+                    onChange={(e) => setLeadGstin(e.target.value)}
+                    placeholder="29AAAAA0000A1Z5"
+                  />
+                </label>
+                <label className="drawer-field">
+                  City
+                  <input
+                    value={leadCity}
+                    onChange={(e) => setLeadCity(e.target.value)}
+                    placeholder="Bengaluru"
+                  />
+                </label>
+                <label className="drawer-field">
+                  Product interest
+                  <input
+                    value={leadProductInterest}
+                    onChange={(e) => setLeadProductInterest(e.target.value)}
+                    placeholder="e.g. Skimmed Milk Powder"
+                  />
+                </label>
+                <label className="drawer-field">
+                  Estimated value (₹)
+                  <input
+                    type="number"
+                    value={leadEstimatedValue}
+                    onChange={(e) => setLeadEstimatedValue(e.target.value)}
+                    placeholder="50000"
+                  />
+                </label>
+                <label className="drawer-field">
+                  Source
+                  <select value={leadSource} onChange={(e) => setLeadSource(e.target.value)}>
+                    <option value="WhatsApp">WhatsApp</option>
+                    <option value="Referral">Referral</option>
+                    <option value="Field Visit">Field Visit</option>
+                    <option value="Cold Call">Cold Call</option>
+                    <option value="Website">Website</option>
+                    <option value="Exhibition">Exhibition</option>
+                    <option value="Direct Inquiry">Direct Inquiry</option>
+                  </select>
+                </label>
+                {leadSource === "Referral" && (
+                  <label className="drawer-field">
+                    Referred by <span className="text-destructive">*</span>
+                    <input
+                      required
+                      value={leadReferrer}
+                      onChange={(e) => setLeadReferrer(e.target.value)}
+                      placeholder="Who referred this lead"
+                    />
+                  </label>
+                )}
+                <label className="drawer-field">
+                  Type
+                  <select value={leadType} onChange={(e) => setLeadType(e.target.value)}>
+                    <option value="Wholesale">Wholesale</option>
+                    <option value="Retailer">Retailer</option>
+                    <option value="Distributor">Distributor</option>
+                    <option value="Manufacturer">Manufacturer</option>
+                    <option value="Institutional">Institutional</option>
+                  </select>
+                </label>
+                <label className="drawer-field">
+                  Priority
+                  <select value={leadPriority} onChange={(e) => setLeadPriority(e.target.value)}>
+                    <option value="Low">Low</option>
+                    <option value="Medium">Medium</option>
+                    <option value="High">High</option>
+                    <option value="Urgent">Urgent</option>
+                  </select>
+                </label>
+                <label className="drawer-field">
+                  Notes
+                  <textarea
+                    rows={3}
+                    value={leadNotes}
+                    onChange={(e) => setLeadNotes(e.target.value)}
+                    placeholder="Optional notes"
+                  />
+                </label>
+              </>
+            )}
+            {currentUser?.role === "sales" && (
+              <button
+                type="button"
+                onClick={() => setSalesLeadMore((v) => !v)}
+                className="text-xs font-semibold text-primary hover:underline cursor-pointer text-left"
+              >
+                {salesLeadMore ? "Hide extra details" : "More details (optional)"}
+              </button>
+            )}
             <div className="flex items-center gap-3 pt-3">
               <Button type="submit" className="flex-1">
                 {editingLeadId ? "Save changes" : "Save"}
@@ -8332,6 +8434,7 @@ export function ModuleWorkspace({
                 onClick={() => {
                   setLeadModal(false);
                   resetLeadForm();
+                  setSalesLeadMore(false);
                 }}
               >
                 Cancel
@@ -8342,11 +8445,21 @@ export function ModuleWorkspace({
       </Sheet>
 
       {/* CUSTOMER CREATION SHEET */}
-      <Sheet open={custModal} onOpenChange={setCustModal}>
+      <Sheet
+        open={custModal}
+        onOpenChange={(open) => {
+          setCustModal(open);
+          if (!open) setSalesCustMore(false);
+        }}
+      >
         <SheetContent className="overflow-y-auto max-h-screen">
           <SheetHeader>
             <SheetTitle>Add customer</SheetTitle>
-            <SheetDescription>Create customer profile directly</SheetDescription>
+            <SheetDescription>
+              {currentUser?.role === "sales"
+                ? "Name and phone only — extras are optional."
+                : "Create customer profile directly"}
+            </SheetDescription>
           </SheetHeader>
           <form onSubmit={handleCreateCustomer} className="mt-6 space-y-4">
             <label className="drawer-field">
@@ -8359,14 +8472,6 @@ export function ModuleWorkspace({
               />
             </label>
             <label className="drawer-field">
-              Trade name
-              <input
-                value={custTradeName}
-                onChange={(e) => setCustTradeName(e.target.value)}
-                placeholder="Doing business as name"
-              />
-            </label>
-            <label className="drawer-field">
               Phone number <span className="text-destructive">*</span>
               <input
                 type="tel"
@@ -8376,81 +8481,118 @@ export function ModuleWorkspace({
                 placeholder="+91 98..."
               />
             </label>
-            <label className="drawer-field">
-              Email
-              <input
-                type="email"
-                value={custEmail}
-                onChange={(e) => setCustEmail(e.target.value)}
-                placeholder="accounts@business.com"
-              />
-            </label>
-            <label className="drawer-field">
-              GSTIN
-              <input
-                value={custGstin}
-                onChange={(e) => setCustGstin(e.target.value)}
-                placeholder="29AAAAA0000A1Z5"
-              />
-            </label>
-            <label className="drawer-field">
-              Billing address
-              <textarea
-                rows={2}
-                value={custBillingAddress}
-                onChange={(e) => setCustBillingAddress(e.target.value)}
-                placeholder="Registered billing address"
-              />
-            </label>
-            <label className="drawer-field">
-              Shipping address
-              <textarea
-                rows={2}
-                value={custShippingAddress}
-                onChange={(e) => setCustShippingAddress(e.target.value)}
-                placeholder="Warehouse / delivery address"
-              />
-            </label>
-            <label className="drawer-field">
-              Customer type
-              <select value={custType} onChange={(e) => setCustType(e.target.value)}>
-                <option value="Wholesale">Wholesale</option>
-                <option value="Retailer">Retailer</option>
-                <option value="Distributor">Distributor</option>
-                <option value="Corporate">Corporate</option>
-                <option value="Institutional">Institutional</option>
-              </select>
-            </label>
-            <label className="drawer-field">
-              Contact person <span className="text-destructive">*</span>
-              <input
-                required
-                value={custContact}
-                onChange={(e) => setCustContact(e.target.value)}
-                placeholder="Primary contact name"
-              />
-            </label>
-            <label className="drawer-field">
-              Credit limit (₹)
-              <input
-                type="number"
-                value={custCreditLimit}
-                onChange={(e) => setCustCreditLimit(e.target.value)}
-                placeholder="0"
-              />
-            </label>
-            <label className="drawer-field" htmlFor="cust-credit-days">
-              Credit days
-              <input
-                id="cust-credit-days"
-                name="creditDays"
-                type="number"
-                min={1}
-                value={custCreditDays}
-                onChange={(e) => setCustCreditDays(e.target.value)}
-                placeholder="30"
-              />
-            </label>
+            {currentUser?.role !== "sales" && (
+              <label className="drawer-field">
+                Contact person <span className="text-destructive">*</span>
+                <input
+                  required
+                  value={custContact}
+                  onChange={(e) => setCustContact(e.target.value)}
+                  placeholder="Primary contact name"
+                />
+              </label>
+            )}
+            {(currentUser?.role !== "sales" || salesCustMore) && (
+              <>
+                {currentUser?.role === "sales" && (
+                  <label className="drawer-field">
+                    Contact person
+                    <input
+                      value={custContact}
+                      onChange={(e) => setCustContact(e.target.value)}
+                      placeholder="Defaults to legal name"
+                    />
+                  </label>
+                )}
+                <label className="drawer-field">
+                  Trade name
+                  <input
+                    value={custTradeName}
+                    onChange={(e) => setCustTradeName(e.target.value)}
+                    placeholder="Doing business as name"
+                  />
+                </label>
+                <label className="drawer-field">
+                  Email
+                  <input
+                    type="email"
+                    value={custEmail}
+                    onChange={(e) => setCustEmail(e.target.value)}
+                    placeholder="accounts@business.com"
+                  />
+                </label>
+                <label className="drawer-field">
+                  GSTIN
+                  <input
+                    value={custGstin}
+                    onChange={(e) => setCustGstin(e.target.value)}
+                    placeholder="29AAAAA0000A1Z5"
+                  />
+                </label>
+                <label className="drawer-field">
+                  Billing address
+                  <textarea
+                    rows={2}
+                    value={custBillingAddress}
+                    onChange={(e) => setCustBillingAddress(e.target.value)}
+                    placeholder="Registered billing address"
+                  />
+                </label>
+                <label className="drawer-field">
+                  Shipping address
+                  <textarea
+                    rows={2}
+                    value={custShippingAddress}
+                    onChange={(e) => setCustShippingAddress(e.target.value)}
+                    placeholder="Warehouse / delivery address"
+                  />
+                </label>
+                <label className="drawer-field">
+                  Customer type
+                  <select value={custType} onChange={(e) => setCustType(e.target.value)}>
+                    <option value="Wholesale">Wholesale</option>
+                    <option value="Retailer">Retailer</option>
+                    <option value="Distributor">Distributor</option>
+                    <option value="Corporate">Corporate</option>
+                    <option value="Institutional">Institutional</option>
+                  </select>
+                </label>
+                {currentUser?.role !== "sales" && (
+                  <>
+                    <label className="drawer-field">
+                      Credit limit (₹)
+                      <input
+                        type="number"
+                        value={custCreditLimit}
+                        onChange={(e) => setCustCreditLimit(e.target.value)}
+                        placeholder="0"
+                      />
+                    </label>
+                    <label className="drawer-field" htmlFor="cust-credit-days">
+                      Credit days
+                      <input
+                        id="cust-credit-days"
+                        name="creditDays"
+                        type="number"
+                        min={1}
+                        value={custCreditDays}
+                        onChange={(e) => setCustCreditDays(e.target.value)}
+                        placeholder="30"
+                      />
+                    </label>
+                  </>
+                )}
+              </>
+            )}
+            {currentUser?.role === "sales" && (
+              <button
+                type="button"
+                onClick={() => setSalesCustMore((v) => !v)}
+                className="text-xs font-semibold text-primary hover:underline cursor-pointer text-left"
+              >
+                {salesCustMore ? "Hide extra details" : "More details (optional)"}
+              </button>
+            )}
             <div className="flex items-center gap-3 pt-3">
               <Button type="submit" className="flex-1">
                 Save
@@ -8459,7 +8601,10 @@ export function ModuleWorkspace({
                 type="button"
                 variant="outline"
                 className="flex-1"
-                onClick={() => setCustModal(false)}
+                onClick={() => {
+                  setCustModal(false);
+                  setSalesCustMore(false);
+                }}
               >
                 Cancel
               </Button>

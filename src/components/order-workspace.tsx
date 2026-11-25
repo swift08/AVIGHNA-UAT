@@ -999,6 +999,7 @@ export function OrderTable({
 }) {
   const { hasPermission, currentUser } = useWorkspace();
   const canViewAmounts = hasPermission("finance.view_amounts");
+  const isSales = currentUser?.role === "sales";
   const money = (value: number) => (canViewAmounts ? moneyFormat(value) : "—");
   const [selected, setSelected] = useState<Order | DBOrder | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -1022,6 +1023,7 @@ export function OrderTable({
   const [purchaseOrdersList, setPurchaseOrdersList] = useState<DBPurchaseOrder[]>([]);
   const [purchaseReference, setPurchaseReference] = useState("");
   const [purchaseRefMode, setPurchaseRefMode] = useState<"select" | "manual">("select");
+  const [salesOrderMore, setSalesOrderMore] = useState(false);
 
   // Transport and vehicle state for creation
   const [createTransportMode, setCreateTransportMode] = useState<
@@ -1127,6 +1129,17 @@ export function OrderTable({
     );
     return matched.length > 0 ? matched : purchaseOrdersList;
   }, [purchaseOrdersList, productName, selectedProduct]);
+
+  // Sales: auto-link the best matching PO so they don't hunt for a reference first.
+  useEffect(() => {
+    if (!isSales || !selectedProduct) return;
+    if (purchaseReference.trim()) return;
+    const first = matchingPurchaseOrders[0];
+    if (first?.id) {
+      setPurchaseReference(first.id);
+      setPurchaseRefMode("select");
+    }
+  }, [isSales, selectedProduct, matchingPurchaseOrders, purchaseReference]);
 
   const availableStock = useMemo(() => {
     if (!selectedProduct) return null;
@@ -1452,12 +1465,28 @@ export function OrderTable({
       />
 
       {/* CREATE ORDER DRAWER */}
-      <Sheet open={createOpen} onOpenChange={setCreateOpen}>
+      <Sheet
+        open={createOpen}
+        onOpenChange={(open) => {
+          setCreateOpen(open);
+          if (!open) setSalesOrderMore(false);
+        }}
+      >
         <SheetContent className="app-sheet w-full sm:max-w-lg overflow-y-auto">
           <SheetHeader className="text-left pr-12">
-            <SheetTitle className="text-base sm:text-lg">Create Order</SheetTitle>
+            <SheetTitle className="text-base sm:text-lg">
+              {isSales ? "New order" : "Create Order"}
+            </SheetTitle>
+            {isSales && (
+              <p className="text-xs text-muted-foreground">
+                Customer · product · quantity. Supervisor handles vehicle later.
+              </p>
+            )}
           </SheetHeader>
-          <form onSubmit={handleCreateOrder} className="mt-4 space-y-3.5 pb-[max(1rem,env(safe-area-inset-bottom,0px))]">
+          <form
+            onSubmit={handleCreateOrder}
+            className="mt-4 space-y-3.5 pb-[max(1rem,env(safe-area-inset-bottom,0px))]"
+          >
             {(exceedsAvailable || shortageNotice) && (
               <div className="flex items-start gap-2.5 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
                 <AlertTriangle className="size-4 shrink-0 mt-0.5" />
@@ -1467,26 +1496,28 @@ export function OrderTable({
                 </p>
               </div>
             )}
+            {!isSales && (
+              <label className="drawer-field">
+                Company
+                <select
+                  value={companyId}
+                  onChange={(e) => {
+                    setCompanyId(e.target.value);
+                    setSelectedProduct(null);
+                    setProductName("");
+                    setPurchaseReference("");
+                  }}
+                >
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="drawer-field">
-              Company
-              <select
-                value={companyId}
-                onChange={(e) => {
-                  setCompanyId(e.target.value);
-                  setSelectedProduct(null);
-                  setProductName("");
-                  setPurchaseReference("");
-                }}
-              >
-                {companies.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="drawer-field">
-              Customer Name <span className="text-destructive">*</span>
+              Customer <span className="text-destructive">*</span>
               {customersList.length > 0 && (
                 <select
                   className="mb-1 text-xs"
@@ -1503,7 +1534,7 @@ export function OrderTable({
                     }
                   }}
                 >
-                  <option value="NEW">Select customer or type below...</option>
+                  <option value="NEW">Select customer…</option>
                   {customersList.map((c) => (
                     <option key={c.id || c.name} value={c.name}>
                       {c.name}
@@ -1515,11 +1546,11 @@ export function OrderTable({
                 required
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
-                placeholder="Enter customer name"
+                placeholder="Customer name"
               />
             </label>
             <label className="drawer-field">
-              Inventory item <span className="text-destructive">*</span>
+              Product <span className="text-destructive">*</span>
               <select
                 required
                 value={selectedProduct?.id || ""}
@@ -1537,21 +1568,23 @@ export function OrderTable({
                 }}
               >
                 <option value="">
-                  {inventoryItems.length
-                    ? "Select an item from inventory"
-                    : "No inventory items for this company"}
+                  {inventoryItems.length ? "Select product…" : "No inventory items"}
                 </option>
                 {inventoryItems.map((product) => {
                   const available = Number(product.on_hand) - Number(product.reserved);
                   return (
                     <option key={product.id || product.code} value={product.id}>
-                      {product.name} ({product.code}) — {available} {product.unit} available
-                      {canViewAmounts ? ` · ₹${product.unit_price}` : ""}
+                      {product.name}
+                      {isSales
+                        ? ` — ${available} ${product.unit}`
+                        : ` (${product.code}) — ${available} ${product.unit} available${
+                            canViewAmounts ? ` · ₹${product.unit_price}` : ""
+                          }`}
                     </option>
                   );
                 })}
               </select>
-              {selectedProduct && canViewAmounts && (
+              {selectedProduct && canViewAmounts && !isSales && (
                 <div className="mt-1 flex items-center justify-between rounded border border-border bg-muted/40 px-2.5 py-1.5 text-[11px]">
                   <div>
                     <span className="text-muted-foreground font-medium">Selling Price: </span>
@@ -1568,82 +1601,29 @@ export function OrderTable({
                 </div>
               )}
             </label>
-            <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
-              <label className="drawer-field">
-                Purchase Reference Number <span className="text-destructive">*</span>
+            <label className="drawer-field">
+              Quantity <span className="text-destructive">*</span>
+              {availableStock !== null && (
                 <span className="ml-1 text-[10px] font-medium text-muted-foreground">
-                  (required for every product)
+                  (max {availableStock} {selectedProduct?.unit || unit})
                 </span>
-                {purchaseRefMode === "select" ? (
-                  <select
-                    required
-                    value={purchaseReference}
-                    onChange={(e) => {
-                      if (e.target.value === "__manual__") {
-                        setPurchaseRefMode("manual");
-                        setPurchaseReference("");
-                        return;
-                      }
-                      setPurchaseReference(e.target.value);
-                    }}
-                  >
-                    <option value="">Select purchase reference…</option>
-                    {matchingPurchaseOrders.map((po) => (
-                      <option key={po.id} value={po.id}>
-                        {po.id} · {po.product_name} · {po.supplier_name}
-                      </option>
-                    ))}
-                    <option value="__manual__">Enter reference manually…</option>
-                  </select>
-                ) : (
-                  <div className="space-y-1.5">
-                    <input
-                      required
-                      value={purchaseReference}
-                      onChange={(e) => setPurchaseReference(e.target.value)}
-                      placeholder="e.g. GI/PO/55/26-27"
-                      className="font-mono"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPurchaseRefMode("select");
-                        setPurchaseReference("");
-                      }}
-                      className="text-[10px] font-bold text-muted-foreground hover:text-foreground underline-offset-2 hover:underline cursor-pointer"
-                    >
-                      Choose from purchase orders
-                    </button>
-                  </div>
-                )}
-              </label>
-              {!purchaseReference.trim() && (
-                <p className="text-[11px] text-amber-800 dark:text-amber-300">
-                  Link this product line to a purchase reference (PO number) before submitting.
-                </p>
               )}
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <label className="drawer-field">
-                Quantity <span className="text-destructive">*</span>
-                {availableStock !== null && (
-                  <span className="ml-1 text-[10px] font-medium text-muted-foreground">
-                    (max {availableStock} {selectedProduct?.unit || unit} available)
-                  </span>
-                )}
-                <input
-                  type="number"
-                  required
-                  min="1"
-                  max={availableStock ?? undefined}
-                  value={quantity}
-                  onChange={(e) => {
-                    setQuantity(e.target.value);
-                    setShortageNotice(null);
-                  }}
-                  className={exceedsAvailable ? "border-destructive focus-visible:ring-destructive" : undefined}
-                />
-              </label>
+              <input
+                type="number"
+                required
+                min="1"
+                max={availableStock ?? undefined}
+                value={quantity}
+                onChange={(e) => {
+                  setQuantity(e.target.value);
+                  setShortageNotice(null);
+                }}
+                className={
+                  exceedsAvailable ? "border-destructive focus-visible:ring-destructive" : undefined
+                }
+              />
+            </label>
+            {!isSales && (
               <label className="drawer-field">
                 Unit <span className="text-destructive">*</span>
                 <select
@@ -1692,200 +1672,301 @@ export function OrderTable({
                   </div>
                 )}
               </label>
-            </div>
-            {canViewAmounts ? (
-              <label className="drawer-field">
-                Selling Price per Unit (₹)
-                <input
-                  type="number"
-                  required
-                  step="any"
-                  value={unitPrice}
-                  onChange={(e) => setUnitPrice(e.target.value)}
-                />
-                {selectedProduct && parseFloat(unitPrice) < Number(selectedProduct.unit_price) && (
-                  <div className="mt-1.5 flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-800 dark:text-amber-300">
-                    <AlertTriangle className="size-3.5 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
-                    <div>
-                      <span className="font-bold">Super Admin approval required:</span> Entered
-                      selling price (₹{unitPrice}) is below catalog Selling Price (₹
-                      {selectedProduct.unit_price}). This order requires Super Admin authorization
-                      before moving to Accounts.
-                    </div>
-                  </div>
-                )}
-              </label>
-            ) : (
-              <p className="text-[11px] text-muted-foreground rounded-md border border-border bg-muted/30 px-2.5 py-2">
-                Order will use the catalog selling price. Revenue amounts are visible only to
-                Accounts and Super Admin.
-              </p>
             )}
-            <label className="drawer-field">
-              Delivery Address
-              <input
-                value={deliveryAddress}
-                onChange={(e) => setDeliveryAddress(e.target.value)}
-                placeholder="Client delivery destination"
-              />
-            </label>
-            {/* Fulfillment Transport & Vehicle Selection */}
-            <div className="rounded-lg border border-border bg-card p-3.5 space-y-3">
-              <div>
-                <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
-                  <Truck className="size-3.5 text-primary" />
-                  Fulfillment & Transport Mode
-                </span>
-                <p className="text-[11px] text-muted-foreground mt-0.5">
-                  Choose whether manufacturer collects or company arranges delivery.
+            {isSales && selectedProduct && (
+              <div className="space-y-1.5">
+                <p className="text-[11px] text-muted-foreground">
+                  Unit: <strong className="text-foreground">{unit}</strong>
+                  {purchaseReference ? (
+                    <>
+                      {" "}
+                      · PO: <span className="font-mono text-foreground">{purchaseReference}</span>
+                    </>
+                  ) : null}
                 </p>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCreateTransportMode("Manufacturer Vehicle");
-                    setCreateVehiclePlate("");
-                  }}
-                  className={`text-left p-2.5 rounded-md border text-xs cursor-pointer transition-all ${
-                    createTransportMode === "Manufacturer Vehicle"
-                      ? "border-primary bg-primary/5 ring-1 ring-primary font-semibold"
-                      : "border-border bg-background hover:bg-muted/40"
-                  }`}
-                >
-                  <p className="font-semibold text-foreground text-[11px]">
-                    1. Manufacturer Vehicle
-                  </p>
-                  <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
-                    Direct collection by manufacturer. No company vehicle.
-                  </p>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setCreateTransportMode("Logistics / Assigned Vehicle")}
-                  className={`text-left p-2.5 rounded-md border text-xs cursor-pointer transition-all ${
-                    createTransportMode === "Logistics / Assigned Vehicle"
-                      ? "border-primary bg-primary/5 ring-1 ring-primary font-semibold"
-                      : "border-border bg-background hover:bg-muted/40"
-                  }`}
-                >
-                  <p className="font-semibold text-foreground text-[11px]">2. Company Logistics</p>
-                  <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
-                    Assign company vehicle & driver from godown.
-                  </p>
-                </button>
-              </div>
-
-              {createTransportMode === "Manufacturer Vehicle" ? (
-                <div className="space-y-2.5 rounded border border-blue-500/20 bg-blue-500/5 p-2.5">
-                  <p className="text-[11px] text-muted-foreground">
-                    Tracked as <strong>Manufacturer-Arranged Transport</strong>. No company fleet
-                    required.
-                  </p>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[10px] font-medium text-foreground block mb-0.5">
-                        Driver / Rep Name (Optional)
-                      </label>
-                      <input
-                        className="w-full text-xs rounded border border-border bg-background px-2.5 py-1"
-                        placeholder="e.g. Ramesh"
-                        value={createDriverName}
-                        onChange={(e) => setCreateDriverName(e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-medium text-foreground block mb-0.5">
-                        Phone (Optional)
-                      </label>
-                      <input
-                        className="w-full text-xs rounded border border-border bg-background px-2.5 py-1"
-                        placeholder="e.g. 9876543210"
-                        value={createDriverPhone}
-                        onChange={(e) => setCreateDriverPhone(e.target.value)}
-                      />
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-2.5 rounded border border-border bg-muted/20 p-2.5">
-                  <div>
-                    <label className="text-[11px] font-semibold text-foreground block mb-1">
-                      Company Vehicle (Optional - Supervisor/Admin can assign later)
-                    </label>
+                {!purchaseReference.trim() && !salesOrderMore && (
+                  <label className="drawer-field">
+                    Purchase reference <span className="text-destructive">*</span>
                     <select
-                      className="w-full text-xs rounded border border-border bg-background px-2.5 py-1.5 text-foreground"
-                      value={createVehiclePlate}
+                      required
+                      value={purchaseReference}
                       onChange={(e) => {
-                        const plate = e.target.value;
-                        setCreateVehiclePlate(plate);
-                        const matched = vehiclesList.find((v) => v.plate_number === plate);
-                        if (matched?.assigned_driver_name) {
-                          setCreateDriverName(matched.assigned_driver_name);
+                        if (e.target.value === "__manual__") {
+                          setSalesOrderMore(true);
+                          setPurchaseRefMode("manual");
+                          setPurchaseReference("");
+                          return;
                         }
-                        if (matched?.assigned_driver_phone) {
-                          setCreateDriverPhone(matched.assigned_driver_phone);
-                        }
+                        setPurchaseReference(e.target.value);
                       }}
                     >
-                      <option value="">-- Assign Vehicle Later (Supervisor / Admin) --</option>
-                      {vehiclesList.map((v) => {
-                        const isDispatched = v.status === "Dispatched / On Delivery";
-                        return (
-                          <option key={v.id} value={v.plate_number} disabled={isDispatched}>
-                            {v.plate_number} ({v.make_model}) — [{v.status}]
-                            {isDispatched ? " ⚠️ UNAVAILABLE (IN TRANSIT)" : ""}
-                          </option>
-                        );
-                      })}
+                      <option value="">Select PO…</option>
+                      {matchingPurchaseOrders.map((po) => (
+                        <option key={po.id} value={po.id}>
+                          {po.id}
+                        </option>
+                      ))}
+                      <option value="__manual__">Type manually…</option>
                     </select>
-                    <p className="text-[10px] text-muted-foreground mt-0.5">
-                      Vehicles currently <strong>Dispatched / On Delivery</strong> cannot be
-                      assigned.
+                  </label>
+                )}
+              </div>
+            )}
+
+            {(!isSales || salesOrderMore) && (
+              <>
+                <div className="space-y-2 rounded-lg border border-border bg-muted/20 p-3">
+                  <label className="drawer-field">
+                    Purchase Reference Number <span className="text-destructive">*</span>
+                    {purchaseRefMode === "select" ? (
+                      <select
+                        required
+                        value={purchaseReference}
+                        onChange={(e) => {
+                          if (e.target.value === "__manual__") {
+                            setPurchaseRefMode("manual");
+                            setPurchaseReference("");
+                            return;
+                          }
+                          setPurchaseReference(e.target.value);
+                        }}
+                      >
+                        <option value="">Select purchase reference…</option>
+                        {matchingPurchaseOrders.map((po) => (
+                          <option key={po.id} value={po.id}>
+                            {po.id} · {po.product_name} · {po.supplier_name}
+                          </option>
+                        ))}
+                        <option value="__manual__">Enter reference manually…</option>
+                      </select>
+                    ) : (
+                      <div className="space-y-1.5">
+                        <input
+                          required
+                          value={purchaseReference}
+                          onChange={(e) => setPurchaseReference(e.target.value)}
+                          placeholder="e.g. GI/PO/55/26-27"
+                          className="font-mono"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPurchaseRefMode("select");
+                            setPurchaseReference("");
+                          }}
+                          className="text-[10px] font-bold text-muted-foreground hover:text-foreground underline-offset-2 hover:underline cursor-pointer"
+                        >
+                          Choose from purchase orders
+                        </button>
+                      </div>
+                    )}
+                  </label>
+                  {!purchaseReference.trim() && (
+                    <p className="text-[11px] text-amber-800 dark:text-amber-300">
+                      Link this product line to a purchase reference before submitting.
                     </p>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-[10px] font-medium text-foreground block mb-0.5">
-                        Driver Name (Optional)
-                      </label>
-                      <input
-                        className="w-full text-xs rounded border border-border bg-background px-2.5 py-1"
-                        placeholder="e.g. Ramesh Kumar"
-                        value={createDriverName}
-                        onChange={(e) => setCreateDriverName(e.target.value)}
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[10px] font-medium text-foreground block mb-0.5">
-                        Driver Phone (Optional)
-                      </label>
-                      <input
-                        className="w-full text-xs rounded border border-border bg-background px-2.5 py-1"
-                        placeholder="e.g. 9876543210"
-                        value={createDriverPhone}
-                        onChange={(e) => setCreateDriverPhone(e.target.value)}
-                      />
-                    </div>
-                  </div>
+                  )}
                 </div>
-              )}
-            </div>
+                {canViewAmounts ? (
+                  <label className="drawer-field">
+                    Selling Price per Unit (₹)
+                    <input
+                      type="number"
+                      required
+                      step="any"
+                      value={unitPrice}
+                      onChange={(e) => setUnitPrice(e.target.value)}
+                    />
+                    {selectedProduct &&
+                      parseFloat(unitPrice) < Number(selectedProduct.unit_price) && (
+                        <div className="mt-1.5 flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 p-2 text-[11px] text-amber-800 dark:text-amber-300">
+                          <AlertTriangle className="size-3.5 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                          <div>
+                            <span className="font-bold">Super Admin approval required:</span>{" "}
+                            Entered selling price (₹{unitPrice}) is below catalog Selling Price (₹
+                            {selectedProduct.unit_price}).
+                          </div>
+                        </div>
+                      )}
+                  </label>
+                ) : !isSales ? (
+                  <p className="text-[11px] text-muted-foreground rounded-md border border-border bg-muted/30 px-2.5 py-2">
+                    Order will use the catalog selling price. Revenue amounts are visible only to
+                    Accounts and Super Admin.
+                  </p>
+                ) : null}
+                <label className="drawer-field">
+                  Delivery Address
+                  <input
+                    value={deliveryAddress}
+                    onChange={(e) => setDeliveryAddress(e.target.value)}
+                    placeholder="Client delivery destination"
+                  />
+                </label>
+                {!isSales && (
+                  <div className="rounded-lg border border-border bg-card p-3.5 space-y-3">
+                    <div>
+                      <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                        <Truck className="size-3.5 text-primary" />
+                        Fulfillment & Transport Mode
+                      </span>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">
+                        Choose whether manufacturer collects or company arranges delivery.
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCreateTransportMode("Manufacturer Vehicle");
+                          setCreateVehiclePlate("");
+                        }}
+                        className={`text-left p-2.5 rounded-md border text-xs cursor-pointer transition-all ${
+                          createTransportMode === "Manufacturer Vehicle"
+                            ? "border-primary bg-primary/5 ring-1 ring-primary font-semibold"
+                            : "border-border bg-background hover:bg-muted/40"
+                        }`}
+                      >
+                        <p className="font-semibold text-foreground text-[11px]">
+                          1. Manufacturer Vehicle
+                        </p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
+                          Direct collection by manufacturer. No company vehicle.
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCreateTransportMode("Logistics / Assigned Vehicle")}
+                        className={`text-left p-2.5 rounded-md border text-xs cursor-pointer transition-all ${
+                          createTransportMode === "Logistics / Assigned Vehicle"
+                            ? "border-primary bg-primary/5 ring-1 ring-primary font-semibold"
+                            : "border-border bg-background hover:bg-muted/40"
+                        }`}
+                      >
+                        <p className="font-semibold text-foreground text-[11px]">
+                          2. Company Logistics
+                        </p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5 leading-tight">
+                          Assign company vehicle & driver from godown.
+                        </p>
+                      </button>
+                    </div>
+                    {createTransportMode === "Manufacturer Vehicle" ? (
+                      <div className="space-y-2.5 rounded border border-blue-500/20 bg-blue-500/5 p-2.5">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[10px] font-medium text-foreground block mb-0.5">
+                              Driver / Rep Name (Optional)
+                            </label>
+                            <input
+                              className="w-full text-xs rounded border border-border bg-background px-2.5 py-1"
+                              placeholder="e.g. Ramesh"
+                              value={createDriverName}
+                              onChange={(e) => setCreateDriverName(e.target.value)}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-medium text-foreground block mb-0.5">
+                              Phone (Optional)
+                            </label>
+                            <input
+                              className="w-full text-xs rounded border border-border bg-background px-2.5 py-1"
+                              placeholder="e.g. 9876543210"
+                              value={createDriverPhone}
+                              onChange={(e) => setCreateDriverPhone(e.target.value)}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="space-y-2.5 rounded border border-border bg-muted/20 p-2.5">
+                        <div>
+                          <label className="text-[11px] font-semibold text-foreground block mb-1">
+                            Company Vehicle (Optional)
+                          </label>
+                          <select
+                            className="w-full text-xs rounded border border-border bg-background px-2.5 py-1.5 text-foreground"
+                            value={createVehiclePlate}
+                            onChange={(e) => {
+                              const plate = e.target.value;
+                              setCreateVehiclePlate(plate);
+                              const matched = vehiclesList.find((v) => v.plate_number === plate);
+                              if (matched?.assigned_driver_name) {
+                                setCreateDriverName(matched.assigned_driver_name);
+                              }
+                              if (matched?.assigned_driver_phone) {
+                                setCreateDriverPhone(matched.assigned_driver_phone);
+                              }
+                            }}
+                          >
+                            <option value="">-- Assign Vehicle Later --</option>
+                            {vehiclesList.map((v) => {
+                              const isDispatched = v.status === "Dispatched / On Delivery";
+                              return (
+                                <option
+                                  key={v.id}
+                                  value={v.plate_number}
+                                  disabled={isDispatched}
+                                >
+                                  {v.plate_number} ({v.make_model}) — [{v.status}]
+                                  {isDispatched ? " UNAVAILABLE" : ""}
+                                </option>
+                              );
+                            })}
+                          </select>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-[10px] font-medium text-foreground block mb-0.5">
+                              Driver Name (Optional)
+                            </label>
+                            <input
+                              className="w-full text-xs rounded border border-border bg-background px-2.5 py-1"
+                              placeholder="e.g. Ramesh Kumar"
+                              value={createDriverName}
+                              onChange={(e) => setCreateDriverName(e.target.value)}
+                            />
+                          </div>
+                          <div>
+                            <label className="text-[10px] font-medium text-foreground block mb-0.5">
+                              Driver Phone (Optional)
+                            </label>
+                            <input
+                              className="w-full text-xs rounded border border-border bg-background px-2.5 py-1"
+                              placeholder="e.g. 9876543210"
+                              value={createDriverPhone}
+                              onChange={(e) => setCreateDriverPhone(e.target.value)}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <label className="drawer-field">
+                  Notes
+                  <input
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    placeholder="Optional notes"
+                  />
+                </label>
+              </>
+            )}
 
-            <label className="drawer-field">
-              Notes
-              <input
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                placeholder="Special handling or delivery instructions"
-              />
-            </label>
+            {isSales && (
+              <button
+                type="button"
+                onClick={() => setSalesOrderMore((v) => !v)}
+                className="text-xs font-semibold text-primary hover:underline cursor-pointer"
+              >
+                {salesOrderMore ? "Hide extra details" : "More details (PO / address / notes)"}
+              </button>
+            )}
+
             <Button
               type="submit"
-              className="w-full mt-4 h-11 text-xs font-bold"
+              className="w-full mt-2 h-11 text-xs font-bold"
               disabled={isSubmitting || exceedsAvailable || !selectedProduct}
             >
               {isSubmitting
@@ -1894,7 +1975,9 @@ export function OrderTable({
                   ? "Stock too low"
                   : selectedProduct && parseFloat(unitPrice) < Number(selectedProduct.unit_price)
                     ? "Submit (needs approval)"
-                    : "Submit Order"}
+                    : isSales
+                      ? "Place order"
+                      : "Submit Order"}
             </Button>
           </form>
         </SheetContent>
