@@ -21,12 +21,12 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useWorkspace } from "./workspace-provider";
+import { DocumentExtractReviewSheet } from "./document-extract-review";
 import { companies, type CompanyId } from "@/lib/workspace-data";
 import {
   DOCUMENT_CATEGORIES,
   deleteDocument,
   fetchDocuments,
-  uploadDocument,
   uploadableCategoriesForRole,
   visibleCategoriesForRole,
   type DocumentCategory,
@@ -60,7 +60,14 @@ export function DocumentsWorkspace() {
   const [uploadCompany, setUploadCompany] = useState<CompanyId>(company);
   const [uploadNotes, setUploadNotes] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
+
+  // OCR confirm sheet
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewFile, setReviewFile] = useState<File | null>(null);
+  const [reviewCategory, setReviewCategory] = useState<DocumentCategory>("coa");
+  const [reviewTitle, setReviewTitle] = useState("");
+  const [reviewCompany, setReviewCompany] = useState<CompanyId>(company);
+  const [reviewNotes, setReviewNotes] = useState("");
 
   // Preview state
   const [previewDoc, setPreviewDoc] = useState<DocumentRecord | null>(null);
@@ -105,7 +112,7 @@ export function DocumentsWorkspace() {
     });
   }, [docs, activeCategory, search]);
 
-  const handleUpload = async (e: React.FormEvent) => {
+  const handleUpload = (e: React.FormEvent) => {
     e.preventDefault();
     if (!uploadTitle.trim()) {
       toast.error("Please enter a document title");
@@ -117,38 +124,30 @@ export function DocumentsWorkspace() {
     }
     if (!role) return;
 
-    setUploading(true);
-    try {
-      await uploadDocument({
-        file: uploadFile,
-        title: uploadTitle.trim(),
-        category: uploadCategory,
-        companyId: uploadCompany,
-        notes: uploadNotes.trim(),
-        uploadedBy: currentUser?.name || "User",
-        uploadedByRole: role,
-      });
-      toast.success("Document uploaded", {
-        description: `"${uploadTitle.trim()}" saved under ${DOCUMENT_CATEGORIES.find((c) => c.id === uploadCategory)?.shortLabel}.`,
-      });
-      setUploadTitle("");
-      setUploadNotes("");
-      setUploadFile(null);
-      setUploadOpen(false);
-      await load();
-    } catch (err) {
-      toast.error("Upload failed", {
-        description: err instanceof Error ? err.message : "Could not upload document.",
-      });
-    } finally {
-      setUploading(false);
-    }
+    setReviewFile(uploadFile);
+    setReviewCategory(uploadCategory);
+    setReviewTitle(uploadTitle.trim());
+    setReviewCompany(uploadCompany);
+    setReviewNotes(uploadNotes.trim());
+    setUploadOpen(false);
+    setReviewOpen(true);
+  };
+
+  const handleReviewCompleted = async () => {
+    setUploadTitle("");
+    setUploadNotes("");
+    setUploadFile(null);
+    setReviewFile(null);
+    await load();
   };
 
   const handleDelete = async (doc: DocumentRecord) => {
     if (!window.confirm(`Permanently delete "${doc.title}"?`)) return;
     try {
-      await deleteDocument(doc, { role, actorName: currentUser?.name });
+      await deleteDocument(doc, {
+        ...(role ? { role } : {}),
+        ...(currentUser?.name ? { actorName: currentUser.name } : {}),
+      });
       toast.success("Document deleted");
       setDocs((prev) => prev.filter((d) => d.id !== doc.id));
       if (previewDoc?.id === doc.id) setPreviewDoc(null);
@@ -168,7 +167,8 @@ export function DocumentsWorkspace() {
           </p>
           <h1 className="text-2xl font-black tracking-tight text-foreground">Documents</h1>
           <p className="text-xs text-muted-foreground mt-0.5">
-            Role-scoped repository for COA certificates, Purchase Orders, Purchase Invoices, and Sales Invoices.
+            Upload → auto-read → confirm details. Purchase invoices also receive stock against a PO.
+            Record supplier and customer payments later on Accounts.
           </p>
         </div>
         {uploadableCategories.length > 0 && (
@@ -249,7 +249,7 @@ export function DocumentsWorkspace() {
           <p className="text-sm font-bold text-foreground">No documents found</p>
           <p className="text-xs text-muted-foreground">
             {uploadableCategories.length > 0
-              ? 'Click "Upload Document" to store a PDF or image with a title.'
+              ? 'Click "Upload Document" — we read the file and ask you to confirm the details.'
               : "Documents shared with your role will appear here."}
           </p>
         </div>
@@ -340,7 +340,8 @@ export function DocumentsWorkspace() {
           <SheetHeader>
             <SheetTitle>Upload Document</SheetTitle>
             <SheetDescription>
-              Store a PDF or image with a clear title. Visibility is automatically applied by role.
+              We read the full PDF or image, then ask you to confirm every field. Purchase invoices
+              also receive stock against a PO. Payments stay on Accounts.
             </SheetDescription>
           </SheetHeader>
           <form onSubmit={handleUpload} className="mt-6 space-y-4">
@@ -407,13 +408,31 @@ export function DocumentsWorkspace() {
               />
             </label>
 
-            <Button type="submit" className="w-full gap-1.5 cursor-pointer" disabled={uploading}>
+            <Button type="submit" className="w-full gap-1.5 cursor-pointer">
               <Upload className="size-3.5" />
-              {uploading ? "Uploading..." : "Upload Document"}
+              Read & confirm details
             </Button>
           </form>
         </SheetContent>
       </Sheet>
+
+      <DocumentExtractReviewSheet
+        open={reviewOpen}
+        onOpenChange={(open) => {
+          setReviewOpen(open);
+          if (!open) setReviewFile(null);
+        }}
+        file={reviewFile}
+        category={reviewCategory}
+        title={reviewTitle}
+        companyId={reviewCompany}
+        notes={reviewNotes}
+        actorRole={role}
+        actorName={currentUser?.name || "User"}
+        onCompleted={() => {
+          void handleReviewCompleted();
+        }}
+      />
 
       {/* PREVIEW MODAL */}
       <Sheet open={!!previewDoc} onOpenChange={(open) => !open && setPreviewDoc(null)}>

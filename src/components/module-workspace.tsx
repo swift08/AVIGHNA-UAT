@@ -542,8 +542,7 @@ export function ModuleWorkspace({
   const [poRemark, setPoRemark] = useState("GST Extra");
   const [poDocTick, setPoDocTick] = useState(0);
 
-  const [receiveInitialFile, setReceiveInitialFile] = useState<File | null>(null);
-  // Supervisor invoice-photo partial receive (OCR confirm → stock tagged to PO)
+  // Supervisor partial receive (manual qty → stock tagged to PO). PDFs go in Documents.
   const [receivePo, setReceivePo] = useState<DBPurchaseOrder | null>(null);
   const [supplierPayPo, setSupplierPayPo] = useState<DBPurchaseOrder | null>(null);
 
@@ -859,7 +858,7 @@ export function ModuleWorkspace({
     purchases: "Purchases",
     logistics:
       isSuperAdmin || isSupervisor ? "Out for delivery" : "Dispatch control",
-    accounts: isSalesCollector ? "Payments due" : "Invoices",
+    accounts: isSalesCollector ? "Payments due" : "Accounts",
     credit: "Credit control",
     analytics: isSupervisor
       ? "Floor analytics"
@@ -890,7 +889,7 @@ export function ModuleWorkspace({
         : "Keep your deliveries moving.",
     accounts: isSalesCollector
       ? "See outstanding invoices, collect payments in the field, and track receipts."
-      : "Ready to invoice shows orders after Supervisor confirmed/added the vehicle. Enter bill details, then raise the invoice. After that book the driver on Order desk.",
+      : "Receivables and Payables in one place. Raise invoices, collect customer payments, and record supplier payments. PDFs live in Documents.",
     credit:
       "Limits, days and credit/debit notes. Accounts adjusts receivables — warehouse handles stock.",
     analytics: isSupervisor
@@ -2076,51 +2075,6 @@ export function ModuleWorkspace({
     }
   };
 
-  const handleUploadPoPdf = async (po: DBPurchaseOrder, file: File | null) => {
-    if (!file) return;
-    // Attach PDF / photo → OCR qty + amount → "Is this correct?" → stock update
-    if (!hasPermission("purchases.receive") && !isSuperAdmin) {
-      toast.error("Only Supervisor can receive stock from the supplier invoice.");
-      return;
-    }
-    if (!po.product_id) {
-      toast.error(
-        "This PO is not linked to a catalog product. Ask Accounts to recreate it with a product selected.",
-      );
-      return;
-    }
-    if (poRemainingQuantity(po) <= 0) {
-      toast.error("This purchase order is already fully received.");
-      return;
-    }
-
-    let readyPo = po;
-    // Attaching the supplier invoice implies goods are on the way / arrived —
-    // auto-mark Requested → In transit so supervisor isn't blocked by a toast.
-    if (po.status === "Requested") {
-      try {
-        readyPo = await markPurchaseOrderSent(
-          po.id,
-          po.company_id,
-          currentUser?.name || "Supervisor",
-        );
-        toast.message("PO marked as sent (In transit). Reading invoice…");
-        reloadData();
-      } catch (err) {
-        toast.error(
-          err instanceof Error ? err.message : "Could not mark PO as sent before attach.",
-        );
-        return;
-      }
-    } else if (po.status !== "In transit" && !isSuperAdmin) {
-      toast.error("Only In transit (or Requested) POs can receive from a supplier invoice.");
-      return;
-    }
-
-    setReceiveInitialFile(file);
-    setReceivePo(readyPo);
-  };
-
   const handleCreatePO = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!hasPermission("purchases.create")) {
@@ -2247,7 +2201,7 @@ export function ModuleWorkspace({
 
   const openReceiveGoods = (po: DBPurchaseOrder) => {
     if (!hasPermission("purchases.receive")) {
-      toast.error("Only Supervisor can receive inbound stock by uploading the supplier invoice.");
+      toast.error("Only Supervisor can receive inbound stock against a purchase order.");
       return;
     }
     if (po.status !== "In transit" && !isSuperAdmin) {
@@ -3651,6 +3605,8 @@ export function ModuleWorkspace({
                     ? ["Payments due", "Payment Collections"]
                     : [
                         "All sections",
+                        "Receivables",
+                        "Payables",
                         "Ready to invoice",
                         "Dispatch inbox",
                         "Issued invoices",
@@ -3679,9 +3635,7 @@ export function ModuleWorkspace({
                   tab === "Overview" &&
                   t === (isSuperAdmin ? "Companies" : "Team logins")) ||
                 (module === "accounts" &&
-                  (tab === "Overview" ||
-                    tab === "Receivables" ||
-                    tab === "Invoices & Receivables") &&
+                  (tab === "Overview" || tab === "Invoices & Receivables") &&
                   t === (isSalesCollector ? "Payments due" : "All sections")) ||
                 (module === "analytics" &&
                   tab === "Overview" &&
@@ -3713,7 +3667,10 @@ export function ModuleWorkspace({
                   case "Audit":
                     return <FileText className="size-3.5" />;
                   case "Invoices & Receivables":
+                  case "Receivables":
                     return <FileCheck2 className="size-3.5" />;
+                  case "Payables":
+                    return <Scale className="size-3.5" />;
                   case "Payment Collections":
                     return <IndianRupee className="size-3.5" />;
                   case "Payments due":
@@ -4785,7 +4742,7 @@ export function ModuleWorkspace({
                   <span className="trend">{companyInvoices.length} documents</span>
                 </div>
                 <div className="kpi">
-                  <p className="text-xs text-muted-foreground">Awaiting payment</p>
+                  <p className="text-xs text-muted-foreground">Receivables open</p>
                   <p className="kpi-value">
                     {
                       companyInvoices.filter(
@@ -4793,11 +4750,27 @@ export function ModuleWorkspace({
                       ).length
                     }
                   </p>
-                  <span className="trend">Pending settlement</span>
+                  <span className="trend">
+                    Payables{" "}
+                    {
+                      dbPOs.filter(
+                        (p) =>
+                          (Number(p.received_quantity) || 0) > 0 && poPaymentRemaining(p) > 0,
+                      ).length
+                    }{" "}
+                    open
+                  </span>
                 </div>
               </>
             )}
           </div>
+          {!isSalesCollector && (tab === "All sections" || tab === "Overview") && (
+            <p className="mb-4 text-xs text-muted-foreground">
+              Money desk: record <strong className="text-foreground">Receivables</strong> (customer
+              payments) and <strong className="text-foreground">Payables</strong> (supplier
+              payments) here. Store PO / invoice PDFs in Documents.
+            </p>
+          )}
 
           {/* SECTION 1: READY TO INVOICE */}
           {canGenerateInvoices &&
@@ -5059,22 +5032,29 @@ export function ModuleWorkspace({
             </section>
           )}
 
-          {/* SECTION 3: ISSUED INVOICES / PAYMENTS DUE */}
+          {/* SECTION 3: ISSUED INVOICES / RECEIVABLES / PAYMENTS DUE */}
           {(tab === "All sections" ||
             tab === "Issued invoices" ||
+            tab === "Receivables" ||
             tab === "Payments due") && (
             <section className="panel mb-6">
               <div className="panel-head flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                 <div>
                   <h2 className="panel-title flex items-center gap-2">
                     <FileCheck2 className="size-4 text-primary" />
-                    {tab === "Payments due" ? "Payments due" : "Issued invoices"}
+                    {tab === "Payments due"
+                      ? "Payments due"
+                      : tab === "Receivables"
+                        ? "Receivables"
+                        : "Issued invoices"}
                   </h2>
                 </div>
                 <p className="text-sm text-muted-foreground">
                   {tab === "Payments due"
                     ? "Tap a bill → enter amount collected → Save."
-                    : "Invoice ↔ sales order ↔ dispatch. Filters stay on this company."}
+                    : tab === "Receivables"
+                      ? "Customer bills with outstanding balance — record receivable payments here."
+                      : "Invoice ↔ sales order ↔ dispatch. Filters stay on this company."}
                 </p>
               </div>
 
@@ -5297,7 +5277,125 @@ export function ModuleWorkspace({
             </section>
           )}
 
-          {/* SECTION 4: PAYMENT COLLECTIONS */}
+          {/* SECTION 4: PAYABLES (supplier payments) */}
+          {!isSalesCollector &&
+            (tab === "All sections" || tab === "Payables") && (
+              <section className="panel mb-6">
+                <div className="panel-head flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                  <div>
+                    <h2 className="panel-title flex items-center gap-2">
+                      <Scale className="size-4 text-primary" />
+                      Payables
+                    </h2>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      Supplier balances after stock receive. Upload invoice PDFs in Documents;
+                      record supplier payments here.
+                    </p>
+                  </div>
+                  <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-primary/10 text-primary border border-primary/20 self-start sm:self-auto">
+                    {
+                      dbPOs.filter(
+                        (p) =>
+                          (Number(p.received_quantity) || 0) > 0 && poPaymentRemaining(p) > 0,
+                      ).length
+                    }{" "}
+                    unpaid
+                  </span>
+                </div>
+                <div className="table-scroll">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>PO</th>
+                        <th>SUPPLIER</th>
+                        <th>PRODUCT</th>
+                        <th>RECEIVED</th>
+                        <th>TOTAL</th>
+                        <th>PAID</th>
+                        <th>PAYABLE LEFT</th>
+                        <th>STATUS</th>
+                        <th>ACTION</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dbPOs
+                        .filter((p) => (Number(p.received_quantity) || 0) > 0)
+                        .map((p) => {
+                          const payRem = poPaymentRemaining(p);
+                          const payStatus = poPaymentStatus(p);
+                          const received = Number(p.received_quantity) || 0;
+                          const canPay =
+                            payRem > 0 &&
+                            (hasPermission("purchases.receive") ||
+                              hasPermission("payments.record") ||
+                              isSuperAdmin);
+                          return (
+                            <tr key={p.id}>
+                              <td className="font-mono text-xs font-bold">#{p.id}</td>
+                              <td>
+                                <p className="font-semibold text-xs">{p.supplier_name}</p>
+                                <p className="text-[10px] text-muted-foreground">
+                                  {companies.find((c) => c.id === p.company_id)?.short}
+                                </p>
+                              </td>
+                              <td className="text-xs font-medium">{p.product_name}</td>
+                              <td className="text-xs">
+                                {received} / {p.quantity} {p.unit}
+                              </td>
+                              <td className="text-xs font-semibold">
+                                {money(Number(p.total_amount) || 0)}
+                              </td>
+                              <td className="text-xs">
+                                {money(Number(p.paid_amount) || 0)}
+                              </td>
+                              <td className="text-xs font-semibold text-warning">
+                                {money(payRem)}
+                              </td>
+                              <td>
+                                <span
+                                  className={`status ${
+                                    payStatus === "Fully paid"
+                                      ? "success"
+                                      : payStatus === "Partially paid"
+                                        ? "warning"
+                                        : "brand"
+                                  }`}
+                                >
+                                  {payStatus}
+                                </span>
+                              </td>
+                              <td>
+                                {canPay ? (
+                                  <Button
+                                    size="sm"
+                                    className="h-7 px-2 text-xs bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer"
+                                    onClick={() => setSupplierPayPo(p)}
+                                  >
+                                    Supplier payment
+                                  </Button>
+                                ) : (
+                                  <span className="text-[10px] text-muted-foreground">—</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                    </tbody>
+                  </table>
+                  {dbPOs.filter((p) => (Number(p.received_quantity) || 0) > 0).length === 0 && (
+                    <div className="p-8 text-center text-muted-foreground">
+                      <p className="font-medium text-sm">No received POs yet.</p>
+                      <p className="text-xs mt-1">
+                        After stock is received (from Documents purchase invoice or Purchases →
+                        Receive stock), supplier balances appear here.
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
+
+          {/* SECTION 5: PAYMENT COLLECTIONS */}
           {(tab === "All sections" || tab === "Payment Collections") && (
             <section className="panel">
               <div className="panel-head">
@@ -8707,20 +8805,31 @@ export function ModuleWorkspace({
             <div>
               <h2 className="panel-title">Procurement overview</h2>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                Create PO → mark sent → Supervisor uploads supplier invoice PDF → stock tagged to
-                that PO with remaining qty until fully received
+                Create PO → mark sent → receive stock here or via Documents purchase-invoice upload.
+                Store PDFs in Documents. Record supplier payments on Accounts → Payables.
               </p>
             </div>
-            {hasPermission("purchases.create") && (
+            <div className="flex flex-wrap items-center gap-2">
               <Button
                 size="sm"
+                variant="outline"
                 className="h-8 gap-1.5 text-xs font-semibold"
-                onClick={() => setPoModal(true)}
+                onClick={() => void navigate({ to: "/documents" })}
               >
-                <Plus className="size-3.5" />
-                Create purchase order
+                <FileText className="size-3.5" />
+                Upload in Documents
               </Button>
-            )}
+              {hasPermission("purchases.create") && (
+                <Button
+                  size="sm"
+                  className="h-8 gap-1.5 text-xs font-semibold"
+                  onClick={() => setPoModal(true)}
+                >
+                  <Plus className="size-3.5" />
+                  Create purchase order
+                </Button>
+              )}
+            </div>
           </div>
           {dbPOs.map((p) => {
             const uploaded = getPurchaseOrderDocument(p.id);
@@ -8792,8 +8901,10 @@ export function ModuleWorkspace({
                       return (
                         <div className="mt-1.5 space-y-0.5 text-[10px]">
                           {(uploaded || meta.documentName) && (
-                            <p className="font-semibold text-primary">
-                              Attached: {uploaded?.name || meta.documentName}
+                            <p className="font-semibold text-muted-foreground">
+                              Receive note: {uploaded?.name || meta.documentName}
+                              {" · "}
+                              Store PDFs in Documents
                             </p>
                           )}
                           <p className="text-muted-foreground font-medium leading-relaxed">
@@ -8862,22 +8973,6 @@ export function ModuleWorkspace({
                     <Eye className="size-3.5" />
                     {uploaded ? "Download / Print PDF" : "Download / Print PO"}
                   </Button>
-                  {(hasPermission("purchases.receive") || isSuperAdmin) && (
-                    <label className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2 text-xs font-semibold cursor-pointer hover:bg-muted/50">
-                      <FileText className="size-3.5" />
-                      {uploaded ? "Replace invoice" : "Attach PDF"}
-                      <input
-                        type="file"
-                        accept="application/pdf,.pdf,image/*"
-                        className="hidden"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0] || null;
-                          void handleUploadPoPdf(p, file);
-                          e.currentTarget.value = "";
-                        }}
-                      />
-                    </label>
-                  )}
                   {p.status === "Requested" &&
                     (hasPermission("purchases.create") || isSuperAdmin) && (
                       <Button
@@ -8897,7 +8992,7 @@ export function ModuleWorkspace({
                       className="h-7 text-xs font-semibold"
                       onClick={() => openReceiveGoods(p)}
                     >
-                      Upload supplier invoice
+                      Receive stock
                     </Button>
                   )}
                   {canPaySupplier && (
@@ -8949,7 +9044,7 @@ export function ModuleWorkspace({
           {dbPOs.length === 0 && (
             <p className="p-8 text-center text-muted-foreground">
               No purchase orders yet. Create a PO linked to a catalog product, download/print the
-              PDF for the supplier, then mark it sent for Logistics to verify on arrival.
+              PDF for the supplier, then mark it sent. Upload PO and invoice files in Documents.
             </p>
           )}
         </section>
@@ -11477,8 +11572,8 @@ export function ModuleWorkspace({
             <SheetTitle>Create purchase order</SheetTitle>
             <SheetDescription>
               Link a catalog product, download/print the PO PDF for the supplier, then mark it sent.
-              Supervisor receives stock by uploading the supplier invoice PDF (partial receive
-              supported). Logistics does not review or receive inbound POs.
+              Store PO and supplier invoice PDFs in Documents. Supervisor receives stock on this
+              page (partial receive supported). Logistics does not review or receive inbound POs.
             </SheetDescription>
           </SheetHeader>
           <form onSubmit={handleCreatePO} className="mt-6 space-y-4 pb-12">
@@ -11712,15 +11807,11 @@ export function ModuleWorkspace({
         po={receivePo}
         open={!!receivePo}
         onOpenChange={(open) => {
-          if (!open) {
-            setReceivePo(null);
-            setReceiveInitialFile(null);
-          }
+          if (!open) setReceivePo(null);
         }}
         actorRole={currentUser?.role}
         actorName={currentUser?.name || "Supervisor"}
         allowAnyStatus={isSuperAdmin}
-        initialFile={receiveInitialFile}
         onReceived={() => {
           setPoDocTick((n) => n + 1);
           reloadData();

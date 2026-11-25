@@ -125,7 +125,7 @@ export const navigation = [
   {
     section: "Finance & control",
     items: [
-      { name: "Invoices", url: "/accounts", icon: CreditCard, perm: "invoices.view" },
+      { name: "Accounts", url: "/accounts", icon: CreditCard, perm: "invoices.view" },
       { name: "Credit control", url: "/credit", icon: Scale, perm: "credit.view" },
       {
         name: "Analytics",
@@ -168,8 +168,8 @@ function navVisible(
       (!item.perm || hasPermission(item.perm))
     );
   }
-  // Sales uses "Payments due" instead of the Finance Invoices link.
-  if (item.name === "Invoices" && normalized === "sales") return false;
+  // Sales uses "Payments due" instead of the Finance Accounts link.
+  if (item.name === "Accounts" && normalized === "sales") return false;
   // Supervisors use Administration only for Team logins (propose → SA approve).
   if (item.name === "Administration" && normalized === "supervisor") return true;
   return !item.perm || hasPermission(item.perm);

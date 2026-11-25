@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { Camera, FileUp, Loader2 } from "lucide-react";
+import { useMemo, useState, type FormEvent } from "react";
+import { Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,13 +18,7 @@ import {
   type CoaExtraction,
   type CoaField,
 } from "@/lib/coa-ocr";
-import {
-  extractCoaInBrowser,
-  guessCoaMimeType,
-  isCoaImageFile,
-} from "@/lib/coa-client-ocr";
-import { extractCoaDocument } from "@/lib/coa-service";
-import { savePurchaseOrderDocument, patchPurchaseOrderDocumentMeta } from "@/lib/po-documents";
+import { patchPurchaseOrderDocumentMeta } from "@/lib/po-documents";
 import {
   poPaymentRemaining,
   poPaymentStatus,
@@ -38,17 +32,6 @@ import {
 import type { RoleType } from "@/lib/auth-service";
 
 type PaySettlement = "fully" | "partial" | "unpaid";
-
-function fileToBase64(file: File) {
-  return file.arrayBuffer().then((buffer) => {
-    const bytes = new Uint8Array(buffer);
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 0x8000) {
-      binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    }
-    return btoa(binary);
-  });
-}
 
 function statusClass(status: ReturnType<typeof fieldStatus>) {
   if (status === "ok") return "border-emerald-500/40 bg-emerald-500/5";
@@ -94,42 +77,17 @@ function FieldInput({
   );
 }
 
-async function pickInvoicePhoto(): Promise<File | null> {
-  try {
-    const { Camera: CapCamera, CameraResultType, CameraSource } = await import(
-      "@capacitor/camera"
-    );
-    const { Capacitor } = await import("@capacitor/core");
-    if (!Capacitor.isNativePlatform()) return null;
-    const photo = await CapCamera.getPhoto({
-      quality: 85,
-      resultType: CameraResultType.DataUrl,
-      source: CameraSource.Camera,
-      correctOrientation: true,
-    });
-    if (!photo.dataUrl) return null;
-    const res = await fetch(photo.dataUrl);
-    const blob = await res.blob();
-    return new File([blob], `invoice-${Date.now()}.jpg`, {
-      type: blob.type || "image/jpeg",
-    });
-  } catch {
-    return null;
-  }
-}
-
 /**
- * Supervisor (or super admin) uploads supplier invoice photo → OCR review popup →
+ * Supervisor (or super admin) enters receive qty / invoice details →
  * partial receive into inventory tagged to that PO → optional supplier payment.
+ * PO and invoice PDFs are stored in Documents, not here.
  */
 export function PoInvoiceReceiveSheet({
   po,
   open,
   onOpenChange,
-  actorRole,
   actorName,
   allowAnyStatus,
-  initialFile,
   onReceived,
 }: {
   po: DBPurchaseOrder | null;
@@ -138,21 +96,14 @@ export function PoInvoiceReceiveSheet({
   actorRole: RoleType | undefined;
   actorName: string;
   allowAnyStatus?: boolean;
-  /** When set (e.g. from Attach PDF), start OCR on this file immediately. */
-  initialFile?: File | null;
   onReceived: () => void;
 }) {
-  const [stage, setStage] = useState<
-    "idle" | "processing" | "review" | "saving" | "payment"
-  >("idle");
-  const [file, setFile] = useState<File | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [stage, setStage] = useState<"idle" | "review" | "saving" | "payment">("idle");
   const [extraction, setExtraction] = useState<CoaExtraction>(emptyCoaExtraction());
   const [receiveQty, setReceiveQty] = useState("");
   const [invoiceAmount, setInvoiceAmount] = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
-  const [warning, setWarning] = useState<string | null>(null);
   const [receivedPo, setReceivedPo] = useState<DBPurchaseOrder | null>(null);
   const [receivedThisTime, setReceivedThisTime] = useState(0);
   const [payAmount, setPayAmount] = useState("");
@@ -180,15 +131,11 @@ export function PoInvoiceReceiveSheet({
 
   const reset = () => {
     setStage("idle");
-    setFile(null);
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    setPreviewUrl(null);
     setExtraction(emptyCoaExtraction());
     setReceiveQty("");
     setInvoiceAmount("");
     setNotes("");
     setError("");
-    setWarning(null);
     setReceivedPo(null);
     setReceivedThisTime(0);
     setPayAmount("");
@@ -204,113 +151,17 @@ export function PoInvoiceReceiveSheet({
     onOpenChange(next);
   };
 
-  const runExtract = async (selected: File) => {
-    if (!po || !actorRole) return;
+  const startManualReceive = () => {
+    if (!po) return;
+    const next = emptyCoaExtraction();
+    next.productName = { value: po.product_name, confidence: 0.95 };
+    next.supplierName = { value: po.supplier_name, confidence: 0.95 };
+    next.unit = { value: po.unit, confidence: 0.95 };
+    setExtraction(next);
+    setReceiveQty(String(remaining || ""));
+    setInvoiceAmount(poTotal > 0 ? String(poTotal) : "");
     setError("");
-    setWarning(null);
-    setStage("processing");
-    try {
-      const encoded = await fileToBase64(selected);
-      const mimeType = guessCoaMimeType(selected);
-      let ocrText = "";
-      let browserExtraction: CoaExtraction | null = null;
-      let browserError: string | undefined;
-
-      if (isCoaImageFile(selected)) {
-        const browser = await extractCoaInBrowser(selected);
-        ocrText = browser.text;
-        browserError = browser.error;
-        if (browser.engine === "browser") browserExtraction = browser.extraction;
-      }
-
-      let next = browserExtraction;
-      if (!next) {
-        const res = await extractCoaDocument({
-          data: {
-            actorRole,
-            fileName: selected.name,
-            mimeType,
-            base64: encoded,
-            companyId: po.company_id,
-            ...(ocrText.trim() ? { ocrText } : {}),
-          },
-        });
-        if (res.ok) {
-          next = res.extraction;
-          setWarning(res.warning || null);
-        } else {
-          setWarning(
-            browserError ||
-              res.error ||
-              "Could not auto-read the invoice. Enter details manually.",
-          );
-          next = emptyCoaExtraction();
-        }
-      }
-
-      const extractionNext = next || emptyCoaExtraction();
-      // Prefill product name from PO when OCR missed it
-      if (!extractionNext.productName.value?.trim()) {
-        extractionNext.productName = {
-          value: po.product_name,
-          confidence: 0.85,
-        };
-      }
-      if (!extractionNext.supplierName.value?.trim()) {
-        extractionNext.supplierName = {
-          value: po.supplier_name,
-          confidence: 0.85,
-        };
-      }
-      if (!extractionNext.unit.value?.trim()) {
-        extractionNext.unit = { value: po.unit, confidence: 0.9 };
-      }
-
-      setExtraction(extractionNext);
-      const resolved = resolvedReceiveQuantity(extractionNext);
-      const suggested =
-        resolved.quantity > 0
-          ? Math.min(resolved.quantity, remaining)
-          : remaining;
-      setReceiveQty(String(suggested || ""));
-      const amtRaw =
-        extractionNext.invoiceAmount.value ||
-        (poTotal > 0 ? String(poTotal) : "");
-      setInvoiceAmount(amtRaw ? String(parseQuantityNumber(amtRaw) || amtRaw) : "");
-      setStage("review");
-      toast.success("Check quantity & amount — then confirm if correct.");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "Could not read invoice.";
-      setError(message);
-      setStage("idle");
-      toast.error(message);
-    }
-  };
-
-  const onPickFile = (next: File | null) => {
-    if (!next) return;
-    if (previewUrl) URL.revokeObjectURL(previewUrl);
-    setFile(next);
-    setPreviewUrl(
-      next.type.startsWith("image/") ? URL.createObjectURL(next) : null,
-    );
-    void runExtract(next);
-  };
-
-  useEffect(() => {
-    if (!open || !po || !initialFile) return;
-    onPickFile(initialFile);
-    // Only when sheet opens with a new file from Attach PDF
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, po?.id, initialFile]);
-
-  const handleCamera = async () => {
-    const photo = await pickInvoicePhoto();
-    if (photo) onPickFile(photo);
-    else {
-      // Fallback: trigger hidden file input via toast hint
-      toast.message("Use Upload photo if camera is unavailable.");
-    }
+    setStage("review");
   };
 
   const updateField = (key: keyof CoaExtraction, next: CoaField) => {
@@ -356,11 +207,7 @@ export function PoInvoiceReceiveSheet({
         batchNumber,
         invoiceAmount: amountNum > 0 ? amountNum : undefined,
       };
-      if (file) {
-        await savePurchaseOrderDocument(po.id, file, invoiceMeta);
-      } else {
-        patchPurchaseOrderDocumentMeta(po.id, invoiceMeta);
-      }
+      patchPurchaseOrderDocumentMeta(po.id, invoiceMeta);
       const mfg = normalizeDateValue(extraction.manufacturingDate.value);
       const exp = normalizeDateValue(extraction.expiryDate.value);
       const result = await receivePurchaseGoods(po.id, po.company_id, actorName, {
@@ -368,7 +215,6 @@ export function PoInvoiceReceiveSheet({
         receiveQty: qty,
         notes: [
           notes.trim(),
-          file ? `Invoice: ${file.name}` : "",
           invoiceNo ? `Invoice No. ${invoiceNo}` : "",
           ewayNo ? `e-Way Bill ${ewayNo}` : "",
           extraction.invoiceDate.value
@@ -376,7 +222,7 @@ export function PoInvoiceReceiveSheet({
             : "",
           amountNum > 0 ? `Invoice amount ₹${amountNum.toLocaleString("en-IN")}` : "",
           extraction.productName.value
-            ? `OCR product: ${extraction.productName.value}`
+            ? `Product: ${extraction.productName.value}`
             : "",
         ]
           .filter(Boolean)
@@ -493,12 +339,12 @@ export function PoInvoiceReceiveSheet({
       <SheetContent className="flex w-full flex-col overflow-y-auto !max-w-[min(96vw,720px)] sm:!max-w-[min(96vw,720px)] pb-16">
         <SheetHeader className="shrink-0 pr-8">
           <SheetTitle>
-            {stage === "payment" ? "Supplier payment" : "Receive from supplier invoice"}
+            {stage === "payment" ? "Supplier payment" : "Receive stock"}
           </SheetTitle>
           <SheetDescription>
             {stage === "payment"
               ? `Stock is updated. Record how much was paid to ${paymentPo?.supplier_name || "the supplier"} for this invoice, and the payment type.`
-              : `Upload the supplier purchase invoice PDF (or photo). We read quantity & amount — confirm if correct, then stock updates for PO #${po?.id}.`}
+              : `Enter quantity and invoice details to update stock for PO #${po?.id}. Upload PO / purchase invoice PDFs in Documents — not here.`}
           </SheetDescription>
         </SheetHeader>
 
@@ -535,64 +381,29 @@ export function PoInvoiceReceiveSheet({
             </div>
             )}
 
-            {stage === "idle" || stage === "processing" ? (
+            {stage === "idle" ? (
               <div className="space-y-3">
-                <div className="flex flex-wrap gap-2">
-                  <label className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:opacity-90">
-                    <FileUp className="size-3.5" />
-                    Upload supplier invoice PDF
-                    <input
-                      type="file"
-                      accept="application/pdf,.pdf,image/*"
-                      className="hidden"
-                      disabled={stage === "processing"}
-                      onChange={(e) => {
-                        const f = e.target.files?.[0] || null;
-                        onPickFile(f);
-                        e.currentTarget.value = "";
-                      }}
-                    />
-                  </label>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    className="h-9 gap-1.5 text-xs font-semibold"
-                    disabled={stage === "processing"}
-                    onClick={() => void handleCamera()}
-                  >
-                    <Camera className="size-3.5" />
-                    Camera (optional)
-                  </Button>
-                </div>
-                {stage === "processing" && (
-                  <p className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <Loader2 className="size-3.5 animate-spin" />
-                    Reading supplier invoice…
-                  </p>
-                )}
+                <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                  Upload the purchase order or supplier invoice PDF in{" "}
+                  <strong className="text-foreground">Documents</strong>. Use this step only to
+                  record how much stock arrived against this PO.
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="h-9 gap-1.5 text-xs font-semibold"
+                  onClick={startManualReceive}
+                >
+                  Enter receive details
+                </Button>
               </div>
             ) : null}
 
             {(stage === "review" || stage === "saving") && (
               <>
-                {previewUrl && (
-                  <div className="overflow-hidden rounded-lg border border-border">
-                    <img
-                      src={previewUrl}
-                      alt="Supplier invoice"
-                      className="max-h-48 w-full object-contain bg-muted/40"
-                    />
-                  </div>
-                )}
-                {warning && (
-                  <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-800 dark:text-amber-300">
-                    {warning}
-                  </p>
-                )}
                 <div className="grid gap-2 sm:grid-cols-2">
                   <FieldInput
-                    label="Product name (from invoice)"
+                    label="Product name"
                     field={extraction.productName}
                     onChange={(n) => updateField("productName", n)}
                   />
@@ -627,45 +438,23 @@ export function PoInvoiceReceiveSheet({
 
                 <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-3">
                   <p className="text-[12px] font-bold text-primary">
-                    Is this correct?
+                    Confirm receive quantity
                   </p>
                   <p className="text-[12px] text-muted-foreground">
-                    From the invoice we read{" "}
-                    {extraction.invoiceNumber.value ? (
-                      <>
-                        Invoice No.{" "}
-                        <strong className="text-foreground">
-                          {extraction.invoiceNumber.value}
-                        </strong>
-                        {extraction.ewayBillNumber.value ? (
-                          <>
-                            {" "}
-                            · e-Way{" "}
-                            <strong className="text-foreground">
-                              {extraction.ewayBillNumber.value}
-                            </strong>
-                          </>
-                        ) : null}
-                        {" · "}
-                      </>
-                    ) : null}
-                    qty{" "}
+                    Remaining on PO:{" "}
                     <strong className="text-foreground">
-                      {qtyPreview.quantity || "—"} {qtyPreview.unit || po.unit}
+                      {remaining} {po.unit}
                     </strong>
-                    {extraction.invoiceAmount.value ? (
+                    {qtyPreview.quantity ? (
                       <>
                         {" "}
-                        · amount{" "}
+                        · Suggested{" "}
                         <strong className="text-foreground">
-                          ₹
-                          {Number(
-                            parseQuantityNumber(extraction.invoiceAmount.value) || 0,
-                          ).toLocaleString("en-IN")}
+                          {qtyPreview.quantity} {qtyPreview.unit || po.unit}
                         </strong>
                       </>
                     ) : null}
-                    . Fix below if needed, then tap Yes.
+                    . Enter invoice references below, then confirm.
                   </p>
                   <div className="grid gap-2 sm:grid-cols-2">
                     <FieldInput

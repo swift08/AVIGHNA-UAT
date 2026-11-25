@@ -44,6 +44,11 @@ function canImportCoa(role: RoleType | undefined) {
   return role === "super_admin" || role === "supervisor";
 }
 
+/** OCR/read-only — Accounts may extract invoice fields from Documents uploads. */
+function canExtractDocument(role: RoleType | undefined) {
+  return role === "super_admin" || role === "supervisor" || role === "accounts";
+}
+
 function normalizeProductKey(name: string) {
   return name
     .toLowerCase()
@@ -338,13 +343,22 @@ export const extractCoaDocument = createServerFn({ method: "POST" })
     }) => input,
   )
   .handler(async ({ data }) => {
-    if (!canImportCoa(data.actorRole)) {
-      return { ok: false as const, error: "Only Super Admin or Supervisor can import from COA." };
+    if (!canExtractDocument(data.actorRole)) {
+      return {
+        ok: false as const,
+        error: "Only Super Admin, Supervisor, or Accounts can read document fields.",
+      };
     }
     const mime = data.mimeType === "image/jpg" ? "image/jpeg" : data.mimeType;
     const bytes = decodeBase64(data.base64);
-    const invalid = validateCoaFile(mime, bytes.length);
-    if (invalid) return { ok: false as const, error: invalid };
+    // Allow Documents vault files up to 20 MB (COA import UI still targets ≤8 MB).
+    const mimeCheck = validateCoaFile(mime, Math.min(bytes.length, 8 * 1024 * 1024));
+    if (mimeCheck && !/under 8 MB/i.test(mimeCheck)) {
+      return { ok: false as const, error: mimeCheck };
+    }
+    if (bytes.length <= 0 || bytes.length > 20 * 1024 * 1024) {
+      return { ok: false as const, error: "File must be under 20 MB." };
+    }
 
     try {
       let extraction: CoaExtraction | null = null;

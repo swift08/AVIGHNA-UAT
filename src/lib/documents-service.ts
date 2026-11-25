@@ -33,7 +33,8 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryMeta[] = [
     id: "purchase_order",
     label: "Purchase Orders",
     shortLabel: "Purchase Order",
-    description: "Purchase orders uploaded by Supervisor. Visible to Super Admin, Supervisor & Logistics.",
+    description:
+      "PO PDFs stored here (not on Purchases). Visible to Super Admin, Supervisor, Logistics & Accounts.",
     viewRoles: ["super_admin", "supervisor", "logistics", "accounts"],
     uploadRoles: ["supervisor", "accounts", "super_admin"],
   },
@@ -41,7 +42,8 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryMeta[] = [
     id: "purchase_invoice",
     label: "Purchase Invoices",
     shortLabel: "Purchase Invoice",
-    description: "Supplier purchase invoices uploaded by Supervisor (stock intake).",
+    description:
+      "Supplier / inventory invoices: we read the file, you confirm fields, then stock receives against a PO. Payments go on Accounts → Payables.",
     viewRoles: ["super_admin", "supervisor", "accounts"],
     uploadRoles: ["supervisor", "accounts", "super_admin"],
   },
@@ -49,7 +51,7 @@ export const DOCUMENT_CATEGORIES: DocumentCategoryMeta[] = [
     id: "sales_invoice",
     label: "Sales Invoices",
     shortLabel: "Sales Invoice",
-    description: "Customer sales invoices uploaded by Supervisor.",
+    description: "Customer sales invoices uploaded by Supervisor or Accounts.",
     viewRoles: ["super_admin", "supervisor", "accounts"],
     uploadRoles: ["supervisor", "accounts", "super_admin"],
   },
