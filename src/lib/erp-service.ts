@@ -2114,24 +2114,37 @@ export async function receivePurchaseGoods(
         `+${receivedThisTime} ${po.unit}`,
         remaining > 0 ? `Remaining on PO: ${remaining} ${po.unit}` : "PO fully received",
       ].filter(Boolean);
-      const { data: batch, error: batchErr } = await supabase
+      const batchPayload = {
+        product_id: productId,
+        company_id: companyId || po.company_id,
+        batch_number: batchNumber,
+        supplier_name: po.supplier_name,
+        manufacturer_name: options?.manufacturerName?.trim() || null,
+        mfg_date: options?.mfgDate || null,
+        expiry_date: options?.expiryDate || null,
+        quantity: receivedThisTime,
+        unit: po.unit,
+        purchase_order_id: poId,
+        notes: noteParts.join(" · "),
+        created_by: receiverName,
+      };
+      let { data: batch, error: batchErr } = await supabase
         .from("product_batches")
-        .insert({
-          product_id: productId,
-          company_id: companyId || po.company_id,
-          batch_number: batchNumber,
-          supplier_name: po.supplier_name,
-          manufacturer_name: options?.manufacturerName?.trim() || null,
-          mfg_date: options?.mfgDate || null,
-          expiry_date: options?.expiryDate || null,
-          quantity: receivedThisTime,
-          unit: po.unit,
-          purchase_order_id: poId,
-          notes: noteParts.join(" · "),
-          created_by: receiverName,
-        })
+        .insert(batchPayload)
         .select("id")
         .maybeSingle();
+      if (
+        batchErr &&
+        /purchase_order_id/i.test(batchErr.message) &&
+        /does not exist|schema cache/i.test(batchErr.message)
+      ) {
+        const { purchase_order_id: _omitPo, ...withoutPo } = batchPayload;
+        ({ data: batch, error: batchErr } = await supabase
+          .from("product_batches")
+          .insert(withoutPo)
+          .select("id")
+          .maybeSingle());
+      }
       if (!batchErr && batch?.id) batchId = String(batch.id);
     } catch {
       // Batch tagging is best-effort; stock already updated by trigger

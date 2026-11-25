@@ -667,17 +667,34 @@ export const confirmCoaImport = createServerFn({ method: "POST" })
     };
   });
 
+const PRODUCT_BATCH_SELECT_WITH_PO =
+  "id, product_id, batch_number, mfg_date, expiry_date, analysis_date, dispatch_date, quantity, unit, package_count, package_weight, package_unit, coa_file_name, coa_storage_path, coa_mime_type, supplier_name, manufacturer_name, product_grade, notes, created_at, purchase_order_id";
+const PRODUCT_BATCH_SELECT_BASE =
+  "id, product_id, batch_number, mfg_date, expiry_date, analysis_date, dispatch_date, quantity, unit, package_count, package_weight, package_unit, coa_file_name, coa_storage_path, coa_mime_type, supplier_name, manufacturer_name, product_grade, notes, created_at";
+
+function isMissingPurchaseOrderIdColumn(message?: string | null) {
+  return Boolean(
+    message && /purchase_order_id/i.test(message) && /does not exist|schema cache/i.test(message),
+  );
+}
+
 export const listProductBatches = createServerFn({ method: "POST" })
   .validator((input: { productId: string }) => input)
   .handler(async ({ data }) => {
     const admin = adminClient();
-    const { data: rows, error } = await admin
+    let { data: rows, error } = await admin
       .from("product_batches")
-      .select(
-        "id, product_id, batch_number, mfg_date, expiry_date, analysis_date, dispatch_date, quantity, unit, package_count, package_weight, package_unit, coa_file_name, coa_storage_path, coa_mime_type, supplier_name, manufacturer_name, product_grade, notes, created_at, purchase_order_id",
-      )
+      .select(PRODUCT_BATCH_SELECT_WITH_PO)
       .eq("product_id", data.productId)
       .order("created_at", { ascending: false });
+
+    if (error && isMissingPurchaseOrderIdColumn(error.message)) {
+      ({ data: rows, error } = await admin
+        .from("product_batches")
+        .select(PRODUCT_BATCH_SELECT_BASE)
+        .eq("product_id", data.productId)
+        .order("created_at", { ascending: false }));
+    }
     if (error) return { ok: false as const, error: error.message, batches: [] as const };
 
     const batchIds = (rows || []).map((r) => r.id);
