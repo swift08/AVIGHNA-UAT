@@ -2,7 +2,7 @@ import type { CapacitorConfig } from "@capacitor/cli";
 
 // ponytail: live WebView → hosted app (exact UI). Override with CAP_SERVER_URL for local USB.
 const serverUrl =
-  process.env["CAP_SERVER_URL"]?.replace(/\/$/, "") || "https://avighna-uat-six.vercel.app";
+  process.env["CAP_SERVER_URL"]?.replace(/\/$/, "") || "https://avighna-uat.vercel.app";
 const useCleartext = serverUrl.startsWith("http://");
 
 const config: CapacitorConfig = {

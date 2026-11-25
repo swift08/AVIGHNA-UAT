@@ -25,6 +25,7 @@ import {
   isCoaImageFile,
 } from "@/lib/coa-client-ocr";
 import {
+  attachAnalysisReportToBatch,
   confirmCoaImport,
   extractCoaDocument,
   getBatchCoaAccess,
@@ -46,6 +47,9 @@ type ProductBatchRow = {
   manufacturer_name?: string | null;
   coa_file_name?: string | null;
   has_coa?: boolean;
+  purchase_order_id?: string | null;
+  created_at?: string | null;
+  notes?: string | null;
   quality?: Array<{
     parameter_name: string;
     specification: string | null;
@@ -54,12 +58,21 @@ type ProductBatchRow = {
   }>;
 };
 
+function shortBatchId(id: string) {
+  const clean = String(id || "").replace(/-/g, "");
+  return clean.slice(0, 8).toUpperCase() || "—";
+}
+
 export function ProductBatchesPanel({
   productId,
   productName,
   tone = "inventory",
   defaultOpen = false,
   embedded = false,
+  productOnHand,
+  productUnit,
+  actorRole,
+  actorName,
 }: {
   productId: string;
   productName?: string;
@@ -68,12 +81,23 @@ export function ProductBatchesPanel({
   defaultOpen?: boolean;
   /** Always show batch / analysis content (no toggle) — used in product detail drawers. */
   embedded?: boolean;
+  /** Catalog on-hand — used to reconcile stock vs tagged batches. */
+  productOnHand?: number;
+  productUnit?: string;
+  /** When set, supervisors can attach analysis report to a batch without changing qty. */
+  actorRole?: RoleType;
+  actorName?: string;
 }) {
   const [batches, setBatches] = useState<ProductBatchRow[]>([]);
   const [open, setOpen] = useState(defaultOpen || embedded);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [attachBatch, setAttachBatch] = useState<ProductBatchRow | null>(null);
   const isDelivery = tone === "delivery";
+  const canAttachReport =
+    !isDelivery &&
+    (actorRole === "super_admin" || actorRole === "supervisor") &&
+    Boolean(actorName);
 
   const load = async () => {
     setLoading(true);
@@ -90,6 +114,18 @@ export function ProductBatchesPanel({
     if (defaultOpen || embedded) void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- load once when panel mounts open
   }, [defaultOpen, embedded, productId]);
+
+  const batchStockTotal = useMemo(
+    () => batches.reduce((sum, b) => sum + (Number(b.quantity) || 0), 0),
+    [batches],
+  );
+  const onHand =
+    productOnHand !== undefined && Number.isFinite(Number(productOnHand))
+      ? Number(productOnHand)
+      : null;
+  const stockMatchesBatches =
+    onHand === null ? true : Math.abs(onHand - batchStockTotal) < 0.001;
+  const unitLabel = productUnit || batches[0]?.unit || "kg";
 
   const openCoaAccess = async (batchId: string, mode: "view" | "download" | "share") => {
     setBusyId(batchId);
@@ -143,6 +179,15 @@ export function ProductBatchesPanel({
     }
   };
 
+  const copyBatchId = async (id: string) => {
+    try {
+      await navigator.clipboard.writeText(id);
+      toast.success("Batch ID copied.");
+    } catch {
+      toast.error("Could not copy batch ID.");
+    }
+  };
+
   return (
     <div
       className={
@@ -168,20 +213,50 @@ export function ProductBatchesPanel({
               ? "Hide analysis report"
               : "View analysis report"
             : open
-              ? "Hide batches / COA"
-              : "View batches / COA"}
+              ? "Hide batch stock / COA"
+              : "View batch stock / COA"}
         </button>
       )}
       {(open || embedded) && (
         <div className={embedded ? "space-y-2" : "mt-2 space-y-2"}>
-          {loading && <p className="text-[11px] text-muted-foreground">Loading analysis report…</p>}
+          {loading && <p className="text-[11px] text-muted-foreground">Loading batch stock…</p>}
           {!loading && batches.length === 0 && (
             <p className="text-[11px] text-muted-foreground">
               {isDelivery
                 ? "No analysis report / batch COA found for this delivery item yet."
-                : "No batches recorded yet."}
+                : "No batch-tagged stock yet. Import a COA or receive a PO so each qty gets a batch ID."}
             </p>
           )}
+
+          {!loading && batches.length > 0 && !isDelivery && (
+            <div className="rounded-lg border border-border/70 bg-muted/15 px-2.5 py-2 text-[11px] space-y-1">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-muted-foreground">Tagged batch stock</span>
+                <span className="font-bold text-foreground">
+                  {batchStockTotal.toLocaleString("en-IN")} {unitLabel}
+                  <span className="ml-1 text-[10px] font-medium text-muted-foreground">
+                    · {batches.length} batch{batches.length === 1 ? "" : "es"}
+                  </span>
+                </span>
+              </div>
+              {onHand !== null && (
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-muted-foreground">Catalog on-hand</span>
+                  <span
+                    className={`font-semibold ${
+                      stockMatchesBatches
+                        ? "text-emerald-700 dark:text-emerald-400"
+                        : "text-amber-700 dark:text-amber-400"
+                    }`}
+                  >
+                    {onHand.toLocaleString("en-IN")} {unitLabel}
+                    {stockMatchesBatches ? " · matched" : " · mismatch — check batches"}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
           {batches.map((batch) => (
             <div
               key={batch.id}
@@ -190,19 +265,39 @@ export function ProductBatchesPanel({
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0 space-y-0.5">
                   <p className="font-semibold text-foreground">
-                    {batch.batch_number} · {batch.quantity} {batch.unit}
+                    {Number(batch.quantity).toLocaleString("en-IN")} {batch.unit}
+                    <span className="font-normal text-muted-foreground">
+                      {" "}
+                      · {batch.batch_number}
+                    </span>
                     {batch.package_count && batch.package_weight
                       ? ` · ${batch.package_count}×${batch.package_weight}`
                       : ""}
                   </p>
+                  <p className="font-mono text-[10px] text-primary">
+                    Batch ID{" "}
+                    <button
+                      type="button"
+                      className="font-bold underline-offset-2 hover:underline cursor-pointer"
+                      title={batch.id}
+                      onClick={() => void copyBatchId(batch.id)}
+                    >
+                      {shortBatchId(batch.id)}
+                    </button>
+                  </p>
                   <p className="text-muted-foreground">
+                    {batch.created_at
+                      ? `Received ${String(batch.created_at).slice(0, 10)}`
+                      : "Received —"}
+                    {" · "}
                     Mfg {batch.mfg_date || "—"} · Exp {batch.expiry_date || "—"}
                     {batch.analysis_date ? ` · Analysis ${batch.analysis_date}` : ""}
                   </p>
-                  {(batch.manufacturer_name || batch.supplier_name) && (
+                  {(batch.manufacturer_name || batch.supplier_name || batch.purchase_order_id) && (
                     <p className="text-muted-foreground">
                       {batch.manufacturer_name || "—"}
                       {batch.supplier_name ? ` · Party: ${batch.supplier_name}` : ""}
+                      {batch.purchase_order_id ? ` · PO #${batch.purchase_order_id}` : ""}
                     </p>
                   )}
                 </div>
@@ -211,8 +306,8 @@ export function ProductBatchesPanel({
                     Analysis report
                   </span>
                 ) : (
-                  <span className="inline-flex shrink-0 items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
-                    No COA
+                  <span className="inline-flex shrink-0 items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                    Needs COA
                   </span>
                 )}
               </div>
@@ -242,7 +337,7 @@ export function ProductBatchesPanel({
                 </div>
               )}
 
-              {batch.has_coa && (
+              {batch.has_coa ? (
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   <Button
                     type="button"
@@ -257,7 +352,7 @@ export function ProductBatchesPanel({
                     ) : (
                       <Eye className="size-3" />
                     )}
-                    {isDelivery ? "Open analysis report" : "View COA"}
+                    {isDelivery ? "Open analysis report" : "View analysis report"}
                   </Button>
                   <Button
                     type="button"
@@ -287,12 +382,317 @@ export function ProductBatchesPanel({
                     </span>
                   )}
                 </div>
+              ) : (
+                !isDelivery && (
+                  <div className="mt-2 space-y-1.5">
+                    <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                      This {Number(batch.quantity).toLocaleString("en-IN")} {batch.unit} is tagged to
+                      batch {shortBatchId(batch.id)} — attach analysis report only (stock qty stays
+                      unchanged).
+                    </p>
+                    {canAttachReport && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 gap-1 px-2 text-[10px]"
+                        onClick={() => setAttachBatch(batch)}
+                      >
+                        <FileUp className="size-3" />
+                        Attach analysis report
+                      </Button>
+                    )}
+                  </div>
+                )
               )}
             </div>
           ))}
         </div>
       )}
+
+      {canAttachReport && attachBatch && actorRole && actorName && (
+        <AttachAnalysisReportSheet
+          open={!!attachBatch}
+          onOpenChange={(next) => {
+            if (!next) setAttachBatch(null);
+          }}
+          batch={attachBatch}
+          productName={productName}
+          actorRole={actorRole}
+          actorName={actorName}
+          onAttached={() => {
+            setAttachBatch(null);
+            void load();
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+/** OCR analysis report → tag to existing batch; never changes stock quantity. */
+function AttachAnalysisReportSheet({
+  open,
+  onOpenChange,
+  batch,
+  productName,
+  actorRole,
+  actorName,
+  onAttached,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  batch: ProductBatchRow;
+  productName?: string;
+  actorRole: RoleType;
+  actorName: string;
+  onAttached: () => void;
+}) {
+  const [stage, setStage] = useState<"idle" | "processing" | "review" | "saving">("idle");
+  const [file, setFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [base64, setBase64] = useState("");
+  const [extraction, setExtraction] = useState<CoaExtraction>(emptyCoaExtraction());
+  const [error, setError] = useState("");
+  const [warning, setWarning] = useState<string | null>(null);
+
+  const reset = () => {
+    setStage("idle");
+    setFile(null);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl(null);
+    setBase64("");
+    setExtraction(emptyCoaExtraction());
+    setError("");
+    setWarning(null);
+  };
+
+  const runExtract = async (selected: File) => {
+    setError("");
+    setWarning(null);
+    setStage("processing");
+    try {
+      const encoded = await fileToBase64(selected);
+      setBase64(encoded);
+      const mimeType = guessCoaMimeType(selected);
+      let ocrText = "";
+      let browserExtraction: CoaExtraction | null = null;
+      let browserError: string | undefined;
+      if (isCoaImageFile(selected)) {
+        const browser = await extractCoaInBrowser(selected);
+        ocrText = browser.text;
+        browserError = browser.error;
+        if (browser.engine === "browser") browserExtraction = browser.extraction;
+      }
+
+      if (browserExtraction) {
+        setExtraction(browserExtraction);
+        setStage("review");
+        toast.success("Review report details — stock quantity will not change.");
+        return;
+      }
+
+      const res = await extractCoaDocument({
+        data: {
+          actorRole,
+          fileName: selected.name,
+          mimeType,
+          base64: encoded,
+          companyId: "asian",
+          ...(ocrText.trim() ? { ocrText } : {}),
+        },
+      });
+      if (!res.ok) {
+        setExtraction(emptyCoaExtraction());
+        setWarning(
+          browserError || res.error || "Could not auto-read. Fill fields, then attach.",
+        );
+        setStage("review");
+        return;
+      }
+      setExtraction(res.extraction);
+      setWarning(res.warning || null);
+      setStage("review");
+      toast.success("Review report details — stock quantity will not change.");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not process report.";
+      setError(message);
+      setStage("idle");
+      toast.error(message);
+    }
+  };
+
+  const handleConfirm = async () => {
+    if (!file || !base64) return;
+    setStage("saving");
+    setError("");
+    try {
+      const normalized: CoaExtraction = {
+        ...extraction,
+        manufacturingDate: {
+          ...extraction.manufacturingDate,
+          value:
+            normalizeDateValue(extraction.manufacturingDate.value) ||
+            extraction.manufacturingDate.value,
+        },
+        expiryDate: {
+          ...extraction.expiryDate,
+          value:
+            normalizeDateValue(extraction.expiryDate.value) || extraction.expiryDate.value,
+        },
+        analysisDate: {
+          ...extraction.analysisDate,
+          value:
+            normalizeDateValue(extraction.analysisDate.value) || extraction.analysisDate.value,
+        },
+        dispatchDate: {
+          ...extraction.dispatchDate,
+          value:
+            normalizeDateValue(extraction.dispatchDate.value) || extraction.dispatchDate.value,
+        },
+      };
+      const res = await attachAnalysisReportToBatch({
+        data: {
+          actorRole,
+          actorName,
+          batchId: batch.id,
+          fileName: file.name,
+          mimeType: guessCoaMimeType(file),
+          base64,
+          extraction: normalized,
+        },
+      });
+      if (!res.ok) {
+        setError(res.error);
+        setStage("review");
+        toast.error(res.error);
+        return;
+      }
+      toast.success(
+        `Analysis report tagged to batch ${res.batchNumber}. Stock stays ${res.quantity} ${res.unit}.`,
+      );
+      reset();
+      onOpenChange(false);
+      onAttached();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not attach report.";
+      setError(message);
+      setStage("review");
+      toast.error(message);
+    }
+  };
+
+  const updateField = (key: keyof CoaExtraction, next: CoaField) => {
+    setExtraction((prev) => ({ ...prev, [key]: next }));
+  };
+
+  return (
+    <Sheet
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) reset();
+        onOpenChange(next);
+      }}
+    >
+      <SheetContent className="flex w-full flex-col overflow-y-auto !max-w-[min(96vw,640px)] pb-16">
+        <SheetHeader className="pr-8">
+          <SheetTitle>Attach analysis report</SheetTitle>
+          <SheetDescription>
+            Tag COA / analysis to batch {batch.batch_number}
+            {productName ? ` · ${productName}` : ""}. Quantity stays{" "}
+            {Number(batch.quantity).toLocaleString("en-IN")} {batch.unit} — report only.
+          </SheetDescription>
+        </SheetHeader>
+
+        <div className="mt-5 space-y-4 pb-10">
+          {(stage === "idle" || stage === "processing") && (
+            <label className="inline-flex h-9 cursor-pointer items-center gap-1.5 rounded-md border border-border bg-background px-3 text-xs font-semibold hover:bg-muted/50">
+              <FileUp className="size-3.5" />
+              Upload analysis report photo
+              <input
+                type="file"
+                accept="image/*,application/pdf,.pdf"
+                className="hidden"
+                disabled={stage === "processing"}
+                onChange={(e) => {
+                  const next = e.target.files?.[0] || null;
+                  if (!next) return;
+                  if (previewUrl) URL.revokeObjectURL(previewUrl);
+                  setFile(next);
+                  setPreviewUrl(URL.createObjectURL(next));
+                  void runExtract(next);
+                  e.currentTarget.value = "";
+                }}
+              />
+            </label>
+          )}
+          {stage === "processing" && (
+            <p className="flex items-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              Reading analysis report…
+            </p>
+          )}
+
+          {(stage === "review" || stage === "saving") && (
+            <>
+              {previewUrl && (
+                <img
+                  src={previewUrl}
+                  alt="Analysis report"
+                  className="max-h-40 w-full rounded-lg border border-border object-contain bg-muted/40"
+                />
+              )}
+              {warning && (
+                <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-800 dark:text-amber-300">
+                  {warning}
+                </p>
+              )}
+              <div className="grid gap-2 sm:grid-cols-2">
+                <FieldInput
+                  label="Product name"
+                  field={extraction.productName}
+                  onChange={(n) => updateField("productName", n)}
+                />
+                <FieldInput
+                  label="Batch number on report"
+                  field={extraction.batchNumber}
+                  onChange={(n) => updateField("batchNumber", n)}
+                />
+                <FieldInput
+                  label="Mfg date"
+                  field={extraction.manufacturingDate}
+                  kind="date"
+                  onChange={(n) => updateField("manufacturingDate", n)}
+                />
+                <FieldInput
+                  label="Expiry date"
+                  field={extraction.expiryDate}
+                  kind="date"
+                  onChange={(n) => updateField("expiryDate", n)}
+                />
+              </div>
+              <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-[11px] text-muted-foreground">
+                Confirming attaches this report to Batch ID {shortBatchId(batch.id)}. Inventory
+                quantity is not updated.
+              </p>
+              {error && (
+                <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+                  {error}
+                </p>
+              )}
+              <Button
+                type="button"
+                className="w-full h-9 text-xs font-bold"
+                disabled={stage === "saving"}
+                onClick={() => void handleConfirm()}
+              >
+                {stage === "saving" ? "Saving…" : "Confirm — tag report to batch (no stock change)"}
+              </Button>
+            </>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -633,7 +1033,9 @@ export function CoaImportButton({
           <SheetHeader className="shrink-0 pr-8">
             <SheetTitle>Import Product from COA</SheetTitle>
             <SheetDescription>
-              Upload a Certificate of Analysis (PDF/JPG/PNG). Review OCR results before adding stock.
+              Upload a Certificate of Analysis (PDF/JPG/PNG) to create a catalog product and first
+              batch. For PO arrivals use Invoice photo receive; to tag a report onto existing stock
+              use Attach analysis report on that batch (qty unchanged).
             </SheetDescription>
           </SheetHeader>
 

@@ -3,7 +3,7 @@
 	"appName": "Avighna Field",
 	"webDir": "www",
 	"server": {
-		"url": "https://avighna-uat-six.vercel.app/?app=field",
+		"url": "https://avighna-uat.vercel.app/?app=field",
 		"cleartext": false
 	},
 	"android": {

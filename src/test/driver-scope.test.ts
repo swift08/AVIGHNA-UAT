@@ -3,15 +3,17 @@ import { rolesCreatorCanAssign } from "@/lib/auth-service";
 import { scopeForDriver } from "@/lib/driver-scope";
 
 describe("driver logins", () => {
-  it("lets owner and supervisor assign fixed staff roles", () => {
+  it("lets owner and supervisor assign fixed staff roles (accounts merged away)", () => {
     expect(rolesCreatorCanAssign("accounts")).toEqual([]);
     expect(rolesCreatorCanAssign("supervisor")).toEqual(
-      expect.arrayContaining(["sales", "logistics", "accounts"]),
+      expect.arrayContaining(["sales", "logistics", "supervisor"]),
     );
+    expect(rolesCreatorCanAssign("supervisor")).not.toContain("accounts");
     expect(rolesCreatorCanAssign("super_admin")).toContain("supervisor");
     expect(rolesCreatorCanAssign("super_admin")).toEqual(
-      expect.arrayContaining(["sales", "logistics", "accounts"]),
+      expect.arrayContaining(["sales", "logistics", "supervisor"]),
     );
+    expect(rolesCreatorCanAssign("super_admin")).not.toContain("accounts");
   });
 
   it("hides another driver's orders and collected revenue", () => {

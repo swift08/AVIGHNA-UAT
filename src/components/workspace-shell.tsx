@@ -142,15 +142,8 @@ export const navigation = [
 
 function navLabel(
   item: (typeof navigation)[number]["items"][number],
-  role: string | undefined,
+  _role: string | undefined,
 ) {
-  if (
-    role === "accounts" &&
-    "accountsLabel" in item &&
-    typeof item.accountsLabel === "string"
-  ) {
-    return item.accountsLabel;
-  }
   return item.name;
 }
 
@@ -159,25 +152,26 @@ function navVisible(
   role: string | undefined,
   hasPermission: (permission: string) => boolean,
 ) {
-  if ("superAdminOnly" in item && item.superAdminOnly) return role === "super_admin";
-  if ("salesOnly" in item && item.salesOnly) return role === "sales" && hasPermission(item.perm!);
+  const normalized =
+    role === "accounts" ? "supervisor" : role;
+  if ("superAdminOnly" in item && item.superAdminOnly) return normalized === "super_admin";
+  if ("salesOnly" in item && item.salesOnly) {
+    return normalized === "sales" && hasPermission(item.perm!);
+  }
   if ("supervisorOnly" in item && item.supervisorOnly) {
-    return role === "supervisor" && (!item.perm || hasPermission(item.perm));
+    return normalized === "supervisor" && (!item.perm || hasPermission(item.perm));
   }
   if ("accountsOrSuperAdminOnly" in item && item.accountsOrSuperAdminOnly) {
+    // Finance analytics: supervisor (merged accounts) + super admin
     return (
-      (role === "accounts" || role === "super_admin") &&
+      (normalized === "supervisor" || normalized === "super_admin") &&
       (!item.perm || hasPermission(item.perm))
     );
   }
   // Sales uses "Payments due" instead of the Finance Invoices link.
-  if (item.name === "Invoices" && role === "sales") return false;
-  // Supervisors do not use Purchases — accounts owns procurement.
-  if (item.name === "Purchases" && role === "supervisor") return false;
-  // Finance Analytics stays accounts/SA; supervisors use Floor analytics under Operations.
-  if (item.name === "Analytics" && role === "supervisor") return false;
+  if (item.name === "Invoices" && normalized === "sales") return false;
   // Supervisors use Administration only for Team logins (propose → SA approve).
-  if (item.name === "Administration" && role === "supervisor") return true;
+  if (item.name === "Administration" && normalized === "supervisor") return true;
   return !item.perm || hasPermission(item.perm);
 }
 
@@ -1336,7 +1330,7 @@ export function WorkspaceShell({ children }: { children: ReactNode }) {
                       Switch Role to Audit Permissions:
                     </p>
                     <div className="grid grid-cols-1 gap-3">
-                      {SYSTEM_USERS.map((u) => {
+                      {SYSTEM_USERS.filter((u) => u.role !== "accounts").map((u) => {
                         const isActive = currentUser?.id === u.id || currentUser?.role === u.role;
                         return (
                           <button

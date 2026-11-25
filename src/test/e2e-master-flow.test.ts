@@ -16,6 +16,7 @@ import {
   createProduct,
   fetchProducts,
   createPurchaseOrder,
+  markPurchaseOrderSent,
   receivePurchaseGoods,
   fetchPurchaseOrders,
   createOrder,
@@ -234,12 +235,27 @@ describe("Avighna One — Comprehensive Master Flow Automation", () => {
       expect(po.status).toBe("Requested");
       poId = po.id;
 
-      // Confirm goods received
-      await receivePurchaseGoods(poId, testCompanyId, "Arun Nair (Supervisor)");
+      await markPurchaseOrderSent(poId, testCompanyId, "Arun Nair (Supervisor)");
+
+      // Partial then full receive
+      const partial = await receivePurchaseGoods(poId, testCompanyId, "Arun Nair (Supervisor)", {
+        productId,
+        receiveQty: 40,
+        allowAnyStatus: true,
+      });
+      expect(partial.remaining).toBe(60);
+
+      const full = await receivePurchaseGoods(poId, testCompanyId, "Arun Nair (Supervisor)", {
+        productId,
+        receiveQty: 60,
+        allowAnyStatus: true,
+      });
+      expect(full.remaining).toBe(0);
 
       const pos = await fetchPurchaseOrders(testCompanyId);
       const updatedPo = pos.find((p) => p.id === poId);
       expect(updatedPo?.status).toBe("Received");
+      expect(Number(updatedPo?.received_quantity)).toBe(100);
 
       // Verify that database trigger or inventory reflects receipt
       const products = await fetchProducts(testCompanyId);

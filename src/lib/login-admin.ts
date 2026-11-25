@@ -44,7 +44,7 @@ export const createStaffLogin = createServerFn({ method: "POST" })
     }
     const assignable = new Set(rolesCreatorCanAssign(data.creatorRole));
     if (!isFixedStaffRole(data.role) || !assignable.has(data.role)) {
-      return { ok: false as const, error: "Choose a valid staff role (sales, logistics, accounts, …)." };
+      return { ok: false as const, error: "Choose a valid staff role (sales, logistics, supervisor, …)." };
     }
     const allowed = new Set(featuresCreatorCanAssign(data.creatorRole));
     const features = parseFeatureIds(

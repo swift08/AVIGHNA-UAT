@@ -103,6 +103,7 @@ import { listStaffLogins } from "@/lib/login-admin";
 import { TeamLogins } from "./team-logins";
 import { AuditLogsPanel } from "./audit-logs-panel";
 import { CoaImportButton, ProductBatchesPanel } from "./coa-import";
+import { PoInvoiceReceiveSheet } from "./po-invoice-receive";
 import { getBatchCoaAccess, listProductBatches } from "@/lib/coa-service";
 import {
   fetchOrders,
@@ -121,7 +122,8 @@ import {
   createPurchaseOrder,
   updatePurchaseOrder,
   markPurchaseOrderSent,
-  receivePurchaseGoods,
+  poRemainingQuantity,
+  isPoPartiallyReceived,
   updateFieldVisit,
   fetchInvoices,
   generateInvoice,
@@ -241,7 +243,10 @@ export function ModuleWorkspace({
   const isSupervisor =
     currentUser?.role === "supervisor" ||
     Boolean(currentUser?.roleName?.toLowerCase().includes("supervisor"));
-  const isAccounts = currentUser?.role === "accounts";
+  // Accounts role merged into supervisor — keep legacy string for any un-normalized session.
+  const isAccounts =
+    currentUser?.role === "accounts" ||
+    (isSupervisor && hasPermission("finance.view_amounts") && hasPermission("invoices.generate"));
   const canViewAllFieldVisits = isSuperAdmin || isSupervisor;
 
   const [deleteTarget, setDeleteTarget] = useState<{
@@ -532,6 +537,9 @@ export function ModuleWorkspace({
   const [poCompany, setPoCompany] = useState("asian");
   const [poRemark, setPoRemark] = useState("GST Extra");
   const [poDocTick, setPoDocTick] = useState(0);
+
+  // Supervisor invoice-photo partial receive (OCR confirm → stock tagged to PO)
+  const [receivePo, setReceivePo] = useState<DBPurchaseOrder | null>(null);
 
   // Purchase Order Edit modal state (Super Admin and Supervisor)
   const [editPoModal, setEditPoModal] = useState(false);
@@ -2072,8 +2080,8 @@ export function ModuleWorkspace({
 
   const handleCreatePO = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (isSupervisor || !hasPermission("purchases.create")) {
-      toast.error("Supervisors do not create purchase orders.");
+    if (!hasPermission("purchases.create")) {
+      toast.error("You do not have permission to create purchase orders.");
       return;
     }
     const selectedCatalogProduct = dbProducts.find((p) => p.id === poProductId);
@@ -2194,13 +2202,13 @@ export function ModuleWorkspace({
     reloadData();
   };
 
-  const handleReceiveGoods = async (po: DBPurchaseOrder) => {
-    if (isSupervisor || !hasPermission("purchases.receive")) {
-      toast.error("You do not have permission to verify purchase arrivals.");
+  const openReceiveGoods = (po: DBPurchaseOrder) => {
+    if (!hasPermission("purchases.receive")) {
+      toast.error("Only Supervisor can receive inbound stock by uploading the supplier invoice.");
       return;
     }
     if (po.status !== "In transit" && !isSuperAdmin) {
-      toast.error("Only In transit purchase orders can be verified into inventory.");
+      toast.error("Mark the PO as sent (In transit) before receiving goods.");
       return;
     }
     if (!po.product_id) {
@@ -2209,20 +2217,17 @@ export function ModuleWorkspace({
       );
       return;
     }
-    try {
-      await receivePurchaseGoods(po.id, po.company_id, currentUser?.name || "Logistics", {
-        productId: po.product_id,
-      });
-      toast.success("Arrival verified — stock added to inventory.");
-      reloadData();
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Could not verify arrival.");
+    const remaining = poRemainingQuantity(po);
+    if (remaining <= 0) {
+      toast.error("This purchase order is already fully received.");
+      return;
     }
+    setReceivePo(po);
   };
 
   const openEditPo = (po: DBPurchaseOrder) => {
-    if (isSupervisor || !isSuperAdmin) {
-      toast.error("Supervisors do not manage purchase orders.");
+    if (!isSuperAdmin) {
+      toast.error("Only Super Admin can edit purchase orders.");
       return;
     }
     setEditingPo(po);
@@ -2250,8 +2255,8 @@ export function ModuleWorkspace({
   const handleUpdatePO = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingPo) return;
-    if (isSupervisor || !isSuperAdmin) {
-      toast.error("Supervisors do not manage purchase orders.");
+    if (!isSuperAdmin) {
+      toast.error("Only Super Admin can edit purchase orders.");
       return;
     }
     const qty = parseFloat(editPoQuantity);
@@ -4596,7 +4601,14 @@ export function ModuleWorkspace({
                           </button>
                         )}
                       </div>
-                      {p.id && <ProductBatchesPanel productId={p.id} productName={p.name} />}
+                      {p.id && (
+                        <ProductBatchesPanel
+                          productId={p.id}
+                          productName={p.name}
+                          actorRole={currentUser?.role}
+                          actorName={currentUser?.name}
+                        />
+                      )}
                     </article>
                   );
                 })}
@@ -7087,102 +7099,6 @@ export function ModuleWorkspace({
                   </div>
                 )}
 
-                {/* Inbound POs: Logistics verifies arrival into inventory */}
-                {hasPermission("purchases.view") && (
-                  <section className="rounded-xl border border-border bg-card p-4 space-y-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <h3 className="text-sm font-bold text-foreground">
-                          Inbound purchase orders
-                        </h3>
-                        <p className="text-[11px] text-muted-foreground mt-0.5">
-                          When goods arrive, verify In transit POs to add stock to inventory.
-                        </p>
-                      </div>
-                      <span className="text-[11px] font-bold text-muted-foreground">
-                        {
-                          dbPOs.filter((p) => p.status === "In transit").length
-                        }{" "}
-                        awaiting verification
-                      </span>
-                    </div>
-                    {(() => {
-                      const inboundPos = dbPOs
-                        .filter((p) => p.status === "In transit" || p.status === "Requested")
-                        .sort((a, b) => {
-                          if (a.status === b.status) return 0;
-                          return a.status === "In transit" ? -1 : 1;
-                        });
-                      const visible = inboundPos.slice(0, isDriver ? 8 : 12);
-                      if (visible.length === 0) {
-                        return (
-                          <p className="text-[11px] text-muted-foreground py-2">
-                            No inbound purchase orders waiting. Accounts marks a PO as sent after
-                            downloading the PDF for the supplier.
-                          </p>
-                        );
-                      }
-                      return (
-                        <div className="space-y-2">
-                          {visible.map((p) => {
-                            const uploaded = getPurchaseOrderDocument(p.id);
-                            const canVerify =
-                              p.status === "In transit" && hasPermission("purchases.receive");
-                            return (
-                              <div
-                                key={`logistics-po-${p.id}-${poDocTick}`}
-                                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5"
-                              >
-                                <div className="min-w-0">
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <p className="text-xs font-bold text-foreground truncate">
-                                      {p.product_name}
-                                    </p>
-                                    <span
-                                      className={`status ${
-                                        p.status === "In transit" ? "warning" : "brand"
-                                      }`}
-                                    >
-                                      {p.status === "In transit"
-                                        ? "Awaiting arrival"
-                                        : p.status}
-                                    </span>
-                                  </div>
-                                  <p className="text-[10px] text-muted-foreground mt-0.5">
-                                    #{p.id} · {p.supplier_name} · {p.quantity} {p.unit}
-                                    {uploaded ? ` · PDF: ${uploaded.name}` : ""}
-                                    {!p.product_id ? " · Catalog link missing" : ""}
-                                  </p>
-                                </div>
-                                <div className="flex flex-wrap items-center gap-2 shrink-0">
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="h-7 text-xs font-semibold gap-1.5"
-                                    onClick={() => handleViewPurchaseOrder(p)}
-                                  >
-                                    <FileText className="size-3.5" />
-                                    {uploaded ? "Open PDF" : "View PO"}
-                                  </Button>
-                                  {canVerify && (
-                                    <Button
-                                      size="sm"
-                                      className="h-7 text-xs font-semibold"
-                                      onClick={() => void handleReceiveGoods(p)}
-                                    >
-                                      Verify arrival &amp; add to inventory
-                                    </Button>
-                                  )}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      );
-                    })()}
-                  </section>
-                )}
-
                 {/* VIEW 1: TRIPS (Driver View or Order Desk Trips View) */}
                 {(isDriver || logisticsActiveTab === "trips") && (
                   <div
@@ -8891,8 +8807,8 @@ export function ModuleWorkspace({
             <div>
               <h2 className="panel-title">Procurement overview</h2>
               <p className="mt-0.5 text-xs text-muted-foreground">
-                Create PO → download/print PDF for the supplier → mark sent → Logistics verifies
-                arrival into inventory
+                Create PO → mark sent → Supervisor uploads supplier invoice PDF → stock tagged to
+                that PO with remaining qty until fully received
               </p>
             </div>
             {hasPermission("purchases.create") && (
@@ -8909,12 +8825,20 @@ export function ModuleWorkspace({
           {dbPOs.map((p) => {
             const uploaded = getPurchaseOrderDocument(p.id);
             const meta = parsePoNotes(p.notes);
+            const remaining = poRemainingQuantity(p);
+            const received = Number(p.received_quantity) || 0;
+            const partial = isPoPartiallyReceived(p);
             const statusClass =
               p.status === "Received"
                 ? "success"
                 : p.status === "In transit"
                   ? "warning"
                   : "brand";
+            const statusLabel = partial
+              ? "Partially received"
+              : p.status === "In transit"
+                ? "In transit"
+                : p.status;
             return (
               <div
                 className="flex flex-wrap items-center justify-between gap-4 border-t border-border px-6 py-5"
@@ -8925,8 +8849,11 @@ export function ModuleWorkspace({
                   <div className="min-w-0">
                     <p className="text-xs font-bold">{p.product_name}</p>
                     <p className="mt-1 text-[10px] text-muted-foreground">
-                      #{p.id} · {p.quantity} {p.unit} ·{" "}
-                      {companies.find((c) => c.id === p.company_id)?.short} · Supplier:{" "}
+                      #{p.id} · Ordered {p.quantity} {p.unit}
+                      {p.status !== "Requested"
+                        ? ` · Received ${received} · Remaining ${remaining} ${p.unit}`
+                        : ""}{" "}
+                      · {companies.find((c) => c.id === p.company_id)?.short} · Supplier:{" "}
                       {p.supplier_name}
                       {p.product_id ? "" : " · No catalog product linked"}
                     </p>
@@ -8938,7 +8865,7 @@ export function ModuleWorkspace({
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className={`status ${statusClass}`}>{p.status}</span>
+                  <span className={`status ${statusClass}`}>{statusLabel}</span>
                   <Button
                     size="sm"
                     variant="outline"
@@ -8974,14 +8901,16 @@ export function ModuleWorkspace({
                         Mark sent to supplier
                       </Button>
                     )}
-                  {isSuperAdmin && p.status === "In transit" && hasPermission("purchases.receive") && (
+                  {p.status === "In transit" &&
+                    remaining > 0 &&
+                    hasPermission("purchases.receive") && (
                     <Button
                       size="sm"
                       variant="outline"
-                      className="h-7 text-xs"
-                      onClick={() => void handleReceiveGoods(p)}
+                      className="h-7 text-xs font-semibold"
+                      onClick={() => openReceiveGoods(p)}
                     >
-                      Verify arrival
+                      Upload supplier invoice
                     </Button>
                   )}
                   {isSuperAdmin && (
@@ -9970,15 +9899,25 @@ export function ModuleWorkspace({
                   </section>
 
                   <section className="rounded-xl border border-border bg-card p-4 space-y-3">
-                    <h3 className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
-                      Batches &amp; analysis report
-                    </h3>
+                    <div>
+                      <h3 className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                        Stock by batch · analysis report
+                      </h3>
+                      <p className="mt-1 text-[11px] text-muted-foreground">
+                        Each inbound qty (e.g. 300 {p.unit}) is tagged to its own batch ID with dates
+                        and COA. Different arrival dates stay as separate batch lines.
+                      </p>
+                    </div>
                     {p.id ? (
                       <ProductBatchesPanel
                         productId={p.id}
                         productName={p.name}
                         tone="inventory"
                         embedded
+                        productOnHand={Number(p.on_hand) || 0}
+                        productUnit={p.unit}
+                        actorRole={currentUser?.role}
+                        actorName={currentUser?.name}
                       />
                     ) : (
                       <p className="text-[11px] text-muted-foreground">
@@ -11546,7 +11485,8 @@ export function ModuleWorkspace({
             <SheetTitle>Create purchase order</SheetTitle>
             <SheetDescription>
               Link a catalog product, download/print the PO PDF for the supplier, then mark it sent.
-              Logistics verifies arrival into inventory.
+              Supervisor receives stock by uploading the supplier invoice PDF (partial receive
+              supported). Logistics does not review or receive inbound POs.
             </SheetDescription>
           </SheetHeader>
           <form onSubmit={handleCreatePO} className="mt-6 space-y-4 pb-12">
@@ -11775,6 +11715,21 @@ export function ModuleWorkspace({
           </form>
         </SheetContent>
       </Sheet>
+
+      <PoInvoiceReceiveSheet
+        po={receivePo}
+        open={!!receivePo}
+        onOpenChange={(open) => {
+          if (!open) setReceivePo(null);
+        }}
+        actorRole={currentUser?.role}
+        actorName={currentUser?.name || "Supervisor"}
+        allowAnyStatus={isSuperAdmin}
+        onReceived={() => {
+          setReceivePo(null);
+          reloadData();
+        }}
+      />
 
       {/* EDIT PURCHASE ORDER SHEET (Super Admin & Supervisor) */}
       <Sheet open={editPoModal} onOpenChange={setEditPoModal}>

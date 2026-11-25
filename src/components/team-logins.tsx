@@ -205,7 +205,7 @@ function StaffCard({
                 aria-label={`Base role for ${user.name}`}
                 onChange={(e) => setRole(e.target.value as RoleType)}
               >
-                {FIXED_STAFF_ROLES.map((r) => (
+                {FIXED_STAFF_ROLES.filter((r) => r !== "accounts").map((r) => (
                   <option key={r} value={r}>
                     {ROLE_NAMES[r]}
                   </option>

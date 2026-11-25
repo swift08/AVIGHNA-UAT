@@ -658,7 +658,7 @@ export const listProductBatches = createServerFn({ method: "POST" })
     const { data: rows, error } = await admin
       .from("product_batches")
       .select(
-        "id, product_id, batch_number, mfg_date, expiry_date, analysis_date, dispatch_date, quantity, unit, package_count, package_weight, package_unit, coa_file_name, coa_storage_path, coa_mime_type, supplier_name, manufacturer_name, product_grade, notes, created_at",
+        "id, product_id, batch_number, mfg_date, expiry_date, analysis_date, dispatch_date, quantity, unit, package_count, package_weight, package_unit, coa_file_name, coa_storage_path, coa_mime_type, supplier_name, manufacturer_name, product_grade, notes, created_at, purchase_order_id",
       )
       .eq("product_id", data.productId)
       .order("created_at", { ascending: false });
@@ -691,6 +691,159 @@ export const listProductBatches = createServerFn({ method: "POST" })
         has_coa: Boolean(row.coa_storage_path),
         quality: qualityByBatch[String(row.id)] || [],
       })),
+    };
+  });
+
+/**
+ * Attach analysis report / COA to an existing stock batch.
+ * Does NOT change product on_hand or batch quantity — report tagging only.
+ */
+export type AttachAnalysisReportPayload = {
+  actorRole: RoleType;
+  actorName: string;
+  batchId: string;
+  fileName: string;
+  mimeType: string;
+  base64: string;
+  extraction: CoaExtraction;
+};
+
+export const attachAnalysisReportToBatch = createServerFn({ method: "POST" })
+  .validator((input: AttachAnalysisReportPayload) => input)
+  .handler(async ({ data }) => {
+    if (!canImportCoa(data.actorRole)) {
+      return {
+        ok: false as const,
+        error: "Only Super Admin or Supervisor can attach an analysis report.",
+      };
+    }
+
+    const mime = data.mimeType === "image/jpg" ? "image/jpeg" : data.mimeType;
+    const bytes = decodeBase64(data.base64);
+    const invalid = validateCoaFile(mime, bytes.length);
+    if (invalid) return { ok: false as const, error: invalid };
+
+    const admin = await ensureCoaBucket();
+    const contentHash = hashCoaBytes(bytes);
+
+    const { data: batch, error: batchErr } = await admin
+      .from("product_batches")
+      .select(
+        "id, product_id, company_id, batch_number, quantity, unit, coa_storage_path, coa_content_hash",
+      )
+      .eq("id", data.batchId)
+      .maybeSingle();
+    if (batchErr || !batch) {
+      return { ok: false as const, error: batchErr?.message || "Batch not found." };
+    }
+    if (batch.coa_storage_path) {
+      return {
+        ok: false as const,
+        error: `Batch ${batch.batch_number} already has an analysis report attached.`,
+      };
+    }
+
+    const { data: sameFile } = await admin
+      .from("product_batches")
+      .select("id, batch_number")
+      .eq("company_id", batch.company_id)
+      .eq("coa_content_hash", contentHash)
+      .maybeSingle();
+    if (sameFile) {
+      return {
+        ok: false as const,
+        error: `This report file is already attached to batch ${sameFile.batch_number}.`,
+      };
+    }
+
+    const mfg = normalizeDateValue(data.extraction.manufacturingDate.value);
+    const exp = normalizeDateValue(data.extraction.expiryDate.value);
+    if (data.extraction.manufacturingDate.value && !mfg) {
+      return { ok: false as const, error: "Manufacturing date is invalid." };
+    }
+    if (data.extraction.expiryDate.value && !exp) {
+      return { ok: false as const, error: "Expiry date is invalid." };
+    }
+
+    const ext = mime.includes("pdf") ? "pdf" : mime.includes("png") ? "png" : "jpg";
+    const storagePath = `${batch.company_id}/${batch.product_id}/${String(batch.batch_number).replace(/[^a-zA-Z0-9._-]/g, "_")}-report-${Date.now()}.${ext}`;
+    const { error: uploadErr } = await admin.storage.from(COA_BUCKET).upload(storagePath, bytes, {
+      contentType: mime,
+      upsert: false,
+    });
+    if (uploadErr) return { ok: false as const, error: uploadErr.message };
+
+    const patch: Record<string, unknown> = {
+      coa_storage_path: storagePath,
+      coa_file_name: data.fileName,
+      coa_mime_type: mime,
+      coa_content_hash: contentHash,
+      ocr_payload: data.extraction,
+      updated_at: new Date().toISOString(),
+    };
+    if (data.extraction.manufacturerName.value) {
+      patch.manufacturer_name = data.extraction.manufacturerName.value;
+    }
+    if (data.extraction.supplierName.value) {
+      patch.supplier_name = data.extraction.supplierName.value;
+    }
+    if (data.extraction.productGrade.value) {
+      patch.product_grade = data.extraction.productGrade.value;
+    }
+    if (data.extraction.productDescription.value) {
+      patch.product_description = data.extraction.productDescription.value;
+    }
+    if (mfg) patch.mfg_date = mfg;
+    if (exp) patch.expiry_date = exp;
+    const analysisDate = normalizeDateValue(data.extraction.analysisDate.value);
+    if (analysisDate) patch.analysis_date = analysisDate;
+    const dispatchDate = normalizeDateValue(data.extraction.dispatchDate.value);
+    if (dispatchDate) patch.dispatch_date = dispatchDate;
+    if (data.extraction.coaRemarks.value || data.extraction.notes) {
+      patch.notes = data.extraction.coaRemarks.value || data.extraction.notes;
+    }
+
+    const { error: updateErr } = await admin
+      .from("product_batches")
+      .update(patch)
+      .eq("id", batch.id);
+    if (updateErr) {
+      await admin.storage.from(COA_BUCKET).remove([storagePath]);
+      return { ok: false as const, error: updateErr.message };
+    }
+
+    await admin.from("batch_quality_results").delete().eq("batch_id", batch.id);
+    const qualityRows = (data.extraction.qualityParameters || [])
+      .filter((row) => row.parameterName.trim())
+      .map((row, index) => ({
+        batch_id: batch.id,
+        parameter_name: row.parameterName.trim(),
+        specification: row.specification,
+        result_value: row.resultValue,
+        compliance_status: row.complianceStatus,
+        remarks: row.remarks,
+        confidence: row.confidence,
+        sort_order: index,
+      }));
+    if (qualityRows.length) {
+      await admin.from("batch_quality_results").insert(qualityRows);
+    }
+
+    await admin.from("audit_logs").insert({
+      user_name: data.actorName,
+      company_id: batch.company_id,
+      module: "inventory",
+      action: "analysis_report_attached",
+      record_id: String(batch.id),
+      description: `${data.actorName} attached analysis report to batch ${batch.batch_number} (stock qty unchanged: ${batch.quantity} ${batch.unit})`,
+    });
+
+    return {
+      ok: true as const,
+      batchId: String(batch.id),
+      batchNumber: String(batch.batch_number),
+      quantity: Number(batch.quantity) || 0,
+      unit: String(batch.unit || "kg"),
     };
   });
 

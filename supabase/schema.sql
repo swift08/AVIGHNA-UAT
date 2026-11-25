@@ -504,28 +504,58 @@ CREATE TABLE IF NOT EXISTS public.audit_logs (
 -- ------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION public.trg_process_goods_received()
 RETURNS TRIGGER AS $$
+DECLARE
+  v_prev_received NUMERIC;
+  v_delta NUMERIC;
+  v_prev_on_hand NUMERIC;
+  v_reserved NUMERIC;
 BEGIN
-  IF NEW.status = 'Received' AND OLD.status != 'Received' THEN
-    NEW.received_quantity := NEW.quantity;
-    NEW.received_at := NOW();
+  v_prev_received := COALESCE(OLD.received_quantity, 0);
+  v_delta := COALESCE(NEW.received_quantity, 0) - v_prev_received;
 
-    UPDATE public.products
-    SET on_hand = on_hand + NEW.quantity,
-        updated_at = NOW()
-    WHERE id = NEW.product_id;
+  IF v_delta > 0 AND NEW.product_id IS NOT NULL THEN
+    SELECT on_hand, reserved INTO v_prev_on_hand, v_reserved
+    FROM public.products
+    WHERE id = NEW.product_id
+    FOR UPDATE;
 
-    INSERT INTO public.inventory_logs (
-      company_id, product_id, transaction_type, quantity,
-      previous_on_hand, new_on_hand, previous_reserved, new_reserved,
-      reference_type, reference_id, notes, performed_by
-    )
-    SELECT
-      NEW.company_id, NEW.product_id, 'GOODS_RECEIVED', NEW.quantity,
-      p.on_hand - NEW.quantity, p.on_hand, p.reserved, p.reserved,
-      'purchase_order', NEW.id, 'Goods received from PO ' || NEW.id, NEW.approved_by
-    FROM public.products p
-    WHERE p.id = NEW.product_id;
+    IF FOUND THEN
+      UPDATE public.products
+      SET on_hand = on_hand + v_delta,
+          updated_at = NOW()
+      WHERE id = NEW.product_id;
+
+      INSERT INTO public.inventory_logs (
+        company_id, product_id, transaction_type, quantity,
+        previous_on_hand, new_on_hand, previous_reserved, new_reserved,
+        reference_type, reference_id, notes, performed_by
+      ) VALUES (
+        NEW.company_id,
+        NEW.product_id,
+        'GOODS_RECEIVED',
+        v_delta,
+        v_prev_on_hand,
+        v_prev_on_hand + v_delta,
+        COALESCE(v_reserved, 0),
+        COALESCE(v_reserved, 0),
+        'purchase_order',
+        NEW.id,
+        'Goods received from PO ' || NEW.id || ' (+' || v_delta || ')',
+        NEW.approved_by
+      );
+    END IF;
   END IF;
+
+  IF COALESCE(NEW.received_quantity, 0) >= NEW.quantity THEN
+    NEW.received_quantity := NEW.quantity;
+    NEW.status := 'Received';
+    NEW.received_at := COALESCE(NEW.received_at, NOW());
+  ELSIF COALESCE(NEW.received_quantity, 0) > 0
+        AND NEW.status = 'Received'
+        AND OLD.status IS DISTINCT FROM 'Received' THEN
+    NEW.status := 'In transit';
+  END IF;
+
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -781,3 +811,9 @@ CREATE TABLE IF NOT EXISTS public.batch_quality_results (
 
 ALTER TABLE public.product_batches
 ADD COLUMN IF NOT EXISTS coa_content_hash TEXT;
+
+ALTER TABLE public.product_batches
+ADD COLUMN IF NOT EXISTS purchase_order_id TEXT REFERENCES public.purchase_orders(id);
+
+CREATE INDEX IF NOT EXISTS product_batches_purchase_order_id_idx
+  ON public.product_batches (purchase_order_id);

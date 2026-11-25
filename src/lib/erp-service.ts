@@ -1942,42 +1942,157 @@ export async function markPurchaseOrderSent(
   return data as DBPurchaseOrder;
 }
 
+export function poRemainingQuantity(po: Pick<DBPurchaseOrder, "quantity" | "received_quantity">): number {
+  const ordered = Number(po.quantity) || 0;
+  const received = Number(po.received_quantity) || 0;
+  return Math.max(0, ordered - received);
+}
+
+export function isPoPartiallyReceived(
+  po: Pick<DBPurchaseOrder, "quantity" | "received_quantity" | "status">,
+): boolean {
+  const received = Number(po.received_quantity) || 0;
+  return po.status !== "Received" && received > 0 && received < Number(po.quantity);
+}
+
 export async function receivePurchaseGoods(
   poId: string,
   companyId: string,
   receiverName: string,
-  options?: { requireProductId?: boolean; productId?: string | null },
-) {
+  options?: {
+    requireProductId?: boolean;
+    productId?: string | null;
+    receiveQty?: number;
+    notes?: string;
+    allowAnyStatus?: boolean;
+    /** Supplier batch / lot from invoice OCR — tags the stock parcel */
+    batchNumber?: string;
+    manufacturerName?: string;
+    mfgDate?: string | null;
+    expiryDate?: string | null;
+  },
+): Promise<{
+  po: DBPurchaseOrder;
+  receivedThisTime: number;
+  remaining: number;
+  batchId?: string;
+  batchNumber?: string;
+}> {
+  const { data: existing, error: fetchError } = await supabase
+    .from("purchase_orders")
+    .select("*")
+    .eq("id", poId)
+    .maybeSingle();
+  if (fetchError) throw fetchError;
+  if (!existing) throw new Error(`Purchase order #${poId} was not found.`);
+
+  const po = existing as DBPurchaseOrder;
   const requireProductId = options?.requireProductId !== false;
-  if (requireProductId && !options?.productId) {
-    const { data: existing, error: fetchError } = await supabase
-      .from("purchase_orders")
-      .select("product_id")
-      .eq("id", poId)
-      .maybeSingle();
-    if (fetchError) throw fetchError;
-    if (!existing?.product_id) {
-      throw new Error(
-        "This purchase order is not linked to a catalog product, so stock cannot be updated. Ask Accounts to recreate it with a product selected.",
-      );
-    }
+  const productId = options?.productId || po.product_id;
+  if (requireProductId && !productId) {
+    throw new Error(
+      "This purchase order is not linked to a catalog product, so stock cannot be updated. Ask Accounts to recreate it with a product selected.",
+    );
   }
 
-  const { error } = await supabase
+  if (!options?.allowAnyStatus && po.status !== "In transit" && po.status !== "Requested") {
+    throw new Error(`PO #${poId} cannot be received while status is ${po.status}.`);
+  }
+  if (!options?.allowAnyStatus && po.status === "Requested") {
+    throw new Error("Mark the purchase order as sent (In transit) before receiving goods.");
+  }
+
+  const remainingBefore = poRemainingQuantity(po);
+  if (remainingBefore <= 0 || po.status === "Received") {
+    throw new Error(`PO #${poId} is already fully received.`);
+  }
+
+  const requestedQty =
+    options?.receiveQty !== undefined && Number.isFinite(Number(options.receiveQty))
+      ? Number(options.receiveQty)
+      : remainingBefore;
+  if (!(requestedQty > 0)) {
+    throw new Error("Received quantity must be greater than zero.");
+  }
+  if (requestedQty > remainingBefore + 1e-9) {
+    throw new Error(
+      `Cannot receive ${requestedQty}. Only ${remainingBefore} ${po.unit} remaining on this PO.`,
+    );
+  }
+
+  const previouslyReceived = Number(po.received_quantity) || 0;
+  const receivedThisTime = Math.min(requestedQty, remainingBefore);
+  const newReceived = previouslyReceived + receivedThisTime;
+  const remaining = Math.max(0, Number(po.quantity) - newReceived);
+
+  const { data: updated, error } = await supabase
     .from("purchase_orders")
-    .update({ status: "Received" })
-    .eq("id", poId);
+    .update({
+      received_quantity: newReceived,
+      updated_at: new Date().toISOString(),
+      // Trigger flips to Received when fully received; keep In transit for partials
+      status: remaining > 0 ? "In transit" : "Received",
+    })
+    .eq("id", poId)
+    .select()
+    .single();
 
   if (error) throw error;
 
+  let batchId: string | undefined;
+  let usedBatchNumber: string | undefined;
+  if (productId && receivedThisTime > 0) {
+    try {
+      const supplierBatch = options?.batchNumber?.trim();
+      const batchNumber =
+        supplierBatch || `PO-${poId}-R${Date.now().toString().slice(-6)}`;
+      usedBatchNumber = batchNumber;
+      const noteParts = [
+        `Receipt from PO #${poId}`,
+        options?.notes?.trim() || "",
+        `+${receivedThisTime} ${po.unit}`,
+        remaining > 0 ? `Remaining on PO: ${remaining} ${po.unit}` : "PO fully received",
+      ].filter(Boolean);
+      const { data: batch, error: batchErr } = await supabase
+        .from("product_batches")
+        .insert({
+          product_id: productId,
+          company_id: companyId || po.company_id,
+          batch_number: batchNumber,
+          supplier_name: po.supplier_name,
+          manufacturer_name: options?.manufacturerName?.trim() || null,
+          mfg_date: options?.mfgDate || null,
+          expiry_date: options?.expiryDate || null,
+          quantity: receivedThisTime,
+          unit: po.unit,
+          purchase_order_id: poId,
+          notes: noteParts.join(" · "),
+          created_by: receiverName,
+        })
+        .select("id")
+        .maybeSingle();
+      if (!batchErr && batch?.id) batchId = String(batch.id);
+    } catch {
+      // Batch tagging is best-effort; stock already updated by trigger
+    }
+  }
+
   await logAudit({
     userName: receiverName,
-    companyId,
+    companyId: companyId || po.company_id,
     module: "procurement",
     action: "goods_received",
     recordId: poId,
-    description: `${receiverName} verified arrival for PO #${poId} (Inventory inbound updated)`,
+    description: `${receiverName} received ${receivedThisTime} ${po.unit} on PO #${poId} (${newReceived}/${po.quantity}; remaining ${remaining})${usedBatchNumber ? ` · batch ${usedBatchNumber}` : ""}`,
   });
+
+  return {
+    po: updated as DBPurchaseOrder,
+    receivedThisTime,
+    remaining,
+    ...(batchId ? { batchId } : {}),
+    ...(usedBatchNumber ? { batchNumber: usedBatchNumber } : {}),
+  };
 }
 
 export async function createPurchaseOrder(payload: {
@@ -2594,6 +2709,8 @@ export async function inboundStock(payload: {
     updates["reorder_level"] = payload.newReorderLevel;
   }
 
+  const prevOnHand = Number(prod.on_hand) || 0;
+  const addQty = Number(payload.additionalQuantity);
   const { data, error } = await supabase
     .from("products")
     .update(updates)
@@ -2602,18 +2719,59 @@ export async function inboundStock(payload: {
     .single();
   if (error) throw error;
 
+  const batchNumber = `INB-${Date.now().toString().slice(-8)}`;
+  let batchId: string | undefined;
+  try {
+    const { data: batch } = await supabase
+      .from("product_batches")
+      .insert({
+        product_id: prod.id,
+        company_id: prod.company_id,
+        batch_number: batchNumber,
+        quantity: addQty,
+        unit: prod.unit || "kg",
+        notes: [
+          "Manual inbound stock",
+          payload.notes?.trim() || "",
+          `+${addQty} ${prod.unit}`,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        created_by: payload.userName,
+      })
+      .select("id")
+      .maybeSingle();
+    if (batch?.id) batchId = String(batch.id);
+  } catch {
+    // best-effort batch tag
+  }
+
+  await supabase.from("inventory_logs").insert({
+    company_id: prod.company_id,
+    product_id: prod.id,
+    transaction_type: "GOODS_RECEIVED",
+    quantity: addQty,
+    previous_on_hand: prevOnHand,
+    new_on_hand: newOnHand,
+    previous_reserved: Number(prod.reserved) || 0,
+    new_reserved: Number(prod.reserved) || 0,
+    reference_type: batchId ? "product_batch" : "product",
+    reference_id: batchId || prod.id,
+    notes: payload.notes?.trim() || `Inbound +${addQty} ${prod.unit} (${batchNumber})`,
+  });
+
   await logAudit({
     userName: payload.userName,
     companyId: prod.company_id,
     module: "inventory",
     action: "inbound_stock",
     recordId: prod.id,
-    description: `${payload.userName} added Inbound Stock +${payload.additionalQuantity} ${prod.unit} to ${prod.name} (New on-hand: ${newOnHand}${payload.newReorderLevel !== undefined ? `, Min Reorder Level: ${payload.newReorderLevel}` : ""})`,
+    description: `${payload.userName} added Inbound Stock +${addQty} ${prod.unit} to ${prod.name} as batch ${batchNumber} (New on-hand: ${newOnHand}${payload.newReorderLevel !== undefined ? `, Min Reorder Level: ${payload.newReorderLevel}` : ""})`,
   });
 
   createNotification({
     title: "Inbound Stock Added",
-    message: `+${payload.additionalQuantity} ${prod.unit} added to ${prod.name} by ${payload.userName} (On-hand: ${newOnHand}).`,
+    message: `+${addQty} ${prod.unit} added to ${prod.name} (batch ${batchNumber}) by ${payload.userName} (On-hand: ${newOnHand}).`,
     type: "info",
     company_id: prod.company_id,
     reference_type: "product",
@@ -2698,6 +2856,36 @@ export async function updateProductStock(payload: {
     updatedData = data as DBProduct;
   }
 
+  // Positive stock increases get a tagged batch so each parcel keeps a batch ID
+  let adjustBatchId: string | undefined;
+  if (delta > 0) {
+    try {
+      const batchNumber = `ADJ-${Date.now().toString().slice(-8)}`;
+      const { data: batch } = await supabase
+        .from("product_batches")
+        .insert({
+          product_id: prod.id,
+          company_id: prod.company_id,
+          batch_number: batchNumber,
+          quantity: delta,
+          unit: (updates.unit as string | undefined) || prod.unit || "kg",
+          notes: [
+            "Stock adjustment increase",
+            payload.reason?.trim() || "",
+            `+${delta} ${prod.unit}`,
+          ]
+            .filter(Boolean)
+            .join(" · "),
+          created_by: payload.userName,
+        })
+        .select("id")
+        .maybeSingle();
+      if (batch?.id) adjustBatchId = String(batch.id);
+    } catch {
+      // best-effort
+    }
+  }
+
   // Insert inventory_log entry
   try {
     await supabase.from("inventory_logs").insert({
@@ -2709,7 +2897,8 @@ export async function updateProductStock(payload: {
       new_on_hand: newOnHand,
       previous_reserved: Number(prod.reserved) || 0,
       new_reserved: Number(prod.reserved) || 0,
-      reference_type: "MANUAL_STOCK_EDIT",
+      reference_type: adjustBatchId ? "product_batch" : "MANUAL_STOCK_EDIT",
+      reference_id: adjustBatchId || prod.id,
       notes:
         payload.reason ||
         `Physical stock count updated from ${prevOnHand} to ${newOnHand} ${prod.unit}`,
@@ -3236,7 +3425,7 @@ export async function createCreditNote(payload: {
   amount: number;
   userName: string;
 }): Promise<DBCreditNote> {
-  await requireRole(["accounts", "super_admin"]);
+  await requireRole(["supervisor", "accounts", "super_admin"]);
   const noteId = `${payload.type === "Credit note" ? "CN" : "DN"}-${Math.floor(1000 + Math.random() * 9000)}`;
   const newNote: DBCreditNote = {
     id: noteId,
@@ -3487,7 +3676,7 @@ export async function updateCustomerCreditLimit(
   creditDays: number,
   adminName: string = "Super Admin",
 ): Promise<DBCustomer> {
-  const actor = await requireRole(["accounts", "super_admin"]);
+  const actor = await requireRole(["supervisor", "accounts", "super_admin"]);
   adminName = actor.name || adminName;
   try {
     const { data, error } = await supabase

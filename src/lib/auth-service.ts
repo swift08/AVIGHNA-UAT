@@ -23,10 +23,16 @@ export const ROLE_NAMES: Record<RoleType, string> = {
   super_admin: "Owner / Super Admin",
   sales: "Sales Executive",
   supervisor: "Supervisor",
-  accounts: "Accounts Manager",
+  /** @deprecated Merged into Supervisor — kept for legacy logins / metadata. */
+  accounts: "Supervisor",
   logistics: "Warehouse Supervisor",
   custom: "Custom access",
 };
+
+/** Accounts was merged into Supervisor; normalize legacy role strings. */
+export function normalizeStaffRole(role: RoleType): RoleType {
+  return role === "accounts" ? "supervisor" : role;
+}
 
 export type AccessFeature = {
   id: string;
@@ -94,7 +100,7 @@ export const ACCESS_FEATURES: AccessFeature[] = [
   {
     id: "logistics",
     name: "Logistics",
-    description: "Deliveries, dispatch, inbound PO arrival verification, and proof of delivery",
+    description: "Deliveries, dispatch, and proof of delivery only",
     permissions: [
       "logistics.view",
       "logistics.dispatch",
@@ -102,8 +108,6 @@ export const ACCESS_FEATURES: AccessFeature[] = [
       "orders.view",
       "tasks.view",
       "customers.view",
-      "purchases.view",
-      "purchases.receive",
     ],
   },
   {
@@ -189,7 +193,8 @@ export function defaultFeaturesForRole(role: RoleType): string[] {
     case "logistics":
       return ["logistics", "tasks"];
     case "accounts":
-      return ["invoices", "suppliers", "purchases", "orders", "customers"];
+      // Legacy alias — same feature pack as supervisor
+      return defaultFeaturesForRole("supervisor");
     case "supervisor":
       return [
         "orders",
@@ -200,6 +205,11 @@ export function defaultFeaturesForRole(role: RoleType): string[] {
         "field_visits",
         "tasks",
         "logistics",
+        "invoices",
+        "suppliers",
+        "purchases",
+        "collections",
+        "analytics",
       ];
     case "super_admin":
       return ACCESS_FEATURES.map((f) => f.id);
@@ -223,9 +233,9 @@ export function roleForFeatures(featureIds: string[]): RoleType {
   ) {
     return "sales";
   }
-  const accountsFeatures = new Set(defaultFeaturesForRole("accounts"));
-  if (features.every((id) => accountsFeatures.has(id)) && features.includes("invoices")) {
-    return "accounts";
+  // Legacy accounts-only feature packs resolve to supervisor (roles are merged).
+  if (features.includes("invoices") && features.includes("purchases")) {
+    return "supervisor";
   }
   return "custom";
 }
@@ -243,11 +253,12 @@ export function featuresCreatorCanAssign(role: RoleType | undefined): string[] {
 
 export function rolesCreatorCanAssign(role: RoleType | undefined): RoleType[] {
   if (role === "super_admin") {
-    return ["super_admin", "sales", "supervisor", "accounts", "logistics"];
+    return ["super_admin", "sales", "supervisor", "logistics"];
   }
   // Supervisors may propose fixed job roles; Super Admin still must approve.
+  // Accounts is no longer assignable — merged into supervisor.
   if (role === "supervisor") {
-    return ["sales", "logistics", "accounts", "supervisor"];
+    return ["sales", "logistics", "supervisor"];
   }
   return [];
 }
@@ -260,14 +271,15 @@ export function profileFromAuth(user: {
   const rawRole = user.user_metadata?.["role"];
   const features = parseFeatureIds(user.user_metadata?.["features"]);
   // Sticky base role: never demote sales/logistics/… to custom just because features changed.
-  const typed: RoleType | null = isFixedStaffRole(typeof rawRole === "string" ? rawRole : null)
+  const rawTyped: RoleType | null = isFixedStaffRole(typeof rawRole === "string" ? rawRole : null)
     ? (rawRole as RoleType)
     : features.length
       ? roleForFeatures(features)
       : typeof rawRole === "string" && rawRole in ROLE_PERMISSIONS
         ? (rawRole as RoleType)
         : null;
-  if (!typed) return null;
+  if (!rawTyped) return null;
+  const typed = normalizeStaffRole(rawTyped);
   const name = String(user.user_metadata?.["full_name"] || user.email || "User");
   const initials =
     name
@@ -285,7 +297,7 @@ export function profileFromAuth(user: {
     roleName: ROLE_NAMES[typed],
     initials,
     company: String(user.user_metadata?.["company"] || "all"),
-    // Feature matrix overlays permissions; role label stays fixed.
+    // Feature matrix overlays permissions; role label stays fixed (accounts → supervisor).
     permissions: features.length
       ? permissionsForFeatures(features)
       : [...ROLE_PERMISSIONS[typed]],
@@ -310,6 +322,7 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "invoices.view",
     "payments.record",
   ],
+  // Supervisor = former supervisor + accounts (procurement, invoices, payments, amounts)
   supervisor: [
     "orders.view",
     "orders.create",
@@ -326,23 +339,44 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "tasks.manage",
     "field_visits.view",
     "customers.view",
-    // Floor KPIs only — no finance amounts (see hasUserPermission + analytics UI)
-    "analytics.view",
-  ],
-  accounts: [
+    "purchases.view",
+    "purchases.create",
+    "purchases.receive",
     "invoices.view",
     "invoices.generate",
     "payments.record",
-    "orders.view",
-    "tasks.view",
-    "customers.view",
-    "analytics.view",
     "finance.view_amounts",
-    "purchases.view",
-    "purchases.create",
-    "inventory.view",
     "suppliers.view",
     "suppliers.manage",
+    "analytics.view",
+  ],
+  /** @deprecated Alias of supervisor — do not assign to new logins. */
+  accounts: [
+    "orders.view",
+    "orders.create",
+    "orders.edit",
+    "orders.approve",
+    "leads.view",
+    "leads.manage",
+    "leads.convert",
+    "inventory.view",
+    "inventory.adjust",
+    "inventory.shortage_approve",
+    "logistics.view",
+    "tasks.view",
+    "tasks.manage",
+    "field_visits.view",
+    "customers.view",
+    "purchases.view",
+    "purchases.create",
+    "purchases.receive",
+    "invoices.view",
+    "invoices.generate",
+    "payments.record",
+    "finance.view_amounts",
+    "suppliers.view",
+    "suppliers.manage",
+    "analytics.view",
   ],
   logistics: [
     "logistics.view",
@@ -351,9 +385,6 @@ export const ROLE_PERMISSIONS: Record<RoleType, string[]> = {
     "orders.view",
     "tasks.view",
     "customers.view",
-    "purchases.view",
-    // Arrival verification for inbound POs → inventory
-    "purchases.receive",
   ],
   custom: [],
 };
@@ -436,10 +467,10 @@ export const SYSTEM_USERS: UserProfile[] = [
     email: "accounts@avighna.com",
     phone: "+91 98450 22334",
     role: "accounts",
-    roleName: "Accounts Manager",
+    roleName: ROLE_NAMES.supervisor,
     initials: "SR",
     company: "avighna",
-    permissions: ROLE_PERMISSIONS.accounts,
+    permissions: ROLE_PERMISSIONS.supervisor,
   },
   {
     id: "33333333-3333-3333-3333-333333333333",
@@ -565,20 +596,21 @@ const PERMISSION_ALIASES: Record<string, string[]> = {
   "suppliers.manage": ["suppliers.create", "suppliers.edit"],
 };
 
-/** Revenue, invoice totals, catalog prices, and other ₹ amounts — accounts + super admin only. */
+/** Revenue, invoice totals, catalog prices, and other ₹ amounts — supervisor (incl. former accounts) + super admin. */
 export function canViewAmounts(user: UserProfile | null): boolean {
   return hasUserPermission(user, "finance.view_amounts");
 }
 
 export function hasUserPermission(user: UserProfile | null, permission: string): boolean {
   if (!user) return false;
+  const role = normalizeStaffRole(user.role);
 
   // 1. Explicit individual user override: Deny takes absolute precedence
   if (user.overrides?.deny?.includes(permission)) return false;
 
   // 1b. Supervisors only review sales visits — never log or schedule them
   if (
-    user.role === "supervisor" &&
+    role === "supervisor" &&
     (permission === "field_visits.conduct" ||
       permission === "field_visits.schedule" ||
       permission === "visits.create" ||
@@ -588,18 +620,7 @@ export function hasUserPermission(user: UserProfile | null, permission: string):
   }
 
   // 1b2. Sales only receives tasks — cannot create or assign
-  if (user.role === "sales" && permission === "tasks.manage") {
-    return false;
-  }
-
-  // 1c. Supervisors do not use Purchases / create POs — accounts owns procurement
-  if (
-    user.role === "supervisor" &&
-    (permission === "purchases.view" ||
-      permission === "purchases.create" ||
-      permission === "purchases.approve" ||
-      permission === "purchases.receive")
-  ) {
+  if (role === "sales" && permission === "tasks.manage") {
     return false;
   }
 
@@ -607,10 +628,10 @@ export function hasUserPermission(user: UserProfile | null, permission: string):
   if (user.overrides?.grant?.includes(permission)) return true;
 
   // 3. Super Admin universal access
-  if (user.role === "super_admin" || user.permissions.includes("*")) return true;
+  if (role === "super_admin" || user.permissions.includes("*")) return true;
 
   // 3b. Supervisor operations oversight for logistics queue view
-  if (user.role === "supervisor" && permission === "logistics.view") {
+  if (role === "supervisor" && permission === "logistics.view") {
     return true;
   }
 
@@ -667,14 +688,19 @@ export function authenticateUser(
       return { user: null, error: "Incorrect password. Please try again." };
     }
 
+    const role = normalizeStaffRole(demoEntry.role);
+    const permSource =
+      SYSTEM_USERS.find((u) => u.role === role) ||
+      SYSTEM_USERS.find((u) => normalizeStaffRole(u.role) === role) ||
+      baseUser;
     return {
       user: {
         id: baseUser.id,
         name: demoEntry.name || baseUser.name,
         email: normalized,
         phone: baseUser.phone,
-        role: demoEntry.role,
-        roleName: baseUser.roleName,
+        role,
+        roleName: ROLE_NAMES[role],
         initials: (demoEntry.name || baseUser.name)
           .split(" ")
           .map((n) => n[0])
@@ -682,7 +708,7 @@ export function authenticateUser(
           .slice(0, 2)
           .toUpperCase(),
         company: baseUser.company,
-        permissions: [...baseUser.permissions],
+        permissions: [...(permSource?.permissions || ROLE_PERMISSIONS[role])],
       },
     };
   }
@@ -704,17 +730,20 @@ export function authenticateUser(
     return { user: null, error: "Incorrect password. Please try again." };
   }
 
+  const role = normalizeStaffRole(found.role);
+  const permSource =
+    SYSTEM_USERS.find((u) => u.role === role) || found;
   return {
     user: {
       id: found.id,
       name: found.name,
       email: found.email,
       phone: found.phone,
-      role: found.role,
-      roleName: found.roleName,
+      role,
+      roleName: ROLE_NAMES[role],
       initials: found.initials,
       company: found.company,
-      permissions: [...found.permissions],
+      permissions: [...(permSource.permissions || ROLE_PERMISSIONS[role])],
     },
   };
 }
@@ -724,12 +753,17 @@ export function authenticateAsRole(role: RoleType): { user: UserProfile | null; 
   if (!isDemoAuthEnabled()) {
     return { user: null, error: "Role switching is disabled." };
   }
-  const found = SYSTEM_USERS.find((u) => u.role === role);
+  const target = normalizeStaffRole(role);
+  const found =
+    SYSTEM_USERS.find((u) => u.role === target) ||
+    SYSTEM_USERS.find((u) => u.role === role);
   if (!found) return { user: null, error: "Unknown role." };
   return {
     user: {
       ...found,
-      permissions: [...found.permissions],
+      role: target,
+      roleName: ROLE_NAMES[target],
+      permissions: [...ROLE_PERMISSIONS[target]],
     },
   };
 }
