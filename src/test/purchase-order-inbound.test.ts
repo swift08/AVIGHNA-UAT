@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { hasUserPermission, SYSTEM_USERS } from "@/lib/auth-service";
 import {
   isPoPartiallyReceived,
+  poPaymentRemaining,
+  poPaymentStatus,
   poRemainingQuantity,
   type DBPurchaseOrder,
 } from "@/lib/erp-service";
@@ -35,6 +37,21 @@ describe("purchase order inbound lifecycle", () => {
     po.received_quantity = 4500;
     expect(poRemainingQuantity(po)).toBe(500);
     expect(isPoPartiallyReceived(po)).toBe(true);
+  });
+
+  it("supplier payment remaining after partial pay on invoice", () => {
+    const po: Pick<DBPurchaseOrder, "total_amount" | "paid_amount"> = {
+      total_amount: 100000,
+      paid_amount: 0,
+    };
+    expect(poPaymentRemaining(po)).toBe(100000);
+    expect(poPaymentStatus(po)).toBe("Unpaid");
+    po.paid_amount = 60000;
+    expect(poPaymentRemaining(po)).toBe(40000);
+    expect(poPaymentStatus(po)).toBe("Partially paid");
+    po.paid_amount = 100000;
+    expect(poPaymentRemaining(po)).toBe(0);
+    expect(poPaymentStatus(po)).toBe("Fully paid");
   });
 
   it("status path is Requested → In transit → Received and stock needs product_id", () => {

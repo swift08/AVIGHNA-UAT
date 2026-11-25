@@ -103,7 +103,7 @@ import { listStaffLogins } from "@/lib/login-admin";
 import { TeamLogins } from "./team-logins";
 import { AuditLogsPanel } from "./audit-logs-panel";
 import { CoaImportButton, ProductBatchesPanel } from "./coa-import";
-import { PoInvoiceReceiveSheet } from "./po-invoice-receive";
+import { PoInvoiceReceiveSheet, SupplierPaymentSheet } from "./po-invoice-receive";
 import { getBatchCoaAccess, listProductBatches } from "@/lib/coa-service";
 import {
   fetchOrders,
@@ -123,6 +123,8 @@ import {
   updatePurchaseOrder,
   markPurchaseOrderSent,
   poRemainingQuantity,
+  poPaymentRemaining,
+  poPaymentStatus,
   isPoPartiallyReceived,
   updateFieldVisit,
   fetchInvoices,
@@ -540,6 +542,7 @@ export function ModuleWorkspace({
 
   // Supervisor invoice-photo partial receive (OCR confirm → stock tagged to PO)
   const [receivePo, setReceivePo] = useState<DBPurchaseOrder | null>(null);
+  const [supplierPayPo, setSupplierPayPo] = useState<DBPurchaseOrder | null>(null);
 
   // Purchase Order Edit modal state (Super Admin and Supervisor)
   const [editPoModal, setEditPoModal] = useState(false);
@@ -8827,6 +8830,9 @@ export function ModuleWorkspace({
             const meta = parsePoNotes(p.notes);
             const remaining = poRemainingQuantity(p);
             const received = Number(p.received_quantity) || 0;
+            const paidAmt = Number(p.paid_amount) || 0;
+            const payRem = poPaymentRemaining(p);
+            const payStatus = poPaymentStatus(p);
             const partial = isPoPartiallyReceived(p);
             const statusClass =
               p.status === "Received"
@@ -8839,6 +8845,12 @@ export function ModuleWorkspace({
               : p.status === "In transit"
                 ? "In transit"
                 : p.status;
+            const canPaySupplier =
+              received > 0 &&
+              payRem > 0 &&
+              (hasPermission("purchases.receive") ||
+                hasPermission("payments.record") ||
+                isSuperAdmin);
             return (
               <div
                 className="flex flex-wrap items-center justify-between gap-4 border-t border-border px-6 py-5"
@@ -8852,6 +8864,9 @@ export function ModuleWorkspace({
                       #{p.id} · Ordered {p.quantity} {p.unit}
                       {p.status !== "Requested"
                         ? ` · Received ${received} · Remaining ${remaining} ${p.unit}`
+                        : ""}
+                      {received > 0
+                        ? ` · Paid ₹${paidAmt.toLocaleString("en-IN")} · Payable left ₹${payRem.toLocaleString("en-IN")}`
                         : ""}{" "}
                       · {companies.find((c) => c.id === p.company_id)?.short} · Supplier:{" "}
                       {p.supplier_name}
@@ -8866,6 +8881,19 @@ export function ModuleWorkspace({
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className={`status ${statusClass}`}>{statusLabel}</span>
+                  {received > 0 && (
+                    <span
+                      className={`status ${
+                        payStatus === "Fully paid"
+                          ? "success"
+                          : payStatus === "Partially paid"
+                            ? "warning"
+                            : "brand"
+                      }`}
+                    >
+                      {payStatus}
+                    </span>
+                  )}
                   <Button
                     size="sm"
                     variant="outline"
@@ -8911,6 +8939,16 @@ export function ModuleWorkspace({
                       onClick={() => openReceiveGoods(p)}
                     >
                       Upload supplier invoice
+                    </Button>
+                  )}
+                  {canPaySupplier && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 text-xs font-semibold"
+                      onClick={() => setSupplierPayPo(p)}
+                    >
+                      Supplier payment
                     </Button>
                   )}
                   {isSuperAdmin && (
@@ -11726,7 +11764,19 @@ export function ModuleWorkspace({
         actorName={currentUser?.name || "Supervisor"}
         allowAnyStatus={isSuperAdmin}
         onReceived={() => {
-          setReceivePo(null);
+          reloadData();
+        }}
+      />
+
+      <SupplierPaymentSheet
+        po={supplierPayPo}
+        open={!!supplierPayPo}
+        onOpenChange={(open) => {
+          if (!open) setSupplierPayPo(null);
+        }}
+        actorName={currentUser?.name || "Supervisor"}
+        onSaved={() => {
+          setSupplierPayPo(null);
           reloadData();
         }}
       />

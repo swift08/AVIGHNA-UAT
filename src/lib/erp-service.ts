@@ -208,12 +208,45 @@ export interface DBPurchaseOrder {
   unit: string;
   unit_price: number;
   total_amount: number;
+  /** Amount already paid to the supplier against this PO / invoice. */
+  paid_amount?: number | undefined;
   total_price?: number | undefined;
   status: "Requested" | "Approval" | "In transit" | "Received" | "Rejected";
   eta?: string | undefined;
   warehouse?: string | undefined;
   notes?: string | undefined;
   created_at?: string | undefined;
+}
+
+export type SupplierPaymentMethod =
+  | "Cash"
+  | "PhonePe"
+  | "Google Pay"
+  | "UPI"
+  | "Bank Transfer"
+  | "Cheque";
+
+export const SUPPLIER_PAYMENT_METHODS: SupplierPaymentMethod[] = [
+  "Cash",
+  "PhonePe",
+  "Google Pay",
+  "UPI",
+  "Bank Transfer",
+  "Cheque",
+];
+
+export interface DBSupplierPayment {
+  id?: string;
+  company_id: string;
+  purchase_order_id: string;
+  supplier_name: string;
+  amount: number;
+  payment_method: SupplierPaymentMethod | string;
+  reference_number?: string | null;
+  paid_date?: string | null;
+  notes?: string | null;
+  recorded_by?: string | null;
+  created_at?: string;
 }
 
 export interface DBInvoice {
@@ -2093,6 +2126,133 @@ export async function receivePurchaseGoods(
     ...(batchId ? { batchId } : {}),
     ...(usedBatchNumber ? { batchNumber: usedBatchNumber } : {}),
   };
+}
+
+export function poPaymentRemaining(
+  po: Pick<DBPurchaseOrder, "total_amount" | "paid_amount">,
+): number {
+  return Math.max(0, (Number(po.total_amount) || 0) - (Number(po.paid_amount) || 0));
+}
+
+export type PoPaymentStatus = "Unpaid" | "Partially paid" | "Fully paid";
+
+export function poPaymentStatus(
+  po: Pick<DBPurchaseOrder, "total_amount" | "paid_amount">,
+): PoPaymentStatus {
+  const total = Number(po.total_amount) || 0;
+  const paid = Number(po.paid_amount) || 0;
+  if (paid <= 0) return "Unpaid";
+  if (total > 0 && paid + 1e-9 >= total) return "Fully paid";
+  if (paid > 0 && (total <= 0 || paid < total)) return "Partially paid";
+  return "Unpaid";
+}
+
+/** Record a supplier payment against a PO invoice (after stock receive). */
+export async function recordSupplierPayment(payload: {
+  purchaseOrderId: string;
+  companyId: string;
+  amount: number;
+  paymentMethod: SupplierPaymentMethod;
+  referenceNumber?: string;
+  notes?: string;
+  paidDate?: string;
+  recordedByName: string;
+}): Promise<{ payment: DBSupplierPayment; po: DBPurchaseOrder; remaining: number }> {
+  const amount = Number(payload.amount);
+  if (!(amount > 0)) throw new Error("Payment amount must be greater than zero.");
+  if (!SUPPLIER_PAYMENT_METHODS.includes(payload.paymentMethod)) {
+    throw new Error("Choose a valid payment type.");
+  }
+
+  const { data: existing, error: fetchError } = await supabase
+    .from("purchase_orders")
+    .select("*")
+    .eq("id", payload.purchaseOrderId)
+    .maybeSingle();
+  if (fetchError) throw fetchError;
+  if (!existing) throw new Error(`Purchase order #${payload.purchaseOrderId} was not found.`);
+
+  const po = existing as DBPurchaseOrder;
+  const previouslyPaid = Number(po.paid_amount) || 0;
+  const invoiceTotal = Number(po.total_amount) || 0;
+  const remainingBefore = Math.max(0, invoiceTotal - previouslyPaid);
+  if (remainingBefore <= 0 && invoiceTotal > 0) {
+    throw new Error(`PO #${po.id} is already fully paid.`);
+  }
+  if (invoiceTotal > 0 && amount > remainingBefore + 1e-9) {
+    throw new Error(
+      `Cannot pay ₹${amount.toLocaleString("en-IN")}. Only ₹${remainingBefore.toLocaleString("en-IN")} remaining on this invoice.`,
+    );
+  }
+
+  const { data: payment, error: payErr } = await supabase
+    .from("supplier_payments")
+    .insert({
+      company_id: payload.companyId || po.company_id,
+      purchase_order_id: po.id,
+      supplier_name: po.supplier_name,
+      amount,
+      payment_method: payload.paymentMethod,
+      reference_number: payload.referenceNumber?.trim() || null,
+      paid_date: payload.paidDate || new Date().toISOString().slice(0, 10),
+      notes: payload.notes?.trim() || null,
+      recorded_by: payload.recordedByName,
+    })
+    .select()
+    .single();
+
+  if (payErr) {
+    const missing = /schema cache|does not exist|Could not find the table/i.test(payErr.message);
+    throw new Error(
+      missing
+        ? "Supplier payments table is not installed yet. Run supabase/migrations/20261125_supplier_payments.sql, then retry."
+        : payErr.message,
+    );
+  }
+
+  const newPaid = previouslyPaid + amount;
+  const remaining = Math.max(0, invoiceTotal - newPaid);
+  const { data: updated, error: poErr } = await supabase
+    .from("purchase_orders")
+    .update({
+      paid_amount: newPaid,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", po.id)
+    .select()
+    .single();
+  if (poErr) throw poErr;
+
+  await logAudit({
+    userName: payload.recordedByName,
+    companyId: payload.companyId || po.company_id,
+    module: "procurement",
+    action: "supplier_payment_recorded",
+    recordId: po.id,
+    description: `${payload.recordedByName} paid ₹${amount.toLocaleString("en-IN")} via ${payload.paymentMethod} to ${po.supplier_name} for PO #${po.id} (paid ${newPaid}/${invoiceTotal}; remaining ₹${remaining.toLocaleString("en-IN")})`,
+  });
+
+  return {
+    payment: payment as DBSupplierPayment,
+    po: updated as DBPurchaseOrder,
+    remaining,
+  };
+}
+
+export async function fetchSupplierPayments(
+  purchaseOrderId: string,
+): Promise<DBSupplierPayment[]> {
+  try {
+    const { data, error } = await supabase
+      .from("supplier_payments")
+      .select("*")
+      .eq("purchase_order_id", purchaseOrderId)
+      .order("created_at", { ascending: false });
+    if (error || !data) return [];
+    return data as DBSupplierPayment[];
+  } catch {
+    return [];
+  }
 }
 
 export async function createPurchaseOrder(payload: {

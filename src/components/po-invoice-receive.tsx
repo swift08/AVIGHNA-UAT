@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { Camera, FileUp, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -24,11 +24,18 @@ import {
 } from "@/lib/coa-client-ocr";
 import { extractCoaDocument } from "@/lib/coa-service";
 import {
+  poPaymentRemaining,
+  poPaymentStatus,
   poRemainingQuantity,
   receivePurchaseGoods,
+  recordSupplierPayment,
+  SUPPLIER_PAYMENT_METHODS,
   type DBPurchaseOrder,
+  type SupplierPaymentMethod,
 } from "@/lib/erp-service";
 import type { RoleType } from "@/lib/auth-service";
+
+type PaySettlement = "fully" | "partial" | "unpaid";
 
 function fileToBase64(file: File) {
   return file.arrayBuffer().then((buffer) => {
@@ -111,7 +118,7 @@ async function pickInvoicePhoto(): Promise<File | null> {
 
 /**
  * Supervisor (or super admin) uploads supplier invoice photo → OCR review popup →
- * partial receive into inventory tagged to that PO, with remaining qty shown.
+ * partial receive into inventory tagged to that PO → optional supplier payment.
  */
 export function PoInvoiceReceiveSheet({
   po,
@@ -131,7 +138,7 @@ export function PoInvoiceReceiveSheet({
   onReceived: () => void;
 }) {
   const [stage, setStage] = useState<
-    "idle" | "processing" | "review" | "saving"
+    "idle" | "processing" | "review" | "saving" | "payment"
   >("idle");
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -140,9 +147,29 @@ export function PoInvoiceReceiveSheet({
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
+  const [receivedPo, setReceivedPo] = useState<DBPurchaseOrder | null>(null);
+  const [receivedThisTime, setReceivedThisTime] = useState(0);
+  const [payAmount, setPayAmount] = useState("");
+  const [payMethod, setPayMethod] = useState<SupplierPaymentMethod>("Bank Transfer");
+  const [payRef, setPayRef] = useState("");
+  const [payNotes, setPayNotes] = useState("");
+  const [paySaving, setPaySaving] = useState(false);
+  const [paySettlement, setPaySettlement] = useState<PaySettlement>("fully");
 
   const remaining = po ? poRemainingQuantity(po) : 0;
   const qtyPreview = useMemo(() => resolvedReceiveQuantity(extraction), [extraction]);
+  const paymentPo = receivedPo || po;
+  const payRemaining = paymentPo ? poPaymentRemaining(paymentPo) : 0;
+
+  const applySettlement = (mode: PaySettlement, rem: number) => {
+    setPaySettlement(mode);
+    setError("");
+    if (mode === "fully") setPayAmount(rem > 0 ? String(rem) : "");
+    else if (mode === "partial") {
+      const half = rem > 0 ? Math.round((rem / 2) * 100) / 100 : 0;
+      setPayAmount(half > 0 ? String(half) : "");
+    } else setPayAmount("");
+  };
 
   const reset = () => {
     setStage("idle");
@@ -154,6 +181,14 @@ export function PoInvoiceReceiveSheet({
     setNotes("");
     setError("");
     setWarning(null);
+    setReceivedPo(null);
+    setReceivedThisTime(0);
+    setPayAmount("");
+    setPayMethod("Bank Transfer");
+    setPayRef("");
+    setPayNotes("");
+    setPaySaving(false);
+    setPaySettlement("fully");
   };
 
   const close = (next: boolean) => {
@@ -311,17 +346,25 @@ export function PoInvoiceReceiveSheet({
         expiryDate: exp,
       });
 
+      const updatedPo = {
+        ...result.po,
+        paid_amount: Number(result.po.paid_amount ?? po.paid_amount) || 0,
+      };
+      setReceivedPo(updatedPo);
+      setReceivedThisTime(result.receivedThisTime);
+      const remPay = poPaymentRemaining(updatedPo);
+      setPaySettlement("fully");
+      setPayAmount(remPay > 0 ? String(remPay) : "");
       if (result.remaining > 0) {
         toast.success(
-          `Received ${result.receivedThisTime} ${po.unit} (batch ${result.batchNumber || batchNumber}). Remaining to receive: ${result.remaining} ${po.unit}.`,
+          `Stock updated: +${result.receivedThisTime} ${po.unit}. Remaining to receive: ${result.remaining} ${po.unit}. Now choose Fully / Partially paid.`,
         );
       } else {
         toast.success(
-          `Fully received ${result.receivedThisTime} ${po.unit} — stock updated and PO closed.`,
+          `Fully received ${result.receivedThisTime} ${po.unit}. Now choose Fully / Partially paid for this invoice.`,
         );
       }
-      reset();
-      onOpenChange(false);
+      setStage("payment");
       onReceived();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Could not update inventory.";
@@ -331,20 +374,87 @@ export function PoInvoiceReceiveSheet({
     }
   };
 
+  const finishWithoutPayment = () => {
+    reset();
+    onOpenChange(false);
+  };
+
+  const handlePaymentConfirm = async () => {
+    if (!paymentPo) return;
+    if (paySettlement === "unpaid") {
+      toast.message("Marked unpaid — you can pay later from Purchases → Supplier payment.");
+      finishWithoutPayment();
+      return;
+    }
+    let amount = Number(payAmount);
+    if (paySettlement === "fully") {
+      amount = payRemaining > 0 ? payRemaining : amount;
+      setPayAmount(String(amount));
+    }
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError("Enter how much was paid to the supplier.");
+      toast.error("Enter a valid payment amount.");
+      return;
+    }
+    if (paySettlement === "partial" && payRemaining > 0 && amount + 1e-9 >= payRemaining) {
+      setError("For partially paid, enter less than the remaining payable (or choose Fully paid).");
+      toast.error("Partial amount must be less than remaining payable.");
+      return;
+    }
+    setPaySaving(true);
+    setError("");
+    try {
+      const result = await recordSupplierPayment({
+        purchaseOrderId: paymentPo.id,
+        companyId: paymentPo.company_id,
+        amount,
+        paymentMethod: payMethod,
+        referenceNumber: payRef.trim() || undefined,
+        notes: [
+          paySettlement === "fully" ? "Fully paid" : "Partially paid",
+          payNotes.trim(),
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        recordedByName: actorName,
+      });
+      const status = poPaymentStatus(result.po);
+      if (result.remaining > 0) {
+        toast.success(
+          `${status}: ₹${amount.toLocaleString("en-IN")} via ${payMethod}. Remaining payable: ₹${result.remaining.toLocaleString("en-IN")}.`,
+        );
+      } else {
+        toast.success(`Fully paid ₹${amount.toLocaleString("en-IN")} via ${payMethod}.`);
+      }
+      reset();
+      onOpenChange(false);
+      onReceived();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not save supplier payment.";
+      setError(message);
+      toast.error(message);
+    } finally {
+      setPaySaving(false);
+    }
+  };
+
   return (
     <Sheet open={open && !!po} onOpenChange={close}>
       <SheetContent className="flex w-full flex-col overflow-y-auto !max-w-[min(96vw,720px)] sm:!max-w-[min(96vw,720px)] pb-16">
         <SheetHeader className="shrink-0 pr-8">
-          <SheetTitle>Receive from supplier invoice</SheetTitle>
+          <SheetTitle>
+            {stage === "payment" ? "Supplier payment" : "Receive from supplier invoice"}
+          </SheetTitle>
           <SheetDescription>
-            Supervisor uploads the supplier invoice PDF (or photo). OCR fills product, batch ID,
-            and qty — confirm to tag stock to PO #{po?.id}. Short shipments leave remaining open.
-            Logistics does not review inbound arrivals.
+            {stage === "payment"
+              ? `Stock is updated. Record how much was paid to ${paymentPo?.supplier_name || "the supplier"} for this invoice, and the payment type.`
+              : `Supervisor uploads the supplier invoice PDF (or photo). OCR fills product, batch ID, and qty — confirm to tag stock to PO #${po?.id}. Then record supplier payment.`}
           </SheetDescription>
         </SheetHeader>
 
         {po && (
           <div className="mt-5 space-y-4 pb-10">
+            {stage !== "payment" && (
             <div className="rounded-xl border border-border bg-muted/30 p-3 text-xs space-y-1.5">
               <div className="flex justify-between gap-2">
                 <span className="text-muted-foreground">Product (PO)</span>
@@ -373,6 +483,7 @@ export function PoInvoiceReceiveSheet({
                 </span>
               </div>
             </div>
+            )}
 
             {stage === "idle" || stage === "processing" ? (
               <div className="space-y-3">
@@ -540,7 +651,443 @@ export function PoInvoiceReceiveSheet({
                 </div>
               </>
             )}
+
+            {stage === "payment" && paymentPo && (
+              <div className="space-y-4">
+                <div className="rounded-xl border border-border bg-muted/30 p-3 text-xs space-y-1.5">
+                  <div className="flex justify-between gap-2">
+                    <span className="text-muted-foreground">Supplier</span>
+                    <span className="font-bold text-right">{paymentPo.supplier_name}</span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-muted-foreground">Product</span>
+                    <span className="font-semibold text-right">{paymentPo.product_name}</span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-muted-foreground">Stock received this time</span>
+                    <span className="font-semibold">
+                      {receivedThisTime} {paymentPo.unit}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2 pt-1 border-t border-border/60">
+                    <span className="text-muted-foreground">Invoice / PO total</span>
+                    <span className="font-semibold">
+                      ₹{(Number(paymentPo.total_amount) || 0).toLocaleString("en-IN")}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-muted-foreground">Already paid</span>
+                    <span className="font-semibold">
+                      ₹{(Number(paymentPo.paid_amount) || 0).toLocaleString("en-IN")}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-muted-foreground">Remaining payable</span>
+                    <span className="font-bold text-primary">
+                      ₹{payRemaining.toLocaleString("en-IN")}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-2">
+                    <span className="text-muted-foreground">Current status</span>
+                    <span className="font-semibold">{poPaymentStatus(paymentPo)}</span>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <p className="text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
+                    Payment settlement
+                  </p>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    {(
+                      [
+                        {
+                          id: "fully" as const,
+                          label: "Fully paid",
+                          hint: "Clear remaining balance",
+                        },
+                        {
+                          id: "partial" as const,
+                          label: "Partially paid",
+                          hint: "Pay some amount now",
+                        },
+                        {
+                          id: "unpaid" as const,
+                          label: "Unpaid / later",
+                          hint: "Skip — pay from PO later",
+                        },
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        className={`rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                          paySettlement === opt.id
+                            ? "border-primary bg-primary/10"
+                            : "border-border bg-background hover:bg-muted/40"
+                        }`}
+                        onClick={() => applySettlement(opt.id, payRemaining)}
+                      >
+                        <p className="text-[12px] font-bold text-foreground">{opt.label}</p>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">{opt.hint}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {paySettlement !== "unpaid" && (
+                  <>
+                    <label className="flex flex-col gap-1.5 text-[12px] font-medium">
+                      Amount paid (₹)
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="any"
+                        max={payRemaining || undefined}
+                        className="h-10 rounded-md border border-border bg-background px-3 text-[14px] font-semibold"
+                        value={payAmount}
+                        readOnly={paySettlement === "fully"}
+                        onChange={(e) => {
+                          setPayAmount(e.target.value);
+                          if (paySettlement === "fully") setPaySettlement("partial");
+                        }}
+                        placeholder={
+                          paySettlement === "fully"
+                            ? "Full remaining amount"
+                            : "Enter partial amount"
+                        }
+                      />
+                      {paySettlement === "fully" && (
+                        <span className="text-[10px] text-muted-foreground">
+                          Locked to remaining ₹{payRemaining.toLocaleString("en-IN")}. Switch to
+                          Partially paid to enter a smaller amount.
+                        </span>
+                      )}
+                      {paySettlement === "partial" && Number(payAmount) > 0 && (
+                        <span className="text-[10px] font-semibold text-foreground">
+                          After this: remaining ₹
+                          {Math.max(0, payRemaining - Number(payAmount)).toLocaleString("en-IN")}{" "}
+                          (Partially paid)
+                        </span>
+                      )}
+                    </label>
+
+                    <label className="flex flex-col gap-1.5 text-[12px] font-medium">
+                      Payment type
+                      <select
+                        className="h-10 rounded-md border border-border bg-background px-3 text-[13px] font-semibold"
+                        value={payMethod}
+                        onChange={(e) => setPayMethod(e.target.value as SupplierPaymentMethod)}
+                      >
+                        {SUPPLIER_PAYMENT_METHODS.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+
+                    <label className="flex flex-col gap-1.5 text-[12px] font-medium">
+                      Reference / UTR / cheque no. (optional)
+                      <input
+                        className="h-9 rounded-md border border-border bg-background px-3 text-[13px]"
+                        value={payRef}
+                        onChange={(e) => setPayRef(e.target.value)}
+                        placeholder="Transaction ID or cheque number"
+                      />
+                    </label>
+
+                    <label className="flex flex-col gap-1.5 text-[12px] font-medium">
+                      Notes (optional)
+                      <input
+                        className="h-9 rounded-md border border-border bg-background px-3 text-[13px]"
+                        value={payNotes}
+                        onChange={(e) => setPayNotes(e.target.value)}
+                        placeholder="Advance / short payment note"
+                      />
+                    </label>
+                  </>
+                )}
+
+                {paySettlement === "unpaid" && (
+                  <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-800 dark:text-amber-300">
+                    Invoice stays <strong>Unpaid</strong>. Record payment later from Purchases →
+                    Supplier payment (Fully paid / Partially paid).
+                  </p>
+                )}
+
+                {error && (
+                  <p className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
+                    {error}
+                  </p>
+                )}
+
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-9 text-xs font-semibold"
+                    disabled={paySaving}
+                    onClick={finishWithoutPayment}
+                  >
+                    Close
+                  </Button>
+                  <Button
+                    type="button"
+                    className="h-9 flex-1 text-xs font-bold"
+                    disabled={paySaving}
+                    onClick={() => void handlePaymentConfirm()}
+                  >
+                    {paySaving ? (
+                      <>
+                        <Loader2 className="size-3.5 animate-spin mr-1.5" />
+                        Saving payment…
+                      </>
+                    ) : paySettlement === "unpaid" ? (
+                      "Keep unpaid & finish"
+                    ) : paySettlement === "fully" ? (
+                      "Confirm fully paid"
+                    ) : (
+                      "Confirm partially paid"
+                    )}
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
+        )}
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+/** Standalone supplier payment sheet for a PO (after stock is already received). */
+export function SupplierPaymentSheet({
+  po,
+  open,
+  onOpenChange,
+  actorName,
+  onSaved,
+}: {
+  po: DBPurchaseOrder | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  actorName: string;
+  onSaved: () => void;
+}) {
+  const [amount, setAmount] = useState("");
+  const [method, setMethod] = useState<SupplierPaymentMethod>("Bank Transfer");
+  const [reference, setReference] = useState("");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [settlement, setSettlement] = useState<PaySettlement>("fully");
+
+  const remaining = po ? poPaymentRemaining(po) : 0;
+  const currentStatus = po ? poPaymentStatus(po) : "Unpaid";
+
+  const applySettlement = (mode: PaySettlement) => {
+    setSettlement(mode);
+    setError("");
+    if (mode === "fully") setAmount(remaining > 0 ? String(remaining) : "");
+    else if (mode === "partial") {
+      const half = remaining > 0 ? Math.round((remaining / 2) * 100) / 100 : 0;
+      setAmount(half > 0 ? String(half) : "");
+    } else setAmount("");
+  };
+
+  const reset = () => {
+    setAmount("");
+    setMethod("Bank Transfer");
+    setReference("");
+    setNotes("");
+    setSaving(false);
+    setError("");
+    setSettlement("fully");
+  };
+
+  const handleOpen = (next: boolean) => {
+    if (!next) reset();
+    else if (po) {
+      const rem = poPaymentRemaining(po);
+      setSettlement("fully");
+      setAmount(rem > 0 ? String(rem) : "");
+    }
+    onOpenChange(next);
+  };
+
+  const handleSubmit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!po) return;
+    if (settlement === "unpaid") {
+      toast.message("No payment recorded — status stays Unpaid / Partially paid as before.");
+      reset();
+      onOpenChange(false);
+      return;
+    }
+    let payAmt = Number(amount);
+    if (settlement === "fully") payAmt = remaining > 0 ? remaining : payAmt;
+    if (!Number.isFinite(payAmt) || payAmt <= 0) {
+      setError("Enter how much was paid.");
+      toast.error("Enter a valid payment amount.");
+      return;
+    }
+    if (settlement === "partial" && remaining > 0 && payAmt + 1e-9 >= remaining) {
+      setError("For partially paid, enter less than remaining (or choose Fully paid).");
+      toast.error("Partial amount must be less than remaining payable.");
+      return;
+    }
+    setSaving(true);
+    setError("");
+    try {
+      const result = await recordSupplierPayment({
+        purchaseOrderId: po.id,
+        companyId: po.company_id,
+        amount: payAmt,
+        paymentMethod: method,
+        referenceNumber: reference.trim() || undefined,
+        notes: [
+          settlement === "fully" ? "Fully paid" : "Partially paid",
+          notes.trim(),
+        ]
+          .filter(Boolean)
+          .join(" · "),
+        recordedByName: actorName,
+      });
+      const status = poPaymentStatus(result.po);
+      if (result.remaining > 0) {
+        toast.success(
+          `${status}: ₹${payAmt.toLocaleString("en-IN")} via ${method}. Remaining: ₹${result.remaining.toLocaleString("en-IN")}.`,
+        );
+      } else {
+        toast.success(`Fully paid via ${method}.`);
+      }
+      reset();
+      onOpenChange(false);
+      onSaved();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not save payment.";
+      setError(message);
+      toast.error(message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Sheet open={open && !!po} onOpenChange={handleOpen}>
+      <SheetContent className="overflow-y-auto max-h-[100dvh] w-full sm:max-w-lg pb-16">
+        <SheetHeader>
+          <SheetTitle>Supplier payment</SheetTitle>
+          <SheetDescription>
+            Record Fully paid or Partially paid to {po?.supplier_name} for PO #{po?.id}.
+          </SheetDescription>
+        </SheetHeader>
+        {po && (
+          <form onSubmit={(e) => void handleSubmit(e)} className="mt-6 space-y-4 pb-10">
+            <div className="rounded-xl border border-border bg-muted/30 p-3 text-xs space-y-1.5">
+              <div className="flex justify-between gap-2">
+                <span className="text-muted-foreground">Invoice / PO total</span>
+                <span className="font-semibold">
+                  ₹{(Number(po.total_amount) || 0).toLocaleString("en-IN")}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-muted-foreground">Already paid</span>
+                <span className="font-semibold">
+                  ₹{(Number(po.paid_amount) || 0).toLocaleString("en-IN")}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-muted-foreground">Remaining payable</span>
+                <span className="font-bold text-primary">
+                  ₹{remaining.toLocaleString("en-IN")}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="text-muted-foreground">Status</span>
+                <span className="font-semibold">{currentStatus}</span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              {(
+                [
+                  { id: "fully" as const, label: "Fully paid" },
+                  { id: "partial" as const, label: "Partially paid" },
+                  { id: "unpaid" as const, label: "Unpaid / later" },
+                ] as const
+              ).map((opt) => (
+                <button
+                  key={opt.id}
+                  type="button"
+                  className={`rounded-lg border px-3 py-2 text-[12px] font-bold ${
+                    settlement === opt.id
+                      ? "border-primary bg-primary/10"
+                      : "border-border bg-background hover:bg-muted/40"
+                  }`}
+                  onClick={() => applySettlement(opt.id)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {settlement !== "unpaid" && (
+              <>
+                <label className="drawer-field">
+                  Amount paid (₹) <span className="text-destructive">*</span>
+                  <input
+                    type="number"
+                    required
+                    min="0.01"
+                    step="any"
+                    max={remaining || undefined}
+                    value={amount}
+                    readOnly={settlement === "fully"}
+                    onChange={(e) => {
+                      setAmount(e.target.value);
+                      if (settlement === "fully") setSettlement("partial");
+                    }}
+                  />
+                </label>
+                <label className="drawer-field">
+                  Payment type <span className="text-destructive">*</span>
+                  <select
+                    value={method}
+                    onChange={(e) => setMethod(e.target.value as SupplierPaymentMethod)}
+                  >
+                    {SUPPLIER_PAYMENT_METHODS.map((m) => (
+                      <option key={m} value={m}>
+                        {m}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="drawer-field">
+                  Reference / UTR (optional)
+                  <input
+                    value={reference}
+                    onChange={(e) => setReference(e.target.value)}
+                    placeholder="Transaction ID / cheque no."
+                  />
+                </label>
+                <label className="drawer-field">
+                  Notes (optional)
+                  <input value={notes} onChange={(e) => setNotes(e.target.value)} />
+                </label>
+              </>
+            )}
+            {error && <p className="text-[11px] text-destructive">{error}</p>}
+            <Button type="submit" className="w-full font-bold text-xs" disabled={saving}>
+              {saving
+                ? "Saving…"
+                : settlement === "unpaid"
+                  ? "Keep unpaid & close"
+                  : settlement === "fully"
+                    ? "Confirm fully paid"
+                    : "Confirm partially paid"}
+            </Button>
+          </form>
         )}
       </SheetContent>
     </Sheet>

@@ -407,6 +407,7 @@ CREATE TABLE IF NOT EXISTS public.purchase_orders (
   unit TEXT NOT NULL DEFAULT 'kg',
   unit_price NUMERIC NOT NULL DEFAULT 0,
   total_amount NUMERIC NOT NULL DEFAULT 0,
+  paid_amount NUMERIC NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'Requested' CHECK (status IN ('Requested', 'Approval', 'In transit', 'Received', 'Rejected')),
   eta DATE,
   warehouse TEXT,
@@ -416,6 +417,28 @@ CREATE TABLE IF NOT EXISTS public.purchase_orders (
   created_by UUID REFERENCES public.user_profiles(id),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS public.supplier_payments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id TEXT NOT NULL REFERENCES public.companies(id),
+  purchase_order_id TEXT NOT NULL REFERENCES public.purchase_orders(id) ON DELETE CASCADE,
+  supplier_name TEXT NOT NULL,
+  amount NUMERIC NOT NULL CHECK (amount > 0),
+  payment_method TEXT NOT NULL DEFAULT 'Bank Transfer'
+    CHECK (payment_method IN (
+      'Cash',
+      'PhonePe',
+      'Google Pay',
+      'UPI',
+      'Bank Transfer',
+      'Cheque'
+    )),
+  reference_number TEXT,
+  paid_date DATE NOT NULL DEFAULT CURRENT_DATE,
+  notes TEXT,
+  recorded_by TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- ------------------------------------------------------------------------

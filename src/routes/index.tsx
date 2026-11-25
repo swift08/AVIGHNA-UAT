@@ -44,6 +44,8 @@ import {
   fetchPurchaseOrders,
   availableFromStock,
   outboundOrderedQuantity,
+  poPaymentRemaining,
+  poRemainingQuantity,
   type DBOrder,
   type DBInvoice,
   type DBProduct,
@@ -192,6 +194,44 @@ function Overview() {
       return ["In transit", "Requested", "Approval"].includes(po.status);
     });
   }, [dbPOs]);
+
+  const pendingPaymentInvoices = useMemo(
+    () =>
+      dbInvoices
+        .filter((i) => i.status !== "Paid" && Number(i.remaining_amount) > 0)
+        .slice()
+        .sort((a, b) => Number(b.remaining_amount) - Number(a.remaining_amount)),
+    [dbInvoices],
+  );
+
+  const supplierPayablesDue = useMemo(
+    () =>
+      dbPOs
+        .filter((po) => {
+          if (po.status === "Rejected") return false;
+          const received = Number(po.received_quantity) || 0;
+          return received > 0 && poPaymentRemaining(po) > 0;
+        })
+        .slice()
+        .sort((a, b) => poPaymentRemaining(b) - poPaymentRemaining(a)),
+    [dbPOs],
+  );
+
+  const openInboundPoCount = useMemo(
+    () =>
+      dbPOs.filter(
+        (po) =>
+          po.status !== "Rejected" &&
+          po.status !== "Received" &&
+          poRemainingQuantity(po) > 0,
+      ).length,
+    [dbPOs],
+  );
+
+  const supplierPayableAmount = useMemo(
+    () => supplierPayablesDue.reduce((sum, po) => sum + poPaymentRemaining(po), 0),
+    [supplierPayablesDue],
+  );
 
   const todaysOrders = useMemo(() => {
     const key = todayKey();
@@ -466,6 +506,8 @@ function Overview() {
 
   if (isSupervisor) {
     const firstName = currentUser ? currentUser.name.split(" ")[0] : "Supervisor";
+    const canSeeAmounts = hasPermission("finance.view_amounts");
+    const readyDispatchOrders = dbOrders.filter((o) => o.status === "Ready to dispatch");
     return (
       <main className="content">
         <div className="heading-row flex items-end justify-between gap-5 min-w-0">
@@ -476,8 +518,8 @@ function Overview() {
               <span className="font-normal text-primary">↗</span>
             </h1>
             <p className="mt-2 text-xs text-muted-foreground">
-              {selected ? selected.name : "Today’s floor priorities"} — pending orders, inbound
-              stock, and low inventory.
+              {selected ? selected.name : "Operations overview"} — orders, inbound, stock,
+              customer payments, and supplier payables.
             </p>
           </div>
           <Button asChild variant="outline" size="sm" className="h-9 text-xs shrink-0">
@@ -502,12 +544,32 @@ function Overview() {
           <div className="kpi">
             <div className="flex items-center justify-between gap-2 min-w-0">
               <p className="text-xs font-semibold text-muted-foreground truncate">
+                Awaiting approval
+              </p>
+              <Clock className="kpi-icon shrink-0" />
+            </div>
+            <p className="kpi-value">{approvalsWaitingCount}</p>
+            <span className="trend">Approve or procure</span>
+          </div>
+          <div className="kpi">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <p className="text-xs font-semibold text-muted-foreground truncate">
+                Ready to dispatch
+              </p>
+              <Truck className="kpi-icon shrink-0" />
+            </div>
+            <p className="kpi-value">{pendingDispatchCount}</p>
+            <span className="trend">Waiting for vehicle</span>
+          </div>
+          <div className="kpi">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <p className="text-xs font-semibold text-muted-foreground truncate">
                 Inbound today
               </p>
               <ArrowDownLeft className="kpi-icon shrink-0" />
             </div>
             <p className="kpi-value">{inboundExpectedToday.length}</p>
-            <span className="trend">Expected receipts</span>
+            <span className="trend">{openInboundPoCount} open PO receipts</span>
           </div>
           <div className="kpi">
             <div className="flex items-center justify-between gap-2 min-w-0">
@@ -519,6 +581,40 @@ function Overview() {
             <p className="kpi-value">{lowStockCount}</p>
             <span className="trend">At or below reorder</span>
           </div>
+          <div className="kpi">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <p className="text-xs font-semibold text-muted-foreground truncate">
+                Pending payments
+              </p>
+              <CreditCard className="kpi-icon shrink-0" />
+            </div>
+            <p className="kpi-value">{pendingPaymentInvoices.length}</p>
+            <span className="trend">Customer invoices due</span>
+          </div>
+          {canSeeAmounts && (
+            <div className="kpi">
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <p className="text-xs font-semibold text-muted-foreground truncate">
+                  Receivables
+                </p>
+                <Wallet className="kpi-icon shrink-0" />
+              </div>
+              <p className="kpi-value">{money(outstandingAmount)}</p>
+              <span className="trend">Awaiting collection</span>
+            </div>
+          )}
+          {canSeeAmounts && (
+            <div className="kpi">
+              <div className="flex items-center justify-between gap-2 min-w-0">
+                <p className="text-xs font-semibold text-muted-foreground truncate">
+                  Supplier payable
+                </p>
+                <FileCheck2 className="kpi-icon shrink-0" />
+              </div>
+              <p className="kpi-value">{money(supplierPayableAmount)}</p>
+              <span className="trend">{supplierPayablesDue.length} invoices to pay</span>
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 gap-[22px] lg:grid-cols-2">
@@ -591,8 +687,8 @@ function Overview() {
                 size="sm"
                 className="h-8 gap-1.5 text-xs font-semibold shrink-0"
               >
-                <Link to="/inventory">
-                  Inventory
+                <Link to="/purchases">
+                  Purchases
                   <ArrowRight className="size-3" />
                 </Link>
               </Button>
@@ -629,7 +725,157 @@ function Overview() {
               </div>
             )}
           </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <div className="min-w-0">
+                <h2 className="panel-title truncate">Pending customer payments</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Invoices with balance still due
+                </p>
+              </div>
+              <Button
+                asChild
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs font-semibold shrink-0"
+              >
+                <Link to="/accounts">
+                  Invoices
+                  <ArrowRight className="size-3" />
+                </Link>
+              </Button>
+            </div>
+            {pendingPaymentInvoices.length === 0 ? (
+              <p className="px-4 sm:px-[23px] py-8 text-sm text-muted-foreground">
+                No customer payments pending.
+              </p>
+            ) : (
+              <div className="divide-y divide-border">
+                {pendingPaymentInvoices.slice(0, 8).map((inv) => (
+                  <div
+                    key={inv.id}
+                    className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-[23px] py-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-foreground truncate">
+                        {inv.customer_name}
+                      </p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                        #{inv.id}
+                        {inv.due_date ? ` · Due ${String(inv.due_date).slice(0, 10)}` : ""}
+                      </p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      {canSeeAmounts ? (
+                        <p className="text-sm font-bold text-foreground">
+                          {money(Number(inv.remaining_amount) || 0)}
+                        </p>
+                      ) : null}
+                      <span className="status warning">{inv.status}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="panel">
+            <div className="panel-head">
+              <div className="min-w-0">
+                <h2 className="panel-title truncate">Supplier payments due</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Received stock with payable balance left
+                </p>
+              </div>
+              <Button
+                asChild
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs font-semibold shrink-0"
+              >
+                <Link to="/purchases">
+                  Pay suppliers
+                  <ArrowRight className="size-3" />
+                </Link>
+              </Button>
+            </div>
+            {supplierPayablesDue.length === 0 ? (
+              <p className="px-4 sm:px-[23px] py-8 text-sm text-muted-foreground">
+                No supplier payments waiting.
+              </p>
+            ) : (
+              <div className="divide-y divide-border">
+                {supplierPayablesDue.slice(0, 8).map((po) => (
+                  <div
+                    key={po.id}
+                    className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-[23px] py-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-foreground truncate">
+                        {po.supplier_name}
+                      </p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                        PO #{po.id} · {po.product_name}
+                      </p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      {canSeeAmounts ? (
+                        <p className="text-sm font-bold text-foreground">
+                          {money(poPaymentRemaining(po))}
+                        </p>
+                      ) : null}
+                      <span className="status warning">Payable</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
+
+        {readyDispatchOrders.length > 0 && (
+          <section className="panel mt-[22px]">
+            <div className="panel-head">
+              <div className="min-w-0">
+                <h2 className="panel-title truncate">Ready to dispatch</h2>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  Assign vehicle / move to logistics
+                </p>
+              </div>
+              <Button
+                asChild
+                variant="outline"
+                size="sm"
+                className="h-8 gap-1.5 text-xs font-semibold shrink-0"
+              >
+                <Link to="/logistics">
+                  Logistics
+                  <ArrowRight className="size-3" />
+                </Link>
+              </Button>
+            </div>
+            <div className="divide-y divide-border">
+              {readyDispatchOrders.slice(0, 8).map((o) => (
+                <div
+                  key={o.id}
+                  className="flex flex-wrap items-center justify-between gap-2 px-4 sm:px-[23px] py-3"
+                >
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-foreground truncate">
+                      {o.customer_name}
+                    </p>
+                    <p className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                      #{o.id}
+                      {o.items_summary ? ` · ${o.items_summary}` : ""}
+                    </p>
+                  </div>
+                  <span className="status brand shrink-0">Ready to dispatch</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
 
         <section className="panel mt-[22px]">
           <div className="panel-head">
@@ -689,7 +935,7 @@ function Overview() {
         <footer className="mt-6 flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
           <span className="flex items-center gap-2">
             <span className="size-1.5 rounded-full bg-success" />
-            Live floor view · Orders · Inbound · Stock
+            Orders · Inbound · Stock · Payments · Payables
           </span>
           <span className="font-medium">Supervisor dashboard</span>
         </footer>
